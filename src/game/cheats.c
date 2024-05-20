@@ -306,6 +306,17 @@ void cheatActivate(s32 cheat_id)
 		setCurrentPlayerNum(prevplayernum);
 		break;
 	case CHEAT_ALLGUNS:
+#ifndef PLATFORM_N64
+		// Give all guns to all players
+		prevplayernum = g_Vars.currentplayernum;
+
+		for (playernum = 0; playernum < PLAYERCOUNT(); playernum++) {
+			setCurrentPlayerNum(playernum);
+			invSetAllGuns(true);
+		}
+
+		setCurrentPlayerNum(prevplayernum);
+#else
 		// Give all guns if only one player playing
 		if (PLAYERCOUNT() == 1 && g_Vars.normmplayerisrunning == false) {
 			prevplayernum = g_Vars.currentplayernum;
@@ -317,6 +328,7 @@ void cheatActivate(s32 cheat_id)
 
 			setCurrentPlayerNum(prevplayernum);
 		}
+#endif
 		break;
 	}
 
@@ -344,6 +356,16 @@ void cheatDeactivate(s32 cheat_id)
 		setCurrentPlayerNum(prevplayernum);
 		break;
 	case CHEAT_ALLGUNS:
+#ifndef PLATFORM_N64
+		prevplayernum = g_Vars.currentplayernum;
+
+		for (playernum = 0; playernum < PLAYERCOUNT(); playernum++) {
+			setCurrentPlayerNum(playernum);
+			invSetAllGuns(false);
+		}
+
+		setCurrentPlayerNum(prevplayernum);
+#else
 		if (PLAYERCOUNT() == 1 && g_Vars.normmplayerisrunning == false) {
 			prevplayernum = g_Vars.currentplayernum;
 
@@ -354,6 +376,7 @@ void cheatDeactivate(s32 cheat_id)
 
 			setCurrentPlayerNum(prevplayernum);
 		}
+#endif
 		break;
 #ifndef PLATFORM_N64
 	case CHEAT_PERFECTDARKNESS:
