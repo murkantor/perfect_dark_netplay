@@ -2331,43 +2331,56 @@ void texLoad(texnum_t *updateword, struct texpool *pool, bool unusedarg)
 					&& g_ModelSwapTexData != NULL
 					&& (s32)(g_TexNumToLoad + 1) < g_ModelSwapTexCount;
 			struct texture *textbl = texoverlay ? g_ModelSwapTexList : g_Textures;
+
+			// Extension texture numbers (>= NUM_TEXTURES) have no ROM table
+			// entry - they can only come from a mod file.
+			if (!texoverlay && g_TexNumToLoad >= NUM_TEXTURES) {
+				if (modTextureLoad(g_TexNumToLoad, alignedcompbuffer, 4096) <= 0) {
+					// see above: never leave a raw texture ID behind on PC
+					*updateword = osVirtualToPhysical(pool->start);
+					return;
+				}
+				compptr = alignedcompbuffer;
+			} else {
 #else
 			struct texture *textbl = g_Textures;
 #endif
+				thisoffset = textbl[g_TexNumToLoad].dataoffset;
+				nextoffset = textbl[g_TexNumToLoad + 1].dataoffset;
 
-			thisoffset = textbl[g_TexNumToLoad].dataoffset;
-			nextoffset = textbl[g_TexNumToLoad + 1].dataoffset;
-
-			if (thisoffset == nextoffset && g_TexNumToLoad < NUM_TEXTURES) {
-				// The texture has no data
+				if (thisoffset == nextoffset && g_TexNumToLoad < NUM_TEXTURES) {
+					// The texture has no data
 #ifndef PLATFORM_N64
-				// see above: never leave a raw texture ID behind on PC
-				*updateword = osVirtualToPhysical(pool->start);
+					// see above: never leave a raw texture ID behind on PC
+					*updateword = osVirtualToPhysical(pool->start);
 #endif
-				return;
-			}
+					return;
+				}
 
 #ifndef PLATFORM_N64
-			// overlay path: read straight from the overlay's texturesdata (no
-			// loose-file replacement — that's keyed to base texture numbers).
-			if (texoverlay) {
-				dmaExec(alignedcompbuffer,
-						(romptr_t)(uintptr_t)g_ModelSwapTexData + (thisoffset & 0xfffffff8),
-						((uintptr_t) (nextoffset - thisoffset) + 0x1f) >> 4 << 4);
-				compptr = (u8 *) alignedcompbuffer + (thisoffset & 7);
-			} else
-			// try to load external replacement if present
-			if (modTextureLoad(g_TexNumToLoad, alignedcompbuffer, 4096) > 0) {
-				compptr = alignedcompbuffer;
-			} else
+				// overlay path: read straight from the overlay's texturesdata (no
+				// loose-file replacement — that's keyed to base texture numbers).
+				if (texoverlay) {
+					dmaExec(alignedcompbuffer,
+							(romptr_t)(uintptr_t)g_ModelSwapTexData + (thisoffset & 0xfffffff8),
+							((uintptr_t) (nextoffset - thisoffset) + 0x1f) >> 4 << 4);
+					compptr = (u8 *) alignedcompbuffer + (thisoffset & 7);
+				} else
+				// try to load external replacement if present
+				if (modTextureLoad(g_TexNumToLoad, alignedcompbuffer, 4096) > 0) {
+					compptr = alignedcompbuffer;
+				} else
 #endif
-			{
-				// Copy the compressed texture to RAM
-				dmaExec(alignedcompbuffer,
-						(romptr_t) REF_SEG _texturesdataSegmentRomStart + (thisoffset & 0xfffffff8),
-						((uintptr_t) (nextoffset - thisoffset) + 0x1f) >> 4 << 4);
-				compptr = (u8 *) alignedcompbuffer + (thisoffset & 7);
+				{
+					// Copy the compressed texture to RAM
+					dmaExec(alignedcompbuffer,
+							(romptr_t) REF_SEG _texturesdataSegmentRomStart + (thisoffset & 0xfffffff8),
+							((uintptr_t) (nextoffset - thisoffset) + 0x1f) >> 4 << 4);
+					compptr = (u8 *) alignedcompbuffer + (thisoffset & 7);
+				}
+#ifndef PLATFORM_N64
 			}
+#endif
 			thisoffset = 0;
 			hasloddata = (*compptr & 0x80) >> 7;
 			iszlib = (*compptr & 0x40) >> 6;
