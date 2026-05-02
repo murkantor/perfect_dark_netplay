@@ -2198,6 +2198,19 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 					} else {
 						s32 mpheadnum = MENUMODELPARAMS_GET_MP_HEADNUM(menumodel->newparams);
 						s32 mpbodynum = MENUMODELPARAMS_GET_MP_BODYNUM(menumodel->newparams);
+
+#ifndef PLATFORM_N64 // All in One Mod
+						// Prevention of out-of-bounds access
+						if (mpbodynum >= mpGetNumBodies()) {
+							mpbodynum = 0;
+						}
+
+						// Prevention of out-of-bounds access
+						if (mpheadnum >= mpGetNumHeads2()) {
+							mpheadnum = 0;
+						}
+#endif
+
 						bodynum = mpGetBodyId(mpbodynum);
 
 						if (mpheadnum < mpGetNumHeads2()) {
@@ -2222,10 +2235,10 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 						totalfilelen += ALIGN64(fileGetInflatedSize(headfilenum, LOADTYPE_MODEL));
 					}
 
-#ifdef PLATFORM_64BIT
-					totalfilelen += 0x6000;
-#else
+#ifdef PLATFORM_N64
 					totalfilelen += 0x4000;
+#else // All in One Mod
+					totalfilelen += 0x6000;
 #endif
 
 #ifndef PLATFORM_N64
@@ -2237,7 +2250,11 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 					menumodel->headnum = headnum;
 					menumodel->bodynum = bodynum;
 					menumodel->bodymodeldef = modeldefLoad(bodyfilenum, menumodel->allocstart, totalfilelen, &texpool);
+#ifdef PLATFORM_N64
 					bodyfilelen2 = ALIGN64(fileGetLoadedSize(bodyfilenum));
+#else // All in One Mod
+					bodyfilelen2 = ALIGN64(fileGetInflatedSize(bodyfilenum, LOADTYPE_MODEL));
+#endif
 					modelAllocateRwData(menumodel->bodymodeldef);
 
 					if (headnum < 0) {
@@ -2252,17 +2269,23 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 					modelInit(&menumodel->bodymodel, menumodel->bodymodeldef, menumodel->rwdata, true);
 					animInit(&menumodel->bodyanim);
 
-#ifdef PLATFORM_64BIT
-					menumodel->bodymodel.rwdatalen = 256 + 128;
-#else
+#ifdef PLATFORM_N64
 					menumodel->bodymodel.rwdatalen = 256;
+#else // All in One Mod
+					menumodel->bodymodel.rwdatalen = ARRAYCOUNT(menumodel->rwdata);
 #endif
 					menumodel->bodymodel.anim = &menumodel->bodyanim;
 
 					body0f02ce8c(bodynum, headnum, menumodel->bodymodeldef, menumodel->headmodeldef, totalfilelen * 0, &menumodel->bodymodel, false, 1);
 				} else {
+#ifdef PLATFORM_N64
 					totalfilelen = ALIGN64(fileGetInflatedSize(menumodel->newparams, LOADTYPE_MODEL)) + 0x4000;
 					if (1);
+#else // All in One Mod
+					totalfilelen = ALIGN64(fileGetInflatedSize(menumodel->newparams, LOADTYPE_MODEL)) + 0x6000;
+					bzero(menumodel->allocstart, totalfilelen);
+#endif
+
 
 #ifndef PLATFORM_N64
 					videoFreeCachedTextures(menumodel->allocstart, menumodel->allocstart + menumodel->alloclen);
@@ -2279,10 +2302,10 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 					modelInit(&menumodel->bodymodel, menumodel->bodymodeldef, menumodel->rwdata, true);
 					animInit(&menumodel->bodyanim);
 
-#ifdef PLATFORM_64BIT
-					menumodel->bodymodel.rwdatalen = 256+128;
-#else
+#ifdef PLATFORM_N64
 					menumodel->bodymodel.rwdatalen = 256;
+#else // All in One Mod
+					menumodel->bodymodel.rwdatalen = ARRAYCOUNT(menumodel->rwdata);
 #endif
 					menumodel->bodymodel.anim = &menumodel->bodyanim;
 				}

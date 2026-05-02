@@ -104,7 +104,7 @@ struct LoadedVertex {
     float colour_index; // palette index (v->colour>>2), for the shader-side GPU palette
 };
 
-static struct {
+static struct TextureCache {
     TextureCacheMap map;
     std::list<TextureCacheMapIter> lru;
     std::vector<uint32_t> free_texture_ids;
@@ -1143,21 +1143,13 @@ void gfx_texture_cache_delete(const uint8_t* orig_addr) {
         }
     }
 
-    while (gfx_texture_cache.map.bucket_count() > 0) {
-        TextureCacheKey key = { orig_addr, { 0 }, 0, 0 }; // bucket index only depends on the address
-        size_t bucket = gfx_texture_cache.map.bucket(key);
-        bool again = false;
-        for (auto it = gfx_texture_cache.map.begin(bucket); it != gfx_texture_cache.map.end(bucket); ++it) {
-            if (it->first.texture_addr == orig_addr) {
-                gfx_texture_cache.lru.erase(it->second.lru_location);
-                gfx_texture_cache.free_texture_ids.push_back(it->second.texture_id);
-                gfx_texture_cache.map.erase(it->first);
-                again = true;
-                break;
-            }
-        }
-        if (!again) {
-            break;
+    for (auto it = gfx_texture_cache.map.begin(); it != gfx_texture_cache.map.end(); ) {
+        if (it->first.texture_addr == orig_addr) {
+            gfx_texture_cache.lru.erase(it->second.lru_location);
+            gfx_texture_cache.free_texture_ids.push_back(it->second.texture_id);
+            it = gfx_texture_cache.map.erase(it);
+        } else {
+            ++it;
         }
     }
 }
