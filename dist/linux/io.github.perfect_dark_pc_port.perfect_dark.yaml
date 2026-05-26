@@ -1,6 +1,6 @@
 app-id: io.github.perfect_dark_pc_port.perfect_dark
 runtime: org.freedesktop.Platform
-runtime-version: "23.08"
+runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
 command: io.github.perfect_dark_pc_port.perfect_dark.sh
 
