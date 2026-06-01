@@ -4,6 +4,9 @@
 *.exe
 pd.*.z64
 build
+# local sanitizer/optimized build trees and the runtime data dir (ROM lives here)
+/build_*/
+/data/
 .flatpak-builder
 extracted
 src/assets/*/*.bin
