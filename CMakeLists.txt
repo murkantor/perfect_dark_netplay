@@ -162,9 +162,25 @@ include_directories("${CMAKE_SOURCE_DIR}/src/lib/ultra/audio")
 include_directories("${CMAKE_SOURCE_DIR}/port/include")
 include_directories("${CMAKE_BINARY_DIR}/port/include")
 
-# Set Release optimization to -Og until I fix the -O2 issues
+# Optimization level.
+# Historically Release shipped -Og "until the -O2 issues are fixed". -O2 is now
+# opt-in via -DPD_OPTIMIZE=ON so it can be validated (run with PD_SANITIZE first)
+# before becoming the default. The default remains -Og to preserve known-good behavior.
+option(PD_OPTIMIZE "Build with -O2 -flto instead of the conservative -Og" OFF)
+set(PD_SANITIZE "" CACHE STRING "Comma-separated sanitizers to enable, e.g. address,undefined")
+
 if(NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))
-  add_compile_options(-Og)
+  if(PD_OPTIMIZE)
+    add_compile_options(-O2)
+  else()
+    add_compile_options(-Og)
+  endif()
+endif()
+
+if(NOT PD_SANITIZE STREQUAL "")
+  message(STATUS "Building with sanitizers: ${PD_SANITIZE}")
+  add_compile_options(-fsanitize=${PD_SANITIZE} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${PD_SANITIZE})
 endif()
 
 # Common CFLAGS
@@ -256,16 +272,18 @@ endif()
 list(APPEND LIBS "${EXTRA_LIBRARIES}")
 
 # Sources
+# CONFIGURE_DEPENDS makes CMake re-run the glob when a matching file is added or
+# removed, so incremental builds don't silently go stale until a manual reconfigure.
 
-file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")
-file(GLOB_RECURSE SRC_PORT_CXX "${CMAKE_SOURCE_DIR}/port/*.cpp")
+file(GLOB_RECURSE SRC_PORT CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/port/*.c")
+file(GLOB_RECURSE SRC_PORT_CXX CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/port/*.cpp")
 
-file(GLOB_RECURSE SRC_GAME "${CMAKE_SOURCE_DIR}/src/game/*.c")
+file(GLOB_RECURSE SRC_GAME CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/game/*.c")
 
-file(GLOB SRC_LIB_MP3 "${CMAKE_SOURCE_DIR}/src/lib/mp3/*.c")
-file(GLOB SRC_LIB_NAUDIO "${CMAKE_SOURCE_DIR}/src/lib/naudio/*.c")
-file(GLOB SRC_LIB_ULTRA_AUDIO "${CMAKE_SOURCE_DIR}/src/lib/ultra/audio/*.c")
-file(GLOB SRC_LIB_GU "${CMAKE_SOURCE_DIR}/src/lib/ultra/gu/*.c")
+file(GLOB SRC_LIB_MP3 CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/lib/mp3/*.c")
+file(GLOB SRC_LIB_NAUDIO CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/lib/naudio/*.c")
+file(GLOB SRC_LIB_ULTRA_AUDIO CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/lib/ultra/audio/*.c")
+file(GLOB SRC_LIB_GU CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/lib/ultra/gu/*.c")
 set(SRC_LIB
   src/lib/ultra/io/vimodentsclan1.c
   src/lib/ultra/io/vimodepallan1.c

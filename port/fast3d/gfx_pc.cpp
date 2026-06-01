@@ -2569,7 +2569,10 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
 
     if (tex_upload_buffer == nullptr) {
         // We cap texture max to 8k, because why would you need more?
-        int max_tex_size = std::min(8192, gfx_rapi->get_max_texture_size());
+        // Sized for the largest texture we might upload (incl. high internal-res
+        // framebuffer-effect captures). Use size_t to avoid the int overflow that
+        // would occur if a backend ever reported a max size >= 23170.
+        const size_t max_tex_size = (size_t)std::min(8192, gfx_rapi->get_max_texture_size());
         tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
     }
 
@@ -2583,6 +2586,10 @@ extern "C" void gfx_destroy(void) {
 
     // Texture cache and loaded textures store references to Resources which need to be unreferenced.
     gfx_texture_cache_clear();
+
+    // Release the texture upload scratch buffer (previously leaked on shutdown).
+    free(tex_upload_buffer);
+    tex_upload_buffer = nullptr;
 }
 
 extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {

@@ -5070,7 +5070,7 @@ void liftUpdateTiles(struct liftobj *lift, bool stationary)
 		} while (!bbox && !rodata);
 
 		if (bbox || rodata) {
-			func0f070ca0(&lift->base, (struct geotilef *)geo, flags, bbox, &rodata->type19);
+			func0f070ca0(&lift->base, (struct geotilef *)geo, flags, bbox, rodata ? &rodata->type19 : NULL);
 			lift->base.geocount++;
 		}
 	} while (bbox || rodata);

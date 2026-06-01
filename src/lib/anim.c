@@ -436,7 +436,7 @@ s32 animReadSignedShort(u8 *ptr, u8 readbitlen, s32 bitoffset)
 {
 	u16 result = animReadBits(ptr, readbitlen, bitoffset);
 
-	if (readbitlen < 16 && (result & (1 << (readbitlen - 1)))) {
+	if (readbitlen > 0 && readbitlen < 16 && (result & (1 << (readbitlen - 1)))) {
 		result |= ((1 << (16 - readbitlen)) - 1) << readbitlen;
 	}
 
