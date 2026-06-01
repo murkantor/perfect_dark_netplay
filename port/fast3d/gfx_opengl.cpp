@@ -48,6 +48,11 @@ static std::map<pair<uint64_t, uint32_t>, struct ShaderProgram> shader_program_p
 static GLuint opengl_vbo;
 static GLuint opengl_vao;
 static bool current_depth_mask;
+#ifdef GPU_VERTEX
+static GLuint opengl_palette_ubo;
+static int current_cull_mode = -1;
+#define VTX_PALETTE_BINDING 0
+#endif
 
 static uint32_t frame_count;
 
@@ -123,6 +128,40 @@ static void gfx_opengl_load_shader(struct ShaderProgram* new_prg) {
     glUseProgram(new_prg->opengl_program_id);
     gfx_opengl_vertex_array_set_attribs(new_prg);
     gfx_opengl_set_uniforms(new_prg);
+}
+
+static void gfx_opengl_set_vertex_transform_palette(const float* data, size_t num_entries) {
+#ifdef GPU_VERTEX
+    if (num_entries == 0) {
+        return;
+    }
+    glBindBuffer(GL_UNIFORM_BUFFER, opengl_palette_ubo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, num_entries * GFX_VTX_PALETTE_FLOATS * sizeof(float), data);
+    glBindBufferBase(GL_UNIFORM_BUFFER, VTX_PALETTE_BINDING, opengl_palette_ubo);
+#else
+    (void) data;
+    (void) num_entries;
+#endif
+}
+
+static void gfx_opengl_set_cull_mode(int mode) {
+#ifdef GPU_VERTEX
+    if (mode == current_cull_mode) {
+        return;
+    }
+    current_cull_mode = mode;
+    if (mode == 0) {
+        glDisable(GL_CULL_FACE);
+    } else {
+        glEnable(GL_CULL_FACE);
+        // N64 front faces use CW winding in the screen space produced by our
+        // transform; mode 1 = cull front, mode 2 = cull back.
+        glFrontFace(GL_CW);
+        glCullFace(mode == 1 ? GL_FRONT : GL_BACK);
+    }
+#else
+    (void) mode;
+#endif
 }
 
 static void append_str(char* buf, size_t* len, const char* str) {
@@ -249,6 +288,13 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
 
     vs_len += sprintf(vs_buf + vs_len, "#version %s\n", gl_glsl_version_str);
 
+#ifdef GPU_VERTEX
+    // UBO syntax needs an extension on desktop GLSL < 140 (it's core in ES 300).
+    if (!gl_es && gl_glsl_version < 140) {
+        append_line(vs_buf, &vs_len, "#extension GL_ARB_uniform_buffer_object : require");
+    }
+#endif
+
     if (gl_es) {
         append_line(vs_buf, &vs_len, "precision mediump float;");
     }
@@ -262,6 +308,14 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     append_line(vs_buf, &vs_len, "INPUT vec4 aVtxPos;");
+
+#ifdef GPU_VERTEX
+    // Matrix/params palette: per entry, 4 vec4 mat4 columns + 1 vec4 of
+    // (fog_mul, fog_offset, aspect_scale, aspect_ofs). aVtxPos.xyz is the raw
+    // model-space position; aVtxPos.w is the palette index.
+    vs_len += sprintf(vs_buf + vs_len, "layout(std140) uniform VtxPalette { highp vec4 uPal[%d]; };\n",
+                      GFX_VTX_PALETTE_MAX * 5);
+#endif
 
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
@@ -307,9 +361,11 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
             }
         }
     }
+#ifndef GPU_VERTEX
     if (cc_features.opt_fog) {
         append_line(vs_buf, &vs_len, "    vFog = aFog;");
     }
+#endif
     if (cc_features.opt_grayscale) {
         append_line(vs_buf, &vs_len, "    vGrayscaleColor = aGrayscaleColor;");
     }
@@ -317,7 +373,24 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
         vs_len += sprintf(vs_buf + vs_len, "    vInput%d = aInput%d;\n", i + 1, i + 1);
     }
 
+#ifdef GPU_VERTEX
+    // GPU vertex transform via the matrix palette (index in aVtxPos.w).
+    append_line(vs_buf, &vs_len, "    int pi = int(aVtxPos.w) * 5;");
+    append_line(vs_buf, &vs_len, "    mat4 m = mat4(uPal[pi], uPal[pi+1], uPal[pi+2], uPal[pi+3]);");
+    append_line(vs_buf, &vs_len, "    vec4 prm = uPal[pi+4];");
+    append_line(vs_buf, &vs_len, "    vec4 p = m * vec4(aVtxPos.xyz, 1.0);");
+    append_line(vs_buf, &vs_len, "    p.x = (prm.w * p.w + p.x) * prm.z;"); // aspect adjust
+    append_line(vs_buf, &vs_len, "    gl_Position = p;");
+    if (cc_features.opt_fog) {
+        append_line(vs_buf, &vs_len, "    float fw = (abs(p.w) < 0.001) ? 0.001 : p.w;");
+        append_line(vs_buf, &vs_len, "    float winv = 1.0 / fw;");
+        append_line(vs_buf, &vs_len, "    if (winv < 0.0) winv = 32767.0;");
+        append_line(vs_buf, &vs_len, "    float fz = clamp(p.z * winv * prm.x + prm.y, 0.0, 255.0);");
+        append_line(vs_buf, &vs_len, "    vFog = vec4(aFog.rgb, fz / 255.0);");
+    }
+#else
     append_line(vs_buf, &vs_len, "    gl_Position = aVtxPos;");
+#endif
     if (!GLAD_GL_ARB_depth_clamp) {
         // HACK: workaround for no GL_DEPTH_CLAMP
         append_line(vs_buf, &vs_len, "    gl_Position.z *= 0.3f;");
@@ -652,6 +725,13 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     prg->noise_scale_location = glGetUniformLocation(shader_program, "noise_scale");
     prg->three_point_filter_locations[0] = glGetUniformLocation(shader_program, "three_point_filter0");
     prg->three_point_filter_locations[1] = glGetUniformLocation(shader_program, "three_point_filter1");
+
+#ifdef GPU_VERTEX
+    GLuint block = glGetUniformBlockIndex(shader_program, "VtxPalette");
+    if (block != GL_INVALID_INDEX) {
+        glUniformBlockBinding(shader_program, block, VTX_PALETTE_BINDING);
+    }
+#endif
 
     gfx_opengl_load_shader(prg);
 
@@ -1020,6 +1100,15 @@ static void gfx_opengl_init(void) {
     glGenBuffers(1, &opengl_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
 
+#ifdef GPU_VERTEX
+    glGenBuffers(1, &opengl_palette_ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, opengl_palette_ubo);
+    glBufferData(GL_UNIFORM_BUFFER, GFX_VTX_PALETTE_MAX * GFX_VTX_PALETTE_FLOATS * sizeof(float), NULL,
+                 GL_STREAM_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, VTX_PALETTE_BINDING, opengl_palette_ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+#endif
+
     if (gl_core_profile || gl_es) {
         // warn user that funny things can happen
         sysLogPrintf(LOG_WARNING, "GL: using core profile or ES, watch out for errors");
@@ -1317,5 +1406,7 @@ struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_get_texture_filter,
     gfx_opengl_set_mipmap_filter,
     gfx_opengl_set_anisotropy_level,
-    gfx_opengl_get_max_anisotropy_level
+    gfx_opengl_get_max_anisotropy_level,
+    gfx_opengl_set_vertex_transform_palette,
+    gfx_opengl_set_cull_mode
 };

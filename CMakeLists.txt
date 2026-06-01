@@ -158,6 +158,19 @@ if(PD_GBI_FLOATS)
   add_definitions(-DGBI_FLOATS=1)
 endif()
 
+# EXPERIMENTAL: move vertex transform (and fog) from the CPU into the GPU vertex
+# shader, using a per-frame matrix palette (UBO) so draw-call batching across
+# matrices is preserved. CPU still does lighting/texgen. Default OFF: this is a
+# large renderer change validated for correctness but NOT yet benchmarked or
+# broadly play-tested. See docs/optimization-plan.md. Requires GBI_FLOATS.
+option(PD_GPU_VERTEX "EXPERIMENTAL: GPU vertex transform via matrix palette (needs GBI_FLOATS)" OFF)
+if(PD_GPU_VERTEX)
+  if(NOT PD_GBI_FLOATS)
+    message(FATAL_ERROR "PD_GPU_VERTEX requires PD_GBI_FLOATS=ON")
+  endif()
+  add_definitions(-DGPU_VERTEX=1)
+endif()
+
 if(TARGET_IS_64BIT)
   add_definitions(-DPLATFORM_64BIT=1)
 endif()

@@ -56,6 +56,16 @@ struct GfxRenderingAPI {
     void (*set_mipmap_filter)(enum MipmapFilteringMode mode);
 	void (*set_anisotropy_level)(int);
 	int (*get_max_anisotropy_level)(void);
+	// EXPERIMENTAL GPU_VERTEX path: upload the per-frame matrix/params palette
+	// (each entry is GFX_VTX_PALETTE_FLOATS floats) and set hardware cull mode
+	// (0 = none, 1 = cull front, 2 = cull back). No-ops unless GPU_VERTEX.
+	void (*set_vertex_transform_palette)(const float* data, size_t num_entries);
+	void (*set_cull_mode)(int mode);
 };
+
+// Layout of one matrix-palette entry, in floats: mat4 (16) + vec4 params
+// (fog_mul, fog_offset, aspect_scale, aspect_ofs).
+#define GFX_VTX_PALETTE_FLOATS   20
+#define GFX_VTX_PALETTE_MAX      192  // 192*20*4 = 15360 B, within the 16 KiB UBO guarantee
 
 #endif

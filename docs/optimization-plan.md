@@ -80,11 +80,45 @@ float→fixed-point→float round-trip done on every matrix load and improving p
 - *Revert:* `-DPD_GBI_FLOATS=OFF`.
 
 ### Deliberately NOT in this batch
-Allocator replacement (memp/mema → malloc+arena), native threaded audio, and the
-GPU vertex pipeline were left for separate work: a subtle bug there only manifests
-under extended gameplay / memory pressure / real GPU use that this environment
-cannot reproduce, so shipping them "to try" would burn tester time chasing
-unvalidated guesses rather than confirm a known-good change.
+Allocator replacement (memp/mema → malloc+arena) and native threaded audio were
+left for separate work: a subtle bug there only manifests under extended gameplay
+/ memory pressure that this environment cannot reproduce.
+
+---
+
+## GPU vertex transform (`PD_GPU_VERTEX`, default OFF) — EXPERIMENTAL
+
+Moves vertex **transform, aspect adjust, and fog** from the CPU into the GLSL
+vertex shader. CPU still does lighting/texgen (they use model-space normals and
+don't affect batching).
+
+**Why it's hard / why it's default-OFF:** fast3d pre-transforms vertices on the
+CPU so that objects with *different* matrices batch into one draw call (the flush
+never breaks on a matrix change). To preserve that with GPU transform, each
+`gSPVertex` records its transform state into a per-frame **matrix palette**
+(`{mat4, fog_mul, fog_offset, aspect_scale, aspect_ofs}`) uploaded as a **UBO**;
+the vertex shader looks up `palette[index]` (the index rides in `aVtxPos.w`, so the
+attribute layout is unchanged at 4 floats). invert-Y and the aspect divide are
+folded into the entry so the shader needs no extra uniforms. Culling moves to
+`glCullFace` (flush-on-cull-mode-change); trivial clip-reject is left to hardware.
+
+**Baseline constraint:** no SSBO on GL3.0/ES3.0/macOS-4.1, so a UBO is used,
+capped at `GFX_VTX_PALETTE_MAX = 192` entries (≤16 KiB). On overflow the batch is
+flushed and the palette reset — correct except that a vertex loaded before an
+overflow flush and reused after it can pick up a wrong matrix (rare; only very
+heavy frames). UBO syntax uses `GL_ARB_uniform_buffer_object` on the GLSL-130
+desktop path (core in ES 300).
+
+**Likely perf outcome:** for N64-era geometry, CPU transform is microseconds and
+the palette bookkeeping adds CPU work, so this may be a wash or a slight
+regression. It exists to be **benchmarked on real hardware**.
+
+**Validated here:** builds (default/`-O2`/sanitizer); the city-intro flyby and the
+rotating-logo (many per-frame matrices) render correctly vs the CPU path with no
+distortion/inversion; ASan + UBSan show **0 memory errors and 0 new UB** vs the
+baseline. **Needs a human to:** play through varied scenes (esp. heavy MP for the
+overflow caveat, and transparency/cull-sensitive geometry), check macOS/ES/Switch,
+and benchmark. Revert: `-DPD_GPU_VERTEX=OFF` (and it's off by default).
 
 ---
 
@@ -107,7 +141,7 @@ just x86. Options, cheapest first:
 5. ~~Skip the per-call fixed-point matrix decode via `GBI_FLOATS`.~~ **Done** (risky batch, default ON).
 
 ### Phase 3 — renderer modernization (high effort, *needs GPU runtime validation*)
-6. **Move vertex transform/lighting/texgen/fog to the GPU** (currently CPU, single-threaded, `gfx_pc.cpp:1055-1196`).
+6. **Move vertex transform/lighting/texgen/fog to the GPU** (currently CPU, single-threaded, `gfx_pc.cpp:1055-1196`). **Transform + fog done** behind `PD_GPU_VERTEX` (default OFF, experimental — see the GPU vertex transform section above). Lighting/texgen still CPU.
 7. **Stop per-draw `glBufferData` re-upload**; use persistent-mapped/larger batches and instancing.
 8. **Precompile/cache combiner pipelines** instead of runtime `sprintf`+`glCompileShader` per combiner.
 9. **Restore dropped mipmaps** (`gfx_pc.cpp:1351,1456`) and enable anisotropic filtering.

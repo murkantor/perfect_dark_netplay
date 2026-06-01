@@ -79,6 +79,12 @@ struct LoadedVertex {
     struct RGBA color;
     uint8_t fog;
     uint8_t clip_rej;
+#ifdef GPU_VERTEX
+    // Raw model-space position and the matrix-palette index for the transform
+    // that was active when this vertex was loaded (GPU does the transform).
+    float ox, oy, oz;
+    int32_t pal_index;
+#endif
 };
 
 static struct {
@@ -234,6 +240,16 @@ static struct GfxRenderingAPI* gfx_rapi;
 
 static uintptr_t segmentPointers[16];
 
+#ifdef GPU_VERTEX
+// Per-batch matrix/params palette uploaded to the GPU as a UBO (see
+// gfx_vtx_build_entry). The vertex shader transforms raw model-space positions
+// by palette[index] so many objects with different matrices still batch into
+// one draw call. Declared here because gfx_flush() references them.
+static float vtx_palette[GFX_VTX_PALETTE_MAX * GFX_VTX_PALETTE_FLOATS];
+static int vtx_palette_count;
+static int vtx_cull_mode = -2; // forces an initial set_cull_mode
+#endif
+
 struct FBInfo {
     uint32_t orig_width, orig_height;
     uint32_t applied_width, applied_height;
@@ -250,6 +266,13 @@ static constexpr float clampf(const float x, const float min, const float max) {
 
 static void gfx_flush(void) {
     if (buf_vbo_len > 0) {
+#ifdef GPU_VERTEX
+        // Make the matrix palette visible to the draw. It only grows within a
+        // frame (reset in gfx_start_frame), so absolute indices in buf_vbo stay valid.
+        if (vtx_palette_count > 0) {
+            gfx_rapi->set_vertex_transform_palette(vtx_palette, vtx_palette_count);
+        }
+#endif
         gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
         buf_vbo_len = 0;
         buf_vbo_num_tris = 0;
@@ -1052,19 +1075,77 @@ static void gfx_adjust_width_height_for_scale(uint32_t& width, uint32_t& height)
     }
 }
 
+#ifdef GPU_VERTEX
+// Build the palette entry for the currently-active transform state. Everything
+// the shader needs is folded in here so it requires no extra uniforms:
+//   [0..15] column-major mat4 (with the y row negated when the backend wants
+//           inverted Y, so the shader never branches on it)
+//   [16] fog_mul   [17] fog_offset
+//   [18] combined aspect scale (aspect_scale / aspect_ratio, or 1 for FB draws)
+//   [19] aspect_ofs
+static void gfx_vtx_build_entry(float* e) {
+    memcpy(e, rsp.MP_matrix, 16 * sizeof(float)); // column-major mat4
+    if (gfx_rapi->get_clip_parameters().invert_y) {
+        e[1] = -e[1]; e[5] = -e[5]; e[9] = -e[9]; e[13] = -e[13]; // negate y outputs
+    }
+    e[16] = (float) rsp.fog_mul;
+    e[17] = (float) rsp.fog_offset;
+    if (fbActive) {
+        e[18] = 1.0f; // gfx_adjust_x_for_aspect_ratio is identity for FB draws
+        e[19] = 0.0f;
+    } else {
+        e[18] = rsp.aspect_scale / gfx_current_dimensions.aspect_ratio;
+        e[19] = rsp.aspect_ofs;
+    }
+}
+
+// Return the palette index for the current transform state, appending a new
+// entry if it differs from the most recent one. On overflow, flush the pending
+// batch and start a fresh palette (heavy-scene caveat documented in
+// docs/optimization-plan.md).
+static int gfx_vtx_palette_index(void) {
+    float entry[GFX_VTX_PALETTE_FLOATS];
+    gfx_vtx_build_entry(entry);
+
+    if (vtx_palette_count > 0) {
+        const float* last = &vtx_palette[(vtx_palette_count - 1) * GFX_VTX_PALETTE_FLOATS];
+        if (memcmp(last, entry, sizeof(entry)) == 0) {
+            return vtx_palette_count - 1;
+        }
+    }
+
+    if (vtx_palette_count >= GFX_VTX_PALETTE_MAX) {
+        gfx_flush();
+        vtx_palette_count = 0;
+    }
+
+    memcpy(&vtx_palette[vtx_palette_count * GFX_VTX_PALETTE_FLOATS], entry, sizeof(entry));
+    return vtx_palette_count++;
+}
+#endif
+
 static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* vertices) {
     SUPPORT_CHECK(n_vertices <= MAX_VERTICES);
+
+#ifdef GPU_VERTEX
+    // The transform state is constant for the whole call, so resolve the palette
+    // index once. The GPU vertex shader applies the transform, aspect adjust and
+    // fog; here we only need lighting/texgen (which use model-space normals).
+    const int pal_index = gfx_vtx_palette_index();
+#endif
 
     for (size_t i = 0; i < n_vertices; i++, dest_index++) {
         const Vtx* v = &vertices[i];
         struct LoadedVertex* d = &rsp.loaded_vertices[dest_index];
 
+#ifndef GPU_VERTEX
         float x = v->v[0] * rsp.MP_matrix[0][0] + v->v[1] * rsp.MP_matrix[1][0] + v->v[2] * rsp.MP_matrix[2][0] + rsp.MP_matrix[3][0];
         float y = v->v[0] * rsp.MP_matrix[0][1] + v->v[1] * rsp.MP_matrix[1][1] + v->v[2] * rsp.MP_matrix[2][1] + rsp.MP_matrix[3][1];
         float z = v->v[0] * rsp.MP_matrix[0][2] + v->v[1] * rsp.MP_matrix[1][2] + v->v[2] * rsp.MP_matrix[2][2] + rsp.MP_matrix[3][2];
         float w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
 
         x = gfx_adjust_x_for_aspect_ratio(x, w);
+#endif
 
         short U = v->s * rsp.texture_scaling_factor.s >> 16;
         short V = v->t * rsp.texture_scaling_factor.t >> 16;
@@ -1150,6 +1231,19 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         d->u = U;
         d->v = V;
 
+#ifdef GPU_VERTEX
+        // Store raw model-space position + palette index; the GPU shader does the
+        // transform, the trivial-reject is left to hardware clipping, and fog is
+        // recomputed in the shader (d->fog is unused on this path).
+        d->ox = v->v[0];
+        d->oy = v->v[1];
+        d->oz = v->v[2];
+        d->pal_index = pal_index;
+        d->fog = rdp.fog_color.a;
+        // Keep the clip-space w (load-time matrix is correct here) for the
+        // detail-texture LOD heuristic in gfx_sp_tri1.
+        d->w = v->v[0] * rsp.MP_matrix[0][3] + v->v[1] * rsp.MP_matrix[1][3] + v->v[2] * rsp.MP_matrix[2][3] + rsp.MP_matrix[3][3];
+#else
         // trivial clip rejection
         d->clip_rej = 0;
         if (x < -w) {
@@ -1190,6 +1284,7 @@ static void gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx* verti
         } else {
             d->fog = rdp.fog_color.a;
         }
+#endif
 
         d->color.a = vcn->a; // can be required for SHADE_ALPHA even if fog is enabled
     }
@@ -1218,6 +1313,24 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct LoadedVertex* v3 = &rsp.loaded_vertices[vtx3_idx];
     struct LoadedVertex* v_arr[3] = { v1, v2, v3 };
 
+#ifdef GPU_VERTEX
+    // Clip-space coords aren't available on the CPU here; rely on hardware
+    // clipping and on glCullFace for backface culling (set just below).
+    {
+        int want_cull = 0; // 0 none, 1 front, 2 back, 3 both
+        switch (rsp.geometry_mode & G_CULL_BOTH) {
+            case G_CULL_FRONT: want_cull = 1; break;
+            case G_CULL_BACK:  want_cull = 2; break;
+            case G_CULL_BOTH:  return; // whole triangle culled
+            default:           want_cull = 0; break;
+        }
+        if (want_cull != vtx_cull_mode) {
+            gfx_flush();
+            gfx_rapi->set_cull_mode(want_cull);
+            vtx_cull_mode = want_cull;
+        }
+    }
+#else
     if ((rsp.extra_geometry_mode & G_NO_CLIPPING_EXT) == 0) {
         if (v1->clip_rej & v2->clip_rej & v3->clip_rej) {
             // The whole triangle lies outside the visible area
@@ -1259,6 +1372,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
                 return;
         }
     }
+#endif
 
     bool depth_test = ((rsp.geometry_mode & G_ZBUFFER) == G_ZBUFFER || (rdp.other_mode_l & G_ZS_PRIM) == G_ZS_PRIM) &&
                       ((rdp.other_mode_h & G_CYC_1CYCLE) == G_CYC_1CYCLE || (rdp.other_mode_h & G_CYC_2CYCLE) == G_CYC_2CYCLE);
@@ -1438,6 +1552,15 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
     struct GfxClipParameters clip_parameters = gfx_rapi->get_clip_parameters();
 
     for (int i = 0; i < 3; i++) {
+#ifdef GPU_VERTEX
+        // Raw model-space position + matrix-palette index; the shader transforms
+        // it and applies the z-range / y-invert clip parameters.
+        float w = v_arr[i]->w; // kept for the detail-texture LOD heuristic below
+        buf_vbo[buf_vbo_len++] = v_arr[i]->ox;
+        buf_vbo[buf_vbo_len++] = v_arr[i]->oy;
+        buf_vbo[buf_vbo_len++] = v_arr[i]->oz;
+        buf_vbo[buf_vbo_len++] = (float) v_arr[i]->pal_index;
+#else
         float z = v_arr[i]->z, w = v_arr[i]->w;
         if (clip_parameters.z_is_from_0_to_1) {
             z = (z + w) / 2.0f;
@@ -1447,6 +1570,7 @@ static void gfx_sp_tri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bo
         buf_vbo[buf_vbo_len++] = clip_parameters.invert_y ? -v_arr[i]->y : v_arr[i]->y;
         buf_vbo[buf_vbo_len++] = z;
         buf_vbo[buf_vbo_len++] = w;
+#endif
 
         for (int t = 0; t < 2; t++) {
             if (!used_textures[t]) {
@@ -2597,6 +2721,9 @@ extern "C" struct GfxRenderingAPI* gfx_get_current_rendering_api(void) {
 }
 
 extern "C" void gfx_start_frame(void) {
+#ifdef GPU_VERTEX
+    vtx_palette_count = 0;
+#endif
     gfx_wapi->handle_events();
     gfx_wapi->get_dimensions(&gfx_current_window_dimensions.width, &gfx_current_window_dimensions.height,
                              &gfx_current_window_position_x, &gfx_current_window_position_y);
