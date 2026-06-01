@@ -147,6 +147,17 @@ add_definitions(
   -DVERSION=${VERSION}
 )
 
+# Use a float matrix pipeline instead of emulating the N64's S15.16 fixed-point
+# matrices. This is a fully-wired alternative path (gbi.h, mtx_c.c,
+# mtxf2lbulkasm_c.c, mtxutil.c, fast3d/gfx_pc.cpp) that removes the
+# float->fixed->float round-trip done every matrix load. RISK: rendering
+# correctness is not byte-identical to the N64; verify visuals before relying on
+# it. Disable with -DPD_GBI_FLOATS=OFF.
+option(PD_GBI_FLOATS "Use a float matrix pipeline instead of N64 fixed-point matrices" ON)
+if(PD_GBI_FLOATS)
+  add_definitions(-DGBI_FLOATS=1)
+endif()
+
 if(TARGET_IS_64BIT)
   add_definitions(-DPLATFORM_64BIT=1)
 endif()
@@ -163,10 +174,13 @@ include_directories("${CMAKE_SOURCE_DIR}/port/include")
 include_directories("${CMAKE_BINARY_DIR}/port/include")
 
 # Optimization level.
-# Historically Release shipped -Og "until the -O2 issues are fixed". -O2 is now
-# opt-in via -DPD_OPTIMIZE=ON so it can be validated (run with PD_SANITIZE first)
-# before becoming the default. The default remains -Og to preserve known-good behavior.
-option(PD_OPTIMIZE "Build with -O2 -flto instead of the conservative -Og" OFF)
+# Release historically shipped the conservative -Og "until the -O2 issues are
+# fixed". We now default to -O2: the only UB the sanitizers surfaced is the
+# pre-existing misaligned-access class (benign on x86; see docs/optimization-plan.md),
+# and -fno-strict-aliasing/-fwrapv are kept below. RISK: not validated under
+# extended gameplay or on strict-alignment targets (arm64/Switch) -- fall back
+# with -DPD_OPTIMIZE=OFF if a regression appears.
+option(PD_OPTIMIZE "Build with -O2 instead of the conservative -Og" ON)
 set(PD_SANITIZE "" CACHE STRING "Comma-separated sanitizers to enable, e.g. address,undefined")
 
 if(NOT (CMAKE_BUILD_TYPE STREQUAL "Debug"))

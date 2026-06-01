@@ -21,12 +21,10 @@ timeout 30 xvfb-run -a -s "-screen 0 1280x720x24" \
 
 ## Implemented in this change (validated: builds in -Og/-O2/sanitizer, boots clean)
 
-### B1 enablement — opt-in optimization + sanitizer builds
+### B1 enablement — optimization + sanitizer builds
 `CMakeLists.txt` now exposes:
-- `-DPD_OPTIMIZE=ON` → `-O2` instead of the conservative `-Og`. **Default stays `-Og`** because `-O2` is not yet proven safe (see investigation below).
+- `-DPD_OPTIMIZE` → `-O2` instead of the conservative `-Og`. **Now defaults ON** (see the "risky batch" note below).
 - `-DPD_SANITIZE=address,undefined` → adds `-fsanitize=…`, frame pointers, and debug info to compile + link.
-
-Both are additive; the default build is unchanged.
 
 ### B1 investigation — *why* `-O2` was disabled ("until I fix the -O2 issues")
 Built with `-DPD_SANITIZE=address,undefined` and ran the headless smoke test. Result:
@@ -54,12 +52,50 @@ These were the only UB outside the alignment class, and clearing UB is a prerequ
 
 ---
 
+## Risky batch — landed, but REQUIRES HUMAN RUNTIME VALIDATION
+
+These are higher-impact changes that build, boot, run an attract-mode session,
+and pass ASan/UBSan **here**, but cannot be fully validated in a headless,
+software-GL, x86-only container. They are now **on by default** so a human can
+test them; each reverts with a single CMake flag.
+
+### `-O2` is now the default (`PD_OPTIMIZE=ON`)
+Replaces the conservative `-Og` that release had shipped for years.
+- *Validated here:* `-O2` build compiles, boots, runs attract mode, shuts down clean.
+- *Known hazard:* the 916-site misaligned-access UB class is benign on x86 but can
+  fault or be miscompiled on **strict-alignment targets (arm64 / Switch)** and is
+  exactly the kind of thing `-O2` auto-vectorization can expose. `-fno-strict-aliasing`
+  and `-fwrapv` are retained.
+- *Needs a human to:* play through real levels on x86, **and** build+run on arm64/Switch.
+- *Revert:* `-DPD_OPTIMIZE=OFF`.
+
+### Float matrix pipeline is now the default (`PD_GBI_FLOATS=ON`, `-DGBI_FLOATS`)
+Enables the fully-wired `GBI_FLOATS` path (`gbi.h` makes `Mtx` a `float[4][4]`;
+`mtxF2L`/`mtxF2LBulk`/`guMtxF2L`/`gfx_sp_matrix` become passthroughs), removing the
+float→fixed-point→float round-trip done on every matrix load and improving precision.
+- *Validated here:* compiles, boots, attract mode runs with no crash/NaN; **UBSan shows
+  no new UB and ASan shows no memory errors** vs the fixed-point path.
+- *Needs a human to:* confirm rendering is visually correct (geometry placement,
+  no jitter/warping) across several levels and split-screen.
+- *Revert:* `-DPD_GBI_FLOATS=OFF`.
+
+### Deliberately NOT in this batch
+Allocator replacement (memp/mema → malloc+arena), native threaded audio, and the
+GPU vertex pipeline were left for separate work: a subtle bug there only manifests
+under extended gameplay / memory pressure / real GPU use that this environment
+cannot reproduce, so shipping them "to try" would burn tester time chasing
+unvalidated guesses rather than confirm a known-good change.
+
+---
+
 ## Roadmap — remaining B items (not yet implemented)
 
 Ordered by impact-to-effort. Each notes the prerequisite and validation cost.
 
-### Phase 1 — unblock real optimization (high impact)
-1. **Fix the misalignment UB class**, then enable `-O2` by default. Options, cheapest first:
+### Phase 1 — make the now-default `-O2` safe everywhere (high impact)
+`-O2` is already the default (see risky batch above). The remaining work is to
+**fix the misalignment UB class** so it is safe on strict-alignment targets, not
+just x86. Options, cheapest first:
    - Read packed data through `memcpy`/byte accessors (or `__attribute__((packed))` views) at the load/parse boundary (`filesetup.c`, `segaudio.c`, `bnkf.c`, `n_load.c`, `model.c`) so the rest of the engine sees aligned structs.
    - Or copy setup/object data into aligned heap structs once at level load (also helps cache locality).
    - *Validation:* UBSan smoke test → 0 misalignment sites; then `-O2` boot + gameplay test on x86 **and** a strict-alignment target (arm64 Switch).
@@ -68,7 +104,7 @@ Ordered by impact-to-effort. Each notes the prerequisite and validation cost.
 ### Phase 2 — remove per-frame N64 ceremony (medium effort, *needs runtime validation*)
 3. **Delete the `OSSched` RSP/RDP arbitration on PC** (`src/lib/sched.c`, `port/src/pdsched.c`) and run audio on its own thread (the PC `amgrFrame` path at `audiomgr.c:324` is half-built). Submit gfx directly to the backend.
 4. **Strip cache ops / `osVirtualToPhysical` / DMA chunking** on PC (already collapses to `bcopy`).
-5. **Skip the per-call fixed-point matrix decode** (`gfx_pc.cpp:986`) via the existing `GBI_FLOATS` path.
+5. ~~Skip the per-call fixed-point matrix decode via `GBI_FLOATS`.~~ **Done** (risky batch, default ON).
 
 ### Phase 3 — renderer modernization (high effort, *needs GPU runtime validation*)
 6. **Move vertex transform/lighting/texgen/fog to the GPU** (currently CPU, single-threaded, `gfx_pc.cpp:1055-1196`).
