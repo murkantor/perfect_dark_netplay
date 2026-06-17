@@ -13,9 +13,6 @@
 #ifndef PLATFORM_N64
 #include "system.h"
 #endif
-#ifdef NXDK
-#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
-#endif
 
 /**
  * This file contains functions relating to ROM asset files.
@@ -4323,9 +4320,6 @@ void *fileLoadToNew(s32 filenum, u32 method, u32 loadtype)
 		// "timing/pressure-dependent" server crash). Callers that can skip
 		// (bodyAllocateModel → botmgrAllocateBot) handle the NULL.
 		{
-#ifdef NXDK
-			xboxTracef("PDBOOT: fileLoadToNew f%d romdataFileLoad", filenum);
-#endif
 			u8 *romdataFileLoad(s32 fileNum, u32 *outSize); // port/include/romdata.h
 			if (romdataFileLoad(filenum, NULL) == NULL) {
 				sysLogPrintf(LOG_ERROR,
@@ -4360,9 +4354,6 @@ void *fileLoadToNew(s32 filenum, u32 method, u32 loadtype)
 			info->loadedsize = 0;
 		}
 #endif
-#ifdef NXDK
-		xboxTracef("PDBOOT: fileLoadToNew f%d getsize (cur=%d)", filenum, (s32)info->loadedsize);
-#endif
 		if (info->loadedsize == 0) {
 			info->loadedsize = (fileGetInflatedSize(filenum, loadtype) + 0x20) & 0xfffffff0;
 
@@ -4371,18 +4362,9 @@ void *fileLoadToNew(s32 filenum, u32 method, u32 loadtype)
 			}
 		}
 
-#ifdef NXDK
-		xboxTracef("PDBOOT: fileLoadToNew f%d mempAlloc(%d)", filenum, (s32)info->loadedsize);
-#endif
 		ptr = mempAlloc(info->loadedsize, MEMPOOL_STAGE);
-#ifdef NXDK
-		xboxTracef("PDBOOT: fileLoadToNew f%d sz=%d ptr=%p fileLoad", filenum, (s32)info->loadedsize, ptr);
-#endif
 		info->allocsize = info->loadedsize;
 		fileLoad(ptr, info->loadedsize, (uintptr_t*)&g_FileTable[filenum], info);
-#ifdef NXDK
-		xboxTracef("PDBOOT: fileLoadToNew f%d loaded", filenum);
-#endif
 
 		if (method != FILELOADMETHOD_EXTRAMEM) {
 			mempRealloc(ptr, info->loadedsize, MEMPOOL_STAGE);

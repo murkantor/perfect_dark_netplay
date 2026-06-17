@@ -1000,37 +1000,37 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 
 	u8 *out = NULL;
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: romdataFileLoad f%d src=%d name=%p", fileNum,
-		(s32)fileSlots[g_ModNum][fileNum].source, (void *)fileSlots[g_ModNum][fileNum].name);
-#endif
-
 	// try to load external file
 	if (fileSlots[g_ModNum][fileNum].source == SRC_UNLOADED) {
-		char tmp[FS_MAXPATH] = { 0 };
-		snprintf(tmp, sizeof(tmp), ROMDATA_FILEDIR "/%s", fileSlots[g_ModNum][fileNum].name);
-#ifdef NXDK
-		xboxTracef("PDBOOT: romdataFileLoad f%d fsFileSize '%s'", fileNum, tmp);
-#endif
+		const char *extname = fileSlots[g_ModNum][fileNum].name;
+		// A NULL filename means there's no external override to look for. Guard it:
+		// snprintf("%s", NULL) is undefined -- glibc/desktop prints "(null)" (so the
+		// bogus "files/(null)" path just misses and falls back to ROM), but NXDK's
+		// libc faults on it. Nameless files are common (lang/stage files), so this
+		// would otherwise crash every one of them on Xbox.
+		if (extname) {
+			char tmp[FS_MAXPATH] = { 0 };
+			snprintf(tmp, sizeof(tmp), ROMDATA_FILEDIR "/%s", extname);
 
-		// All Solos in Multi Mod: do not load in solo, coop, counter-op (excluding playable skedar model)
-		if (fsFileSize(tmp) > 0 && (!g_NotLoadMod || fileNum == FILE_CSKEDAR2 || fileNum == FILE_GHAND_SKEDAR)) {
-			u32 size = 0;
+			// All Solos in Multi Mod: do not load in solo, coop, counter-op (excluding playable skedar model)
+			if (fsFileSize(tmp) > 0 && (!g_NotLoadMod || fileNum == FILE_CSKEDAR2 || fileNum == FILE_GHAND_SKEDAR)) {
+				u32 size = 0;
 
-			out = fsFileLoad(tmp, &size);
+				out = fsFileLoad(tmp, &size);
 
-			if (out && size) {
-				sysLogPrintf(LOG_NOTE, "file %d (%s) loaded externally (g_ModNum: %d)", fileNum, fileSlots[g_ModNum][fileNum].name, g_ModNum);
-				fileSlots[g_ModNum][fileNum].data = out;
-				fileSlots[g_ModNum][fileNum].size = size;
-				fileSlots[g_ModNum][fileNum].source = SRC_EXTERNAL;
-				// external file; do not apply patches to this
-				fileSlots[g_ModNum][fileNum].numpatches = 0;
+				if (out && size) {
+					sysLogPrintf(LOG_NOTE, "file %d (%s) loaded externally (g_ModNum: %d)", fileNum, extname, g_ModNum);
+					fileSlots[g_ModNum][fileNum].data = out;
+					fileSlots[g_ModNum][fileNum].size = size;
+					fileSlots[g_ModNum][fileNum].source = SRC_EXTERNAL;
+					// external file; do not apply patches to this
+					fileSlots[g_ModNum][fileNum].numpatches = 0;
+				}
 			}
 		}
 
 		if (fileSlots[g_ModNum][fileNum].source == SRC_UNLOADED) {
-			// tried and failed, fall back to ROM
+			// tried and failed (or no external name), fall back to ROM
 			fileSlots[g_ModNum][fileNum].source = SRC_ROM;
 		}
 	}
@@ -1043,9 +1043,6 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 		*outSize = fileSlots[g_ModNum][fileNum].size;
 	}
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: romdataFileLoad f%d -> %p", fileNum, (void *)out);
-#endif
 	return out;
 }
 
