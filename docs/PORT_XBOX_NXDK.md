@@ -189,6 +189,12 @@ in `nxdk_copy_framebuffer`.
 - [ ] **libc gaps** — threads (`port/src/system.c`), filesystem/FATX paths + `D:`
       (`fs.c`), signals/backtrace (`crash.c`, `headless.c`). Guard with
       `#ifdef PLATFORM_NXDK`, mirroring the `DEDICATED_SERVER`/Switch stub idiom.
+- [~] **zlib** — NXDK bundles it (`libzlib.lib` in the sample link lines), but
+      `find_package(ZLIB)` can't see it under the win32-like sysroot. The `XBOX_NXDK`
+      branch in `CMakeLists.txt` now points `ZLIB_LIBRARY`/`ZLIB_INCLUDE_DIR` at
+      NXDK's copy directly (probing `$NXDK_DIR/lib/libzlib.lib` + `lib/zlib/zlib.h`,
+      with `-DZLIB_LIBRARY=`/`-DZLIB_INCLUDE_DIR=` overrides). Confirm the exact paths
+      on your install.
 - [ ] **64 MB budget** — measure boot footprint (`romdataInit`, gfx/vtx pools, audio).
 
 ## Files touched (scaffolding)

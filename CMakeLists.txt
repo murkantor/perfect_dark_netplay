@@ -280,7 +280,37 @@ if(NOT DEDICATED_SERVER)
 endif()
 
 # ZLib
-find_package(ZLIB REQUIRED)
+if(XBOX_NXDK)
+  # NXDK bundles zlib (the sample link lines pull in libzlib.lib), but find_package
+  # can't locate it under the win32-like sysroot, so point at NXDK's copy directly.
+  # zlib.h lives in NXDK's zlib component dir; the built archive is in lib/. If your
+  # NXDK lays these out differently, override -DZLIB_INCLUDE_DIR / -DZLIB_LIBRARY.
+  if(NOT ZLIB_LIBRARY)
+    foreach(_z "$ENV{NXDK_DIR}/lib/libzlib.lib" "$ENV{NXDK_DIR}/lib/zlib/libzlib.lib")
+      if(EXISTS "${_z}")
+        set(ZLIB_LIBRARY "${_z}")
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(NOT ZLIB_INCLUDE_DIR)
+    foreach(_zi "$ENV{NXDK_DIR}/lib/zlib" "$ENV{NXDK_DIR}/lib")
+      if(EXISTS "${_zi}/zlib.h")
+        set(ZLIB_INCLUDE_DIR "${_zi}")
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(NOT ZLIB_LIBRARY OR NOT ZLIB_INCLUDE_DIR)
+    message(FATAL_ERROR
+      "XBOX_NXDK: could not locate NXDK's zlib. Set -DZLIB_LIBRARY=<.../libzlib.lib> "
+      "and -DZLIB_INCLUDE_DIR=<dir containing zlib.h>. "
+      "(found ZLIB_LIBRARY='${ZLIB_LIBRARY}', ZLIB_INCLUDE_DIR='${ZLIB_INCLUDE_DIR}')")
+  endif()
+  message(STATUS "zlib (NXDK): ${ZLIB_LIBRARY} / ${ZLIB_INCLUDE_DIR}")
+else()
+  find_package(ZLIB REQUIRED)
+endif()
 if(ZLIB_INCLUDE_DIR)
   include_directories(SYSTEM "${ZLIB_INCLUDE_DIR}")
 endif()
