@@ -1022,6 +1022,14 @@ void mpSetDefaultNamesIfEmpty(void)
 {
 	s32 i;
 
+#ifdef NXDK
+	{
+		void xboxTracef(const char *fmt, ...);
+		xboxTracef("PDBOOT: mpSetDefaultNames L_MISC_438=%p L_MISC_437=%p",
+			(void *)langGet(L_MISC_438), (void *)langGet(L_MISC_437));
+	}
+#endif
+
 	// Setup file name
 	if (g_MpSetup.name[0] == '\0') {
 		strcpy(g_MpSetup.name, langGet(L_MISC_438)); // empty string
