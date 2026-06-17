@@ -2,7 +2,16 @@
 #define IN_MATH_H
 
 #ifndef PLATFORM_N64
+#ifdef NXDK
+// NXDK ships <math.h> in a pdclib include dir that its toolchain lists *before*
+// src/include on the -I path, so #include_next (forward-only, and clang de-dups
+// the later copy the toolchain also adds) can never reach it -> "file not found".
+// A plain angle include searches from the top of the path and resolves to
+// pdclib's real math.h (earlier than this wrapper), giving the prototypes.
+#include <math.h>
+#else
 #include_next <math.h>
+#endif
 #undef M_PI
 #undef M_TAU
 // HACK: for some reason the #include_next above doesn't really do anything, so
