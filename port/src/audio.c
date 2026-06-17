@@ -35,6 +35,16 @@ s32 audioInit(void)
 		return 0;
 	}
 
+#ifdef NXDK
+	// TODO(xbox): native Xbox audio (XAudio via nxdk). nxdk-sdl3's SDL audio init
+	// crashes/hangs here, the same way the SDL gamepad path does. Skip it so boot
+	// reaches the render loop -- `stream` stays NULL and the per-frame audio path
+	// already guards on that (see the headless note above). No sound until native
+	// audio is wired.
+	sysLogPrintf(LOG_NOTE, "audio: skipping SDL audio on xbox (TODO native audio)");
+	return 0;
+#endif
+
 	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
 		sysLogPrintf(LOG_ERROR, "SDL audio init error: %s", SDL_GetError());
 		return -1;
