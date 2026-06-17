@@ -820,6 +820,16 @@ s32 inputInit(void)
 		return 0;
 	}
 
+#ifdef NXDK
+	// TODO(xbox): native Xbox controller input. nxdk-sdl3's SDL gamepad path
+	// crashes/hangs here (USB hidapi enumeration / SDL not initialised the way its
+	// Xbox entry expects). Skip the whole SDL input bring-up for now so boot reaches
+	// the render loop; input is dead until native XInput is wired. inputUpdate /
+	// inputReadController already no-op when no controllers are open.
+	NXDK_INPUT_TRACE("input: skipped on xbox (TODO native input)");
+	return 0;
+#endif
+
 	// Set SDL hints before initializing the controller subsystem.
 	// SDL3 dropped all the version gates; hints that may not survive future
 	// SDL3 releases stay wrapped in #ifdef (they are just string macros).
