@@ -521,8 +521,10 @@ void mainLoop(void)
 
 		var8005d9c4 = 0;
 
+		PDBOOT_TRACE("mainLoop: mempResetPool 7/STAGE");
 		mempResetPool(MEMPOOL_7);
 		mempResetPool(MEMPOOL_STAGE);
+		PDBOOT_TRACE("mainLoop: filesStop");
 		filesStop(4);
 
 		if (argFindByPrefix(1, "-ma")) {
@@ -532,9 +534,15 @@ void mainLoop(void)
 			}
 		}
 
+#ifdef NXDK
+		xboxTracef("PDBOOT: mainLoop: memaReset (%d bytes)", (s32)g_MainMemaHeapSize);
+#endif
 		memaReset(mempAlloc(g_MainMemaHeapSize, MEMPOOL_STAGE), g_MainMemaHeapSize);
+		PDBOOT_TRACE("mainLoop: langReset");
 		langReset(g_StageNum);
+		PDBOOT_TRACE("mainLoop: playermgrReset");
 		playermgrReset();
+		PDBOOT_TRACE("mainLoop: post playermgrReset");
 
 		if (g_StageNum >= STAGE_TITLE) {
 			numplayers = 0;
