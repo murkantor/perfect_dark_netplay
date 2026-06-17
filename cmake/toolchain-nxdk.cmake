@@ -8,12 +8,19 @@
 #         -DROMID=ntsc-final -B build_xbox .
 #   cmake --build build_xbox
 #
-# STATUS: scaffolding skeleton. NXDK natively builds via its own GNU-Make rules, so
-# the exact clang target triple, flag set, lib search paths and the PE->XBE step
-# must be confirmed against your NXDK install (and Ryzee119's CMake setup, if any).
-# Every value below sourced from $ENV{NXDK_DIR} is a starting point -- see the
-# "Milestone 0 / NXDK <-> CMake integration" and "packaging" notes in
-# docs/PORT_XBOX_NXDK.md and fill in / correct as you bring it up on hardware/xemu.
+# DESIGN: rather than re-derive clang's Xbox target triple / freestanding flags /
+# include roots by hand (and drift from whatever NXDK actually does), this file
+# drives NXDK's own `nxdk-cc` / `nxdk-cxx` / `nxdk-as` wrapper scripts as the CMake
+# compilers. Those wrappers already bake in the verified invocation:
+#
+#   clang -target i386-pc-win32 -march=pentium3 -fuse-ld=nxdk-link \
+#         -ffreestanding -nostdlib -fno-builtin \
+#         -I$NXDK_DIR/lib ... -isystem $NXDK_DIR/lib/pdclib/include ... \
+#         -DNXDK -D__STDC__=1 -U__STDC_NO_THREADS__
+#
+# so the project build matches the (known-good) `nxdk-cc`-driven triangle/sample
+# builds exactly. The wrappers expand ${NXDK_DIR} internally, so NXDK_DIR MUST be
+# exported in the environment (tools/buildscripts/xbox_nxdk.sh does this).
 
 if(NOT DEFINED ENV{NXDK_DIR})
   message(FATAL_ERROR "toolchain-nxdk.cmake: set the NXDK_DIR environment variable to your NXDK checkout")
@@ -31,29 +38,50 @@ set(CMAKE_SYSTEM_PROCESSOR i386)
 set(XBOX_NXDK TRUE CACHE BOOL "Building for the Original Xbox via NXDK" FORCE)
 
 # --- Compilers -------------------------------------------------------------------
-# NXDK builds with clang/clang++ + lld. Confirm the wrapper/flags NXDK expects;
-# the canonical reference is $NXDK_DIR/Makefile (CFLAGS/CXXFLAGS/NXDK_CFLAGS).
-find_program(NXDK_CC  NAMES clang)
-find_program(NXDK_CXX NAMES clang++)
-find_program(NXDK_LD  NAMES lld-link ld.lld lld)
+# NXDK ships wrapper scripts in $NXDK_DIR/bin that invoke clang/clang++ with the
+# full Xbox flag set (target triple, -ffreestanding, -nostdlib, the nxdk/pdclib/
+# winapi include roots, -DNXDK, the nxdk-link linker, ...). Use them verbatim so the
+# project build is byte-for-byte the same invocation as the verified sample builds.
+find_program(NXDK_CC  NAMES nxdk-cc  PATHS "${NXDK_DIR}/bin" NO_DEFAULT_PATH)
+find_program(NXDK_CXX NAMES nxdk-cxx PATHS "${NXDK_DIR}/bin" NO_DEFAULT_PATH)
+find_program(NXDK_AS  NAMES nxdk-as  PATHS "${NXDK_DIR}/bin" NO_DEFAULT_PATH)
+find_program(NXDK_LIB NAMES nxdk-lib PATHS "${NXDK_DIR}/bin" NO_DEFAULT_PATH)
 if(NOT NXDK_CC OR NOT NXDK_CXX)
-  message(FATAL_ERROR "toolchain-nxdk.cmake: clang/clang++ not found (NXDK uses the LLVM toolchain)")
+  message(FATAL_ERROR
+    "toolchain-nxdk.cmake: nxdk-cc / nxdk-cxx not found in ${NXDK_DIR}/bin -- "
+    "bootstrap NXDK (run its 'make' once) so the wrapper scripts are generated.")
 endif()
 set(CMAKE_C_COMPILER   "${NXDK_CC}")
 set(CMAKE_CXX_COMPILER "${NXDK_CXX}")
+if(NXDK_AS)
+  set(CMAKE_ASM_COMPILER "${NXDK_AS}")
+endif()
 
-# NXDK target + freestanding flags. THESE ARE PLACEHOLDERS to reconcile with the
-# NXDK Makefile (target triple, -ffreestanding, -nostdlib, the nxdk/pdclib include
-# roots, -D NXDK, the XBE entry, etc.). Treat as the first thing to fix on bring-up.
-set(NXDK_TARGET_TRIPLE "i386-pc-win32")
-set(NXDK_COMMON_FLAGS
-  "--target=${NXDK_TARGET_TRIPLE} -march=pentium3 -fno-builtin -DNXDK"
-  "-I${NXDK_DIR}/lib -I${NXDK_DIR}/lib/pdclib/include -I${NXDK_DIR}/lib/winapi"
-  "-I${NXDK_DIR}/lib/xboxrt/include -I${NXDK_DIR}/lib/sdl/SDL3/include")
-string(REPLACE ";" " " NXDK_COMMON_FLAGS "${NXDK_COMMON_FLAGS}")
+# clang underneath these wrappers targets i386-pc-win32; help CMake's compiler-id
+# step pick clang (the wrapper has no -- version banner of its own).
+set(CMAKE_C_COMPILER_ID   Clang)
+set(CMAKE_CXX_COMPILER_ID Clang)
 
-set(CMAKE_C_FLAGS_INIT   "${NXDK_COMMON_FLAGS}")
-set(CMAKE_CXX_FLAGS_INIT "${NXDK_COMMON_FLAGS}")
+# NXDK's link (nxdk-link == lld-link) emits a PE .exe (the sample builds produce
+# main.exe). CMAKE_SYSTEM_NAME Generic would otherwise give an empty suffix; pin it
+# to .exe so the link output matches the ${BIN_NAME}.exe the cxbe POST_BUILD step in
+# CMakeLists.txt feeds into the PE->XBE conversion.
+set(CMAKE_EXECUTABLE_SUFFIX     ".exe")
+set(CMAKE_EXECUTABLE_SUFFIX_C   ".exe")
+set(CMAKE_EXECUTABLE_SUFFIX_CXX ".exe")
+
+# nxdk-lib drives llvm-lib for static archives; the link of the final .exe goes
+# through the compiler driver (the wrappers carry -fuse-ld=nxdk-link), so we do NOT
+# set a separate CMAKE_LINKER here.
+if(NXDK_LIB)
+  set(CMAKE_AR "${NXDK_LIB}" CACHE FILEPATH "NXDK static archiver (llvm-lib)" FORCE)
+endif()
+
+# The wrappers already carry every required flag; keep our additions empty so we
+# don't shadow or duplicate them. Per-target include/define needs (SDL3, ROM defs)
+# are added by CMakeLists.txt's XBOX_NXDK branch, not here.
+set(CMAKE_C_FLAGS_INIT   "")
+set(CMAKE_CXX_FLAGS_INIT "")
 
 # Don't try to run/link test executables during compiler detection (no host runtime).
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
@@ -65,6 +93,9 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# The final PE->XBE conversion is a POST_BUILD step in CMakeLists.txt (cxbe). Point
-# CXBE here if it isn't at $NXDK_DIR/tools/cxbe/cxbe.
-# set(CXBE "${NXDK_DIR}/tools/cxbe/cxbe" CACHE FILEPATH "NXDK PE->XBE tool")
+# The final PE->XBE conversion is a POST_BUILD step in CMakeLists.txt. cxbe lives in
+# the NXDK tools tree; expose its path so CMakeLists.txt can invoke it.
+find_program(NXDK_CXBE NAMES cxbe PATHS "${NXDK_DIR}/tools/cxbe" "${NXDK_DIR}/bin" NO_DEFAULT_PATH)
+if(NXDK_CXBE)
+  set(CXBE "${NXDK_CXBE}" CACHE FILEPATH "NXDK PE->XBE tool")
+endif()

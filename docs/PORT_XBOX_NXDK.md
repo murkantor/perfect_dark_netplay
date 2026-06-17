@@ -29,8 +29,9 @@ export NXDK_DIR=/path/to/nxdk
 # -> build_xbox/default.xbe  (run in xemu or on hardware)
 ```
 
-Internally this drives `cmake/toolchain-nxdk.cmake` (sets `XBOX_NXDK`, points clang
-at the NXDK target) and the `XBOX_NXDK` branches in `CMakeLists.txt`.
+Internally this drives `cmake/toolchain-nxdk.cmake` (sets `XBOX_NXDK`, uses NXDK's
+own `nxdk-cc`/`nxdk-cxx`/`nxdk-as` wrappers as the compilers) and the `XBOX_NXDK`
+branches in `CMakeLists.txt`. `NXDK_DIR` must be exported (the wrappers expand it).
 
 ## Milestones
 
@@ -150,10 +151,18 @@ in `nxdk_copy_framebuffer`.
 
 - [ ] **NXDK predefine** — is it `NXDK`? (`platform.h` + toolchain assume `-DNXDK` /
       `defined(NXDK)`.)
-- [ ] **CMake toolchain** — exact clang **target triple**, freestanding flags,
-      include roots, and link rules. The skeleton in `cmake/toolchain-nxdk.cmake` is
-      a starting point reconciled against `$NXDK_DIR/Makefile`. Check if Ryzee119/nxdk
-      ships a CMake toolchain to base on instead.
+- [x] **CMake toolchain** — RESOLVED. `cmake/toolchain-nxdk.cmake` no longer guesses
+      the clang triple/flags: it drives NXDK's own `$NXDK_DIR/bin/nxdk-cc` /
+      `nxdk-cxx` / `nxdk-as` wrapper scripts as the CMake compilers, so the project's
+      compile/link invocation is byte-for-byte the verified one (target
+      `i386-pc-win32`, `-march=pentium3`, `-fuse-ld=nxdk-link`, `-ffreestanding
+      -nostdlib`, the pdclib/winapi/xboxrt include roots, `-DNXDK`). Static archives
+      go through `nxdk-lib`; the final-link `.exe` suffix is pinned so the `cxbe`
+      POST_BUILD finds `${BIN_NAME}.exe`. `cxbe` is auto-located under
+      `$NXDK_DIR/tools/cxbe`. NXDK does ship its own `bin/nxdk-cmake` wrapper (a thin
+      `cmake -DCMAKE_TOOLCHAIN_FILE=...` shim); we keep our own toolchain file so the
+      `XBOX_NXDK` flag + find-root + SDL3 branch stay under our control. Still needs a
+      real configure+build on the NXDK install to shake out per-target flag gaps.
 - [ ] **PE→XBE step** — `cxbe` path/flags in the `CMakeLists.txt` POST_BUILD (NXDK
       normally drives this from its Makefile). Output: `default.xbe`.
 - [ ] **nxdk-sdl3** — does it export an SDL3 CMake config (else the manual include
