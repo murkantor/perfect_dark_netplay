@@ -20,11 +20,11 @@
 #endif
 
 #ifdef NXDK
-// Temporary boot-bring-up tracing: the ROM load path is invisible via sysLogPrintf
-// on NXDK (stdout/console not surfaced during boot), so trace the resolved fopen
-// path + result to the debug overlay. Remove once boot is solid.
+// Temporary boot-bring-up tracing: routed through xboxTracef so the ROM load path is
+// captured both on the debug overlay and in E:\pdboot.log (see port/src/xboxtrace.c).
 #include <hal/debug.h>
-#define NXDK_FS_TRACE(...) debugPrint(__VA_ARGS__)
+#include "xboxtrace.h"
+#define NXDK_FS_TRACE(...) xboxTracef(__VA_ARGS__)
 
 // For the boot-time memory readout before the big ROM alloc. Declared extern to
 // avoid pulling video.h (and SDL) into fs.c.

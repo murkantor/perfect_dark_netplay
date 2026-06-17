@@ -70,10 +70,11 @@ __attribute__((dllexport)) u32 AmdPowerXpressRequestHighPerformance = 1;
 #define USEC_IN_SEC 1000000ULL
 
 #ifdef NXDK
-// Temporary boot-bring-up tracing: render a marker to the screen via debugPrint
-// (a video mode is forced in main() before this runs). Remove once boot is solid.
+// Temporary boot-bring-up tracing: routed through xboxTraceStage so it also lands in
+// E:\pdboot.log (see port/src/xboxtrace.c). Remove once boot is solid.
 #include <hal/debug.h>
-#define NXDK_BOOT_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#include "xboxtrace.h"
+#define NXDK_BOOT_TRACE(s) xboxTraceStage(s)
 #else
 #define NXDK_BOOT_TRACE(s) ((void)0)
 #endif

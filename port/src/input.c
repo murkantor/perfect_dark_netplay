@@ -804,7 +804,8 @@ static inline void inputLoadBinds(void)
 
 #ifdef NXDK
 #include <hal/debug.h>
-#define NXDK_INPUT_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#include "xboxtrace.h"
+#define NXDK_INPUT_TRACE(s) xboxTraceStage(s)
 #else
 #define NXDK_INPUT_TRACE(s) ((void)0)
 #endif

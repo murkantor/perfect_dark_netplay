@@ -26,6 +26,7 @@
 #include <pbkit/pbkit.h>
 #include <hal/video.h>
 #include <hal/debug.h>
+#include "../include/xboxtrace.h"
 
 #include "gfx_rendering_api.h"
 #include "gfx_window_manager_api.h"
@@ -409,13 +410,13 @@ static void wm_init(const struct GfxWindowInitSettings *settings) {
     XVideoSetMode((int)g.width, (int)g.height, 32, REFRESH_DEFAULT);
     int err = pb_init();
     if (err) {
-        debugPrint("PDBOOT: pb_init FAILED %d\n", err);
+        xboxTracef("PDBOOT: pb_init FAILED %d", err);
         return;
     }
     pb_show_front_screen();
     g.width = (uint32_t)pb_back_buffer_width();
     g.height = (uint32_t)pb_back_buffer_height();
-    debugPrint("PDBOOT: pb_init ok %dx%d\n", (int)g.width, (int)g.height);
+    xboxTracef("PDBOOT: pb_init ok %dx%d", (int)g.width, (int)g.height);
 }
 
 static void wm_close(void) { pb_kill(); }
@@ -491,7 +492,7 @@ static bool wm_start_frame(void) {
     static int s_first_frame = 1;
     if (s_first_frame) {
         s_first_frame = 0;
-        debugPrint("PDBOOT: RENDER LOOP REACHED (frame 0)\n");
+        xboxTraceStage("RENDER LOOP REACHED (frame 0)");
         for (;;) { /* halt with the marker on screen */ }
     }
     pb_wait_for_vbl();

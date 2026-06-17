@@ -121,17 +121,12 @@ static void cleanup(void)
 #include <hal/debug.h>
 #include <hal/video.h>
 #include "xboxtrace.h"
-// Boot-stage tracing for the Original Xbox bring-up. xboxTraceStage() accumulates
-// every stage and reprints the whole list on a cleared screen, so the frozen screen
-// always shows the complete numbered sequence with the hung stage as the last line --
-// no delays (every timer-based pacing we tried hangs or no-ops after pb_init). Also
-// appends to "pdboot.log" so the trace can be read back over FTP / a file manager.
-// Remove this scaffolding once boot is solid. See docs/PORT_XBOX_NXDK.md.
-#define XBOX_BOOT_TRACE(stage) do { \
-		xboxTraceStage(stage); \
-		FILE *_bt = fopen("pdboot.log", "a"); \
-		if (_bt) { fputs("PDBOOT: " stage "\n", _bt); fclose(_bt); } \
-	} while (0)
+// Boot-stage tracing for the Original Xbox bring-up. xboxTraceStage() writes each
+// stage to the debug overlay AND appends it to E:\pdboot.log on a writable partition
+// (see port/src/xboxtrace.c), so the full ordered trace can be pulled off real
+// hardware over FTP even though the on-screen text flashes/scrolls. Remove this
+// scaffolding once boot is solid. See docs/PORT_XBOX_NXDK.md.
+#define XBOX_BOOT_TRACE(stage) xboxTraceStage(stage)
 #else
 #define XBOX_BOOT_TRACE(stage) ((void)0)
 #endif
