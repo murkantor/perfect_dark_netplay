@@ -5,9 +5,12 @@ Experimental OG Xbox port on branch **`port-net-xbox`** (branched from
 **NXDK** (https://github.com/XboxDev/nxdk) + **SDL3 for NXDK**
 (https://github.com/Ryzee119/nxdk-sdl3).
 
-> **Status: scaffolding (Milestone 1 in progress).** Build-system plumbing is in;
-> the NXDK toolchain specifics and the renderer are unproven. Nothing here is
-> verified on hardware/xemu yet. This doc is the living checklist.
+> **Status: BOOTS END-TO-END; NV2A present (Phase 0) verified (2026-06-17).** The
+> engine boots all the way through init + ROM load + `lvReset` (stage load) into the
+> native `gfx_nxdk` render loop, which clears the back buffer and presents every frame
+> — **confirmed by a blue screen + ticking frame counter in xemu**. The renderer still
+> draws no geometry (`draw_triangles`/textures/combiner are no-op stubs) — that's the
+> next milestone. Verified in xemu (64 MB). This doc is the living checklist.
 
 ## Why / target
 
@@ -68,6 +71,36 @@ Internally this drives `cmake/toolchain-nxdk.cmake`, which `include()`s NXDK's o
   `videoInit` and runs but **draws nothing** until the backend is implemented — that
   implementation (draw_triangles via pbkit, the N64 colour-combiner → NV2A register
   combiners, textures, framebuffers, depth/blend) is the real M2 work, now starting.
+
+  **M2a — boot bring-up to the render loop (DONE 2026-06-17).** With the native
+  backend selected, on-screen + `E:\pdboot.log` `PDBOOT:` tracing (see "Boot trace"
+  below) walked the *entire* boot and flushed out a chain of NXDK-specific (and a few
+  platform-general) bugs, each fixed:
+  - **`pb_init` reconfigures timer state** → `thrd_sleep` *and*
+    `KeStallExecutionProcessor` hang afterward, and an `rdtsc` spin doesn't pace under
+    xemu. Lesson: don't pace the boot trace with timers; the trace is now a plain
+    `debugPrint` append + a per-line `E:\pdboot.log` write (`port/src/xboxtrace.c`).
+  - **`debugClearScreen` faults once pbkit owns the framebuffer** (post-`pb_init`);
+    plain `debugPrint` is fine. So the on-screen trace must not clear/over-scroll.
+  - **NXDK file API needs BACKSLASH paths** — forward slashes hung `fopen` mid-call.
+    `fsOsPath()` (`fs.c`) translates `/`→`\` at every fs open/remove boundary.
+  - **NXDK `malloc` hangs on large single allocations** (the 32 MB ROM buffer, the
+    ~8 MB memp heap, the inflated data segment) despite plenty of free RAM. Route
+    allocations ≥1 MB through `MmAllocateContiguousMemory`, tracked so
+    `sysMemFree`/`sysMemRealloc` match (`system.c`).
+  - **`calloc`'s 32 MB zero-fill of the ROM buffer** was wasteful (overwritten by the
+    read); `fsFileLoad` uses `malloc` + a single trailing NUL on NXDK.
+  - **`mpconfigfull` stack-buffer overflow** — the port's `u64 mpsetup.options` grew
+    `sizeof(mpconfigfull)` past the N64's hardcoded `0x1ca`, so `challengeLoadConfig`
+    smashed the return address (crash on return from `challengesInit`). Sized all
+    challenge-config buffers to `sizeof(struct mpconfigfull)`. **Bites any 32-bit
+    build, not just Xbox.**
+  - **`snprintf("%s", NULL)` / `strcpy(dst, NULL)` fault on NXDK's libc** (glibc
+    tolerates them). Hit in `romdataFileLoad` (nameless file slots → guard the
+    external-override probe) and pervasively via `langGet` (now returns a static `""`
+    instead of NULL — `lang.c`). NOTE: lang text currently resolves empty (the lang
+    bank data isn't resolving — a separate **content** issue, not a crash; in-game
+    text will be blank until investigated).
   The dead GL diagnostics, kept for reference:
   - GL capability strings (version/vendor/renderer/**GLSL**/extensions) log
     unconditionally at init (`gfx_opengl.cpp` `gfx_opengl_log_info`, moved out of the
@@ -94,11 +127,26 @@ Internally this drives `cmake/toolchain-nxdk.cmake`, which `include()`s NXDK's o
   `get_display_mode`/`set_closest_resolution` hooks) — so it's mostly "have the Xbox
   WM report the modes," not new UI. See the dedicated section below.
 
-## Renderer findings (fill in on first boot)
+## Boot trace (`E:\pdboot.log`)
 
-```
-(paste the GL: version / renderer / GLSL log lines + any shader-compile fatal here)
-```
+`port/src/xboxtrace.c` (`xboxTraceStage`/`xboxTracef`) writes every `PDBOOT:` stage to
+the debug overlay **and** appends it to `E:\pdboot.log` on the writable HDD partition
+(opened/closed per line, so a hard lock still leaves the trace-to-the-hang on disk).
+Pull it over FTP on real hardware; on xemu it's in the HDD image's E: partition. The
+file is truncated fresh each boot (first line `main() entered`). The scattered
+`PDBOOT:`/`LVBOOT_TRACE`/`NXDK_*_TRACE` call sites (main.c, system.c, input.c, fs.c,
+romdata.c, gfx_pc.cpp, lv.c, pdmain.c) are temporary bring-up scaffolding — remove once
+the renderer is solid.
+
+## Renderer findings
+
+- **GL path dead** (see M2): no SDL build exposes a GL context on the NV2A.
+- **NV2A present works (Phase 0, 2026-06-17):** `gfx_nxdk` `wm_start_frame` does
+  `pb_wait_for_vbl`/`pb_reset`/`pb_target_back_buffer`/`pb_fill(0xFF0000FF)` and
+  `wm_swap_buffers_end` does `while(pb_busy()); while(pb_finished());` — **blue screen
+  on screen confirms clear + present**. Next: `draw_triangles` (push inline tris via
+  pbkit/XGU), textures (swizzled VRAM upload), the N64 colour-combiner → NV2A register
+  combiners, then depth/blend/scissor/framebuffers.
 
 ## Milestone 4 — HD video output (480p / 720p / 1080i)
 
