@@ -41,8 +41,18 @@ Internally this drives `cmake/toolchain-nxdk.cmake`, which `include()`s NXDK's o
 ## Milestones
 
 - **M0 — branch + unknowns** (this doc). Branch created; open unknowns below.
-- **M1 — build scaffolding** *(in progress)*: cross-compile + link to `default.xbe`.
-  CMake/toolchain/platform plumbing landed; needs a real NXDK install to compile.
+- **M1 — build scaffolding** *(DONE — 2026-06-17)*: cross-compiles + links + cxbe
+  packages to `default.xbe`, and **boots on the Xbox**. Required ~20 small fixes:
+  NXDK toolchain delegation, nxdk-sdl3 as a CMake subproject, ENet→lwIP (IPv6),
+  Lua/stb/glad/minimp3 MSVC-path guards, the pdclib libc gaps (force-included
+  `nxdk_compat.h` + the declared-but-undefined `nxdk_compat.c` for `atof`),
+  filesystem/threads/time stubs, `<sys/types.h>` stub, `-force:multiple` for PD's
+  bit-exact math vs pdclib, building NXDK's `libc++.lib`, and **C linkage for the
+  MSVC-ABI**: clang's `i386-pc-win32` mangles C++ global *variables*, so the
+  renderer vtable (`gfx_opengl_api`) needed `extern "C"`. **Current runtime state:
+  boots to a black screen then hard-locks** — i.e. we're at the M1→M2 boundary; the
+  next step is getting boot-stage diagnostic output to localise the hang (renderer
+  bring-up vs. ROM-data load vs. an early init/exception).
 - **M2 — renderer: validate SDL3/pbgl GL** *(diagnostics in place)*: the existing
   `gfx_sdl` + `gfx_opengl` path now **records exactly where it fails** on first boot,
   no CLI flag needed (the Xbox can't pass one):
