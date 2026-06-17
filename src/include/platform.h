@@ -2,7 +2,15 @@
 #define _IN_PLATFORM_H
 
 // detect OS
-#if defined(_WIN32)
+#if defined(NXDK)
+	// Original Xbox via the NXDK toolchain. NXDK's clang targets a win32-like
+	// triple and may define _WIN32, so this MUST come before the _WIN32 branch
+	// below -- the OG Xbox is not Win32. NXDK provides a POSIX-ish libc (like the
+	// Switch); platform-specific gaps (threads, signals, FATX paths) are guarded
+	// per-file with PLATFORM_NXDK. See docs/PORT_XBOX_NXDK.md.
+	#define PLATFORM_POSIX 1
+	#define PLATFORM_NXDK 1
+#elif defined(_WIN32)
 	#define PLATFORM_WIN32 1
 #elif defined(__SWITCH__)
 	#define PLATFORM_POSIX 1

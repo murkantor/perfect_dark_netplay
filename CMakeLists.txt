@@ -71,7 +71,13 @@ message(STATUS "Target arch: ${TARGET_ARCH}")
 
 # Determine target OS and platform identifier ($arch-$os)
 
-if(WIN32)
+if(XBOX_NXDK)
+  # Original Xbox via the NXDK toolchain. MUST come before WIN32: NXDK's clang
+  # targets a win32-like triple, so CMake's WIN32 may also be set -- listing
+  # XBOX_NXDK first makes it win every if/elseif chain below. See the new
+  # cmake/toolchain-nxdk.cmake (which sets XBOX_NXDK) and docs/PORT_XBOX_NXDK.md.
+  set(TARGET_OS "xbox-nxdk")
+elseif(WIN32)
   # Windows
   set(TARGET_OS "windows")
 elseif(APPLE)
@@ -238,7 +244,19 @@ set(LIBS )
 
 # SDL3 — not needed by the dedicated server (no window/audio/input).
 if(NOT DEDICATED_SERVER)
-  if(NINTENDO_SWITCH)
+  if(XBOX_NXDK)
+    # nxdk-sdl3 (https://github.com/Ryzee119/nxdk-sdl3). Prefer its CMake config;
+    # fall back to a manual include + link name if the config isn't exported.
+    # NXDK_DIR is the NXDK checkout; adjust the fallback include path to match
+    # where nxdk-sdl3 installs its headers. See docs/PORT_XBOX_NXDK.md.
+    find_package(SDL3 CONFIG)
+    if(TARGET SDL3::SDL3)
+      list(APPEND LIBS SDL3::SDL3)
+    else()
+      include_directories(SYSTEM "$ENV{NXDK_DIR}/lib/sdl/SDL3/include")
+      list(APPEND LIBS "SDL3")
+    endif()
+  elseif(NINTENDO_SWITCH)
     # devkitPro portlibs fallback in case the SDL3 CMake config is missing
     # (code includes <SDL3/SDL.h>, so point at the include root).
     # NOTE: Switch + SDL3 is untested since the SDL3 migration.
@@ -265,7 +283,13 @@ list(APPEND LIBS "${ZLIB_LIBRARY}")
 # GL — not needed by the dedicated server (OpenGL backend is excluded).
 if(NOT DEDICATED_SERVER)
   if(NOT GL_LIBRARY)
-    if(WIN32)
+    if(XBOX_NXDK)
+      # OG Xbox GL is provided by nxdk-sdl3 / pbgl, pulled in by the NXDK link
+      # rules + the SDL3 lib above, so no separate GL lib here. (If pbgl must be
+      # linked explicitly, set GL_LIBRARY in the toolchain file.) Renderer bring-up
+      # is expected to hit a GLSL wall -- see Milestone 2 in docs/PORT_XBOX_NXDK.md.
+      set(GL_LIBRARY "")
+    elseif(WIN32)
       set(GL_LIBRARY opengl32)
     elseif(NINTENDO_SWITCH)
       set(GL_LIBRARY EGL glapi drm_nouveau)
@@ -282,7 +306,8 @@ endif()
 # glslang for runtime GLSL -> SPIR-V shader translation (MSYS2:
 # mingw-w64-x86_64-glslang). Selected at runtime via Video.Renderer=sdlgpu
 # or --renderer sdlgpu; OpenGL stays the default either way.
-if(DEDICATED_SERVER OR NINTENDO_SWITCH)
+if(DEDICATED_SERVER OR NINTENDO_SWITCH OR XBOX_NXDK)
+  # No Vulkan / glslang on the Switch or OG Xbox.
   set(USE_SDLGPU OFF)
 endif()
 if(USE_SDLGPU)
@@ -357,7 +382,12 @@ endif()
 
 # Platform-specific extra libs
 if(NOT EXTRA_LIBRARIES)
-  if(WIN32)
+  if(XBOX_NXDK)
+    # NXDK link rules pull in the core Xbox libs (nxdk, hal, pbkit, winapi,
+    # pdclib) automatically; only the C++ runtime needs naming here. Adjust in
+    # the toolchain file if the NXDK libc++ is named differently.
+    set(EXTRA_LIBRARIES stdc++)
+  elseif(WIN32)
     # Statically link the whole GCC runtime (libstdc++ was already static):
     # -static-libgcc folds in libgcc_s_seh-1.dll and the winpthread section
     # folds in libwinpthread-1.dll (whole-archive — its TLS/init machinery is
@@ -574,11 +604,12 @@ if(TARGET pd_aiscripts)
 endif()
 target_link_libraries(pd ${LIBS} pd_lua)
 set_target_properties(pd PROPERTIES OUTPUT_NAME "${BIN_NAME}")
-if(WIN32 AND NOT DEDICATED_SERVER)
+if(WIN32 AND NOT DEDICATED_SERVER AND NOT XBOX_NXDK)
   # Client is a GUI-subsystem app. WinMain comes from the MinGW runtime's
   # fallback that forwards to plain main() (SDL3 has no SDL3main library). The
   # dedicated server stays a console app: it needs a console for its log
   # output + the Ctrl-C/close signal handler.
+  # NXDK is excluded: its XBE subsystem is handled by the NXDK link rules.
   set_target_properties(pd PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
@@ -589,5 +620,23 @@ if(NINTENDO_SWITCH)
     COMMAND nacptool --create "Perfect Dark" "fgsfds and contributors" "${VERSION_ROMID}/${VERSION_BRANCH}/${VERSION_HASH}" "${BIN_NAME}.nacp"
     COMMAND aarch64-none-elf-strip -o ${CMAKE_BINARY_DIR}/${BIN_NAME}.stripped.elf ${CMAKE_BINARY_DIR}/${BIN_NAME}.elf
     COMMAND elf2nro ${CMAKE_BINARY_DIR}/${BIN_NAME}.stripped.elf ${CMAKE_BINARY_DIR}/${BIN_NAME}.nro --icon=${CMAKE_SOURCE_DIR}/dist/nswitch/icon.jpg --nacp=${BIN_NAME}.nacp
+  )
+endif()
+
+if(XBOX_NXDK)
+  # The NXDK link emits a PE .exe; convert it to an Xbox executable (default.xbe)
+  # with NXDK's cxbe tool. NXDK normally drives this from its own Makefile, so the
+  # exact tool path/flags must be confirmed against the NXDK install (see the
+  # "packaging" note in docs/PORT_XBOX_NXDK.md). XBE_TITLE/XBE_OUTPUT overridable.
+  if(NOT XBE_OUTPUT)
+    set(XBE_OUTPUT "${CMAKE_BINARY_DIR}/default.xbe")
+  endif()
+  if(NOT CXBE)
+    set(CXBE "$ENV{NXDK_DIR}/tools/cxbe/cxbe")
+  endif()
+  add_custom_command(TARGET pd POST_BUILD
+    COMMAND "${CXBE}" "-OUT:${XBE_OUTPUT}" "-TITLE:Perfect Dark"
+            "${CMAKE_BINARY_DIR}/${BIN_NAME}.exe"
+    COMMENT "Packaging ${XBE_OUTPUT} (NXDK cxbe)"
   )
 endif()
