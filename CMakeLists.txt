@@ -360,7 +360,10 @@ if(XBOX_NXDK)
 
   # Force-include a tiny libc compat header into every TU to fill gaps in NXDK's
   # pdclib (e.g. strncasecmp/strcasecmp). New shims go in port/include/nxdk_compat.h.
-  add_compile_options("-include" "${CMAKE_SOURCE_DIR}/port/include/nxdk_compat.h")
+  # The SHELL: prefix keeps "-include <path>" together (CMake would otherwise
+  # de-duplicate/split the two tokens, making clang treat the header as a second
+  # input file -> "cannot specify -o when generating multiple output files").
+  add_compile_options("SHELL:-include ${CMAKE_SOURCE_DIR}/port/include/nxdk_compat.h")
 
   # ENet (port/include/external/enet.h) is routed onto NXDK's lwIP TCP/IP stack
   # (see the `defined(NXDK)` branch there). Mirror the include dirs NXDK's own
