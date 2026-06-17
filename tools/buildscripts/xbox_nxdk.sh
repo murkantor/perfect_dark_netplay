@@ -36,16 +36,12 @@ if [ -n "${NXDK_SDL3_DIR}" ]; then
   NXDK_SDL3_ARGS+=("-DNXDK_SDL3_DIR=${NXDK_SDL3_DIR}")
 fi
 
-# NXDK's activate script exports the LLVM toolchain + tool paths it expects. It
-# `exec`s "$@" when given args, so source it with the positional params cleared --
-# otherwise it tries to exec our cmake args (e.g. `exec -DROMID=...`).
-if [ -f "${NXDK_DIR}/bin/activate" ]; then
-  _saved_args=("$@")
-  set --
-  # shellcheck disable=SC1091
-  source "${NXDK_DIR}/bin/activate" >/dev/null 2>&1 || true
-  set -- "${_saved_args[@]}"
-fi
+# Do NOT source NXDK's bin/activate: it is meant to be run as `activate <command>`
+# and, given no command, spawns an interactive sub-shell (which just hangs here).
+# We don't need it -- NXDK's CMake toolchain invokes its tools (nxdk-cc/cxx, llvm-ar,
+# nxdk-link, cxbe) by absolute path or via PATH, and the LLVM tools (clang/llvm-ar/
+# llvm-lib) already resolve on PATH (the NXDK `make` sample builds prove this). We
+# only need NXDK_DIR exported (done above) and NXDK's bin on PATH.
 export PATH="${NXDK_DIR}/bin:${PATH}"
 
 echo "Configuring (NXDK_DIR=${NXDK_DIR})..."
