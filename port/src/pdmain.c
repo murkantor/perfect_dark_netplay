@@ -93,6 +93,16 @@
 #include "video.h"
 #include "input.h"
 
+#ifdef NXDK
+// Boot bring-up tracing into E:\pdboot.log (see port/src/xboxtrace.c). The init
+// sequence below loads ROM assets and sets up the N64 VI/RDP/snd shims, any of which
+// could be the stall before the first rendered frame. Remove once boot is solid.
+#include "xboxtrace.h"
+#define PDBOOT_TRACE(s) xboxTraceStage(s)
+#else
+#define PDBOOT_TRACE(s) ((void)0)
+#endif
+
 // bg.c global (not in bg.h): the room bgTickPortals starts its portal walk
 // from. bgTick normally copies currentplayer->cam_room into it; the headless
 // Tier 2 visibility pass calls bgTickPortals directly (skipping bgTickRooms'
@@ -276,6 +286,7 @@ void mainInit(void)
 	s32 j;
 	u32 addr;
 
+	PDBOOT_TRACE("mainInit: enter");
 	faultInit();
 	dmaInit();
 	amgrInit();
@@ -284,6 +295,7 @@ void mainInit(void)
 	memaInit();
 	joyInit();
 	joyReset();
+	PDBOOT_TRACE("mainInit: post joy");
 
 	var8005d9b0 = rmonIsDisabled();
 
@@ -291,12 +303,15 @@ void mainInit(void)
 	g_VmShowStats = 0;
 
 	// no copyright screen
+	PDBOOT_TRACE("mainInit: viSetMode");
 	viSetMode(VIMODE_HI);
 	viConfigureForLegal();
 	viBlack(true);
 	viUpdateMode();
+	PDBOOT_TRACE("mainInit: filesInit");
 
 	filesInit();
+	PDBOOT_TRACE("mainInit: post filesInit");
 
 	if (var8005d9b0) {
 		argSetString("          -ml0 -me0 -mgfx100 -mvtx50 -mt700 -ma400");
@@ -309,35 +324,48 @@ void mainInit(void)
 	crashReset();
 	challengesInit();
 	utilsInit();
+	PDBOOT_TRACE("mainInit: texInit");
 	texInit();
+	PDBOOT_TRACE("mainInit: langInit");
 	langInit();
+	PDBOOT_TRACE("mainInit: lvInit");
 	lvInit();
 	cheatsInit();
 	textInit();
 	dhudInit();
+	PDBOOT_TRACE("mainInit: playermgrInit");
 	playermgrInit();
 	frametimeInit();
 	profileInit();
 	smokesInit();
+	PDBOOT_TRACE("mainInit: mpInit");
 	mpInit(true);
 	pheadInit();
 	paksInit();
 	pheadInit2();
+	PDBOOT_TRACE("mainInit: animsInit");
 	animsInit();
 	racesInit();
+	PDBOOT_TRACE("mainInit: bodiesInit");
 	bodiesInit();
+	PDBOOT_TRACE("mainInit: titleInit");
 	titleInit();
 
 	modelSetDistanceChecksDisabled(true); // don't use LODs
 
+	PDBOOT_TRACE("mainInit: done");
 	g_MainIsBooting = 0;
 }
 
 void mainProc(void)
 {
+	PDBOOT_TRACE("mainProc: mainInit");
 	mainInit();
+	PDBOOT_TRACE("mainProc: rdpInit");
 	rdpInit();
+	PDBOOT_TRACE("mainProc: sndInit");
 	sndInit();
+	PDBOOT_TRACE("mainProc: entering mainLoop");
 
 	while (true) {
 		mainLoop();
@@ -614,17 +642,21 @@ void mainLoop(void)
 		// for a Skedar-specific crash; the others are quick struct resets.
 		// Each step gets its own log so we can isolate which one blows up.
 		netDiagLogf("ml_init_pre", "stage=%u", (u32)g_StageNum);
+		PDBOOT_TRACE("mainLoop: gfxReset");
 		gfxReset();
 		joyReset();
 		dhudReset();
 		zbufReset(g_StageNum);
 		netDiagLogf("ml_lvreset_pre", "stage=%u", (u32)g_StageNum);
+		PDBOOT_TRACE("mainLoop: lvReset (load stage)");
 		lvReset(g_StageNum);
 		netDiagLogf("ml_lvreset_post", "stage=%u", (u32)g_StageNum);
+		PDBOOT_TRACE("mainLoop: viReset");
 		viReset(g_StageNum);
 		frametimeCalculate();
 		profileReset();
 		netDiagLogf("ml_init_post", "stage=%u", (u32)g_StageNum);
+		PDBOOT_TRACE("mainLoop: first frame ->");
 
 		// Outer loop start: stage init has run (memaReset / lvReset etc).
 		// Bracket the outer game loop with diag logs so a crash during the
