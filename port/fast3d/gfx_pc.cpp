@@ -3488,13 +3488,21 @@ extern "C" void gfx_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
 // is C-linkage and NXDK-only. Remove once boot is solid. A short per-trace delay
 // matches main.c's paced boot trace so the gfx burst (which is otherwise too fast
 // to read) is legible and the exact hang point is visible on a frozen screen.
-// Uses KeStallExecutionProcessor (kernel CPU busy-stall), NOT thrd_sleep: the
-// timer-based sleeps hang once gfx_wapi->init()'s pb_init() has reconfigured the
-// NV2A/timer state, which manifested as a freeze right after "gfx: rapi.init".
+// Spin on rdtsc, NOT thrd_sleep/KeStallExecutionProcessor: both of those hang once
+// gfx_wapi->init()'s pb_init() has reconfigured the NV2A/timer state (the freeze
+// showed up right after "gfx: rapi.init"). rdtsc is a pure CPU instruction that keeps
+// counting regardless of timer state. OG Xbox CPU is a fixed 733.33 MHz (~23.5M
+// ticks = 32ms).
 #include <hal/debug.h>
-#include <xboxkrnl/xboxkrnl.h>
+#include <stdint.h>
+static inline uint64_t nxdk_gfx_rdtsc(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
 static inline void nxdk_gfx_trace_delay(void) {
-    KeStallExecutionProcessor(32 * 1000); // 32ms
+    const uint64_t target = nxdk_gfx_rdtsc() + 23500000ULL; // ~32ms at 733MHz
+    while (nxdk_gfx_rdtsc() < target) { __asm__ __volatile__("" ::: "memory"); }
 }
 #define NXDK_GFX_TRACE(s) do { debugPrint("PDBOOT: " s "\n"); nxdk_gfx_trace_delay(); } while (0)
 #else

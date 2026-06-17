@@ -120,7 +120,7 @@ static void cleanup(void)
 #ifdef NXDK
 #include <hal/debug.h>
 #include <hal/video.h>
-#include <xboxkrnl/xboxkrnl.h> // KeStallExecutionProcessor for the boot-trace pacing
+#include <stdint.h>
 // Boot-stage tracing for the Original Xbox bring-up: prints each init stage to the
 // screen (debugPrint, visible until the renderer takes the framebuffer) AND appends
 // it to "pdboot.log" (flushed each stage) so the LAST line names the stage that hung
@@ -128,13 +128,22 @@ static void cleanup(void)
 // stage is the last one printed (it was entered but never completed). Remove this
 // scaffolding once boot is solid. See docs/PORT_XBOX_NXDK.md.
 //
-// A short delay paces the trace so the later stages don't fly past in one unreadable
-// burst. Use KeStallExecutionProcessor (a kernel CPU busy-stall in microseconds), NOT
-// thrd_sleep/Sleep: the scheduler/timer-based sleeps hang once pb_init() has
-// reconfigured the NV2A + timer state, whereas the kernel stall is independent of it.
+// A short delay paces the trace so later stages don't fly past in one unreadable
+// burst. Both thrd_sleep AND KeStallExecutionProcessor HANG once pb_init() (in
+// videoInit's gfx_wapi->init) has reconfigured the NV2A + timer state -- the freeze
+// showed up as the first paced delay after pb_init. So spin on rdtsc instead: it's a
+// pure CPU instruction that keeps counting regardless of timer/interrupt state and
+// can't deadlock. The OG Xbox CPU is a fixed 733.33 MHz, so 32ms ~= 23.5M ticks.
+static inline uint64_t xboxRdtsc(void)
+{
+	uint32_t lo, hi;
+	__asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+	return ((uint64_t)hi << 32) | lo;
+}
 static inline void xboxBootDelay(void)
 {
-	KeStallExecutionProcessor(32 * 1000); // 32ms
+	const uint64_t target = xboxRdtsc() + 23500000ULL; // ~32ms at 733MHz
+	while (xboxRdtsc() < target) { __asm__ __volatile__("" ::: "memory"); }
 }
 #define XBOX_BOOT_TRACE(stage) do { \
 		debugPrint("PDBOOT: " stage "\n"); \
