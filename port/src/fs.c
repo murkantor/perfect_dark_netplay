@@ -427,11 +427,14 @@ void *fsFileLoad(const char *name, u32 *outSize)
 	if (size) {
 		buf = sysMemZeroAlloc(size + 1); // sick hack for a free null terminator
 		if (!buf) {
+			NXDK_FS_TRACE("PDBOOT: fsFileLoad alloc FAILED (%d bytes)\n", size + 1);
 			sysLogPrintf(LOG_ERROR, "fsFileLoad: could not alloc %d bytes for file: %s", size, fullName);
 			fclose(f);
 			return NULL;
 		}
+		NXDK_FS_TRACE("PDBOOT: fsFileLoad alloc ok, reading %d bytes\n", size);
 		fread(buf, 1, size, f);
+		NXDK_FS_TRACE("PDBOOT: fsFileLoad read complete\n");
 	}
 
 	fclose(f);
