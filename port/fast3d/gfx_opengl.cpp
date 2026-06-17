@@ -1681,7 +1681,11 @@ static void gfx_opengl_set_anisotropy_level(int level) {
 	current_anisotropy_level = level;
 }
 
-struct GfxRenderingAPI gfx_opengl_api = {
+// extern "C": this vtable is referenced from C (video.c). On the Itanium C++ ABI
+// (Linux/MinGW) a global in the global namespace already has an unmangled symbol,
+// but the MSVC C++ ABI (clang's i386-pc-win32 target, i.e. NXDK/Original Xbox)
+// mangles global *variable* names, so without this the C side can't link to it.
+extern "C" struct GfxRenderingAPI gfx_opengl_api = {
     gfx_opengl_get_name,
     gfx_opengl_get_max_texture_size,
     gfx_opengl_get_clip_parameters,
