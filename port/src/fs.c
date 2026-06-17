@@ -426,6 +426,14 @@ void *fsFileLoad(const char *name, u32 *outSize)
 		NXDK_FS_TRACE("PDBOOT: mem used %u MB / total %u MB, free %u MB\n",
 			memUsed / 1048576u, memTotal / 1048576u,
 			(memTotal > memUsed) ? (memTotal - memUsed) / 1048576u : 0u);
+		// The 32 MB ROM calloc hangs without returning, and the screen flashes make
+		// the readout above hard to catch. Halt right before the big alloc so the mem
+		// line stays static and readable. Gated to large loads so small file reads
+		// during boot don't trip it. DIAGNOSTIC -- remove once the alloc is sorted.
+		if (size > 1024 * 1024) {
+			NXDK_FS_TRACE("PDBOOT: HALT before %d-byte alloc (read mem line above)\n", size);
+			for (;;) { /* freeze with the memory readout on screen */ }
+		}
 	}
 #endif
 
