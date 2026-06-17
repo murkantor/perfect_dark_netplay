@@ -210,6 +210,33 @@ int main(int argc, const char **argv)
 	inputInit();
 	XBOX_BOOT_TRACE("audioInit");
 	audioInit();
+
+#ifdef NXDK
+	// DIAGNOSTIC: romdataInit hangs in fopen() on the absolute path
+	// "D:\data\pd.ntsc-final.z64" (the file is confirmed present), while relative
+	// opens in fsInit returned cleanly. Probe several path forms in isolation to find
+	// which one fopen() actually accepts on the booted XISO. Each probe traces a
+	// result; a hang pins the bad form. Remove once file IO is understood.
+	{
+		FILE *tf;
+		xboxTraceStage("probe: rel 'data\\pd.ntsc-final.z64'");
+		tf = fopen("data\\pd.ntsc-final.z64", "rb");
+		xboxTraceStage(tf ? "probe: rel OK" : "probe: rel NULL");
+		if (tf) { fclose(tf); }
+
+		xboxTraceStage("probe: abs 'D:\\default.xbe'");
+		tf = fopen("D:\\default.xbe", "rb");
+		xboxTraceStage(tf ? "probe: D: default.xbe OK" : "probe: D: default.xbe NULL");
+		if (tf) { fclose(tf); }
+
+		xboxTraceStage("probe: abs ROM 'D:\\data\\pd.ntsc-final.z64'");
+		tf = fopen("D:\\data\\pd.ntsc-final.z64", "rb");
+		xboxTraceStage(tf ? "probe: abs ROM OK" : "probe: abs ROM NULL");
+		if (tf) { fclose(tf); }
+		xboxTraceStage("probe: done");
+	}
+#endif
+
 	XBOX_BOOT_TRACE("romdataInit");
 	romdataInit();
 	XBOX_BOOT_TRACE("netInit");
