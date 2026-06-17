@@ -425,6 +425,55 @@ void videoGetMemoryUsage(u32 *used, u32 *total)
 	}
 }
 
+#if defined(PLATFORM_NXDK)
+// --- OG Xbox HD video modes (Milestone 4; see docs/PORT_XBOX_NXDK.md) -----------
+// INERT SCAFFOLD: the table + availability gate are ready to feed the display-mode
+// list once a native Xbox window-manager (or nxdk-sdl3's video layer) exists and the
+// renderer draws (M2). Nothing calls these yet. CONFIRM the XGetVideoFlags() header /
+// XC_VIDEO_FLAGS_* names against the NXDK install (hal/video.h).
+#include <hal/video.h>
+
+// 1080i's scanout framebuffers nearly fill the 32 MB GPU half of a 64 MB box (the
+// render-low+upscale path keeps it ~29 MB; see the budget table in the doc). We
+// ATTEMPT it on 64 MB; if real-world testing OOMs, raise this to ~96 to lock 1080i
+// behind a 128 MB console (mem_total gate). 480p/720p are comfortable on 64 MB.
+#define XBOX_1080I_MIN_MIB 0
+
+struct xboxvideomode {
+	const char *name;
+	s32 w, h;
+	bool interlaced;
+	u32 reqflag;    // XGetVideoFlags() bit the dashboard+cables must allow (0 = always)
+	u32 minrammib;  // min DETECTED physical RAM (videoGetMemoryUsage total); 0 = 64 MB ok
+};
+
+static const struct xboxvideomode g_XboxVideoModes[] = {
+	{ "480i",   640,  480, true,  0,                         0                  },
+	{ "480p",   640,  480, false, XC_VIDEO_FLAGS_HDTV_480p,  0                  },
+	{ "720p",  1280,  720, false, XC_VIDEO_FLAGS_HDTV_720p,  0                  },
+	{ "1080i", 1920, 1080, true,  XC_VIDEO_FLAGS_HDTV_1080i, XBOX_1080I_MIN_MIB },
+};
+
+// True iff the dashboard/cables permit this mode AND we have the RAM for it. Ready to
+// filter the display-mode list a future Xbox WM reports. Unused until then.
+__attribute__((unused))
+static bool xboxVideoModeAvailable(const struct xboxvideomode *m)
+{
+	const u32 flags = XGetVideoFlags();
+	if (m->reqflag && !(flags & m->reqflag)) {
+		return false; // dashboard setting / cable doesn't permit it
+	}
+	if (m->minrammib) {
+		u32 mu = 0, mt = 0;
+		videoGetMemoryUsage(&mu, &mt);
+		if ((mt >> 20) < m->minrammib) {
+			return false; // needs a 128 MB box
+		}
+	}
+	return true;
+}
+#endif // PLATFORM_NXDK
+
 void videoClearScreen(void)
 {
 	videoStartFrame();

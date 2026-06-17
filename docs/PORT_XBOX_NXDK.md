@@ -59,11 +59,59 @@ at the NXDK target) and the `XBOX_NXDK` branches in `CMakeLists.txt`.
   (`MmQueryStatistics` / `MM_STATISTICS`) on bring-up — it's the one line to fix if
   the kernel struct differs; desktop uses `sysconf` + `/proc/self/statm`.
 
+- **M4 — HD video output (480p / 720p / 1080i)** *(design + inert scaffold; gated on
+  M2)*: enumerate the Xbox-allowed modes through the existing display-mode system
+  (`videoGet/SetDisplayMode`, the menu resolution dropdown, the `GfxWindowManagerAPI`
+  `get_display_mode`/`set_closest_resolution` hooks) — so it's mostly "have the Xbox
+  WM report the modes," not new UI. See the dedicated section below.
+
 ## Renderer findings (fill in on first boot)
 
 ```
 (paste the GL: version / renderer / GLSL log lines + any shader-compile fatal here)
 ```
+
+## Milestone 4 — HD video output (480p / 720p / 1080i)
+
+Design + an **inert `PLATFORM_NXDK` mode table** (`port/src/video.c`, see
+`g_XboxVideoModes` / `xboxVideoModeAvailable`). Nothing calls it yet — it's ready to
+feed the display-mode list the moment a native Xbox WM (or nxdk-sdl3's video layer)
+exists and M2 puts something on screen. **Confirm the `XGetVideoFlags()` header/flag
+names** (`hal/video.h`) on bring-up.
+
+**Two gates per mode:**
+1. **`XGetVideoFlags()`** — the dashboard's HD settings + the cable. A composite-cable
+   box is 480i-only; you can't offer 720p there (no signal). The mode list is filtered
+   by what the console actually permits.
+2. **RAM** — `videoGetMemoryUsage()` total (the gauge). 480p/720p run on 64 MB; 1080i
+   is the tight case (see budget).
+
+**Architecture decision — scan out HD, render internally low.** The game already
+renders lo-res and upscales, so HD = a low-res 3D render target **upscale-blitted**
+to an HD scanout buffer (one cheap blit; no NV2A fillrate hit, no full-res depth
+buffer). Do **not** render the world at native 1080i — that tanks fillrate *and* RAM.
+
+**Budget under the 32 MB game / 32 MB GPU split** (unified RAM; "GPU" = scanout +
+textures + vertex/scratch). Scanout is double-buffered RGBA; render target is the
+shared lo-res color+depth (~2.4 MB):
+
+| Mode | Scanout ×2 | + render+tex+scratch | GPU total | In 32 MB? |
+|---|---|---|---|---|
+| 480p (640×480) | 2.4 MB | ~11 MB | ~13 MB | ✅ comfortable |
+| 720p (1280×720) | 7.0 MB | ~12 MB | ~19 MB | ✅ fits |
+| **1080i (1920×1080)** | **16.6 MB** | ~12 MB | **~29 MB** | ⚠️ ~3 MB headroom |
+
+So 480p/720p are safe on a stock 64 MB box; **1080i is the risk** — it nearly fills
+the 32 MB GPU half. Plan: **attempt 1080i on 64 MB** (`XBOX_1080I_MIN_MIB 0`); if
+real-world testing OOMs, flip that one constant to lock 1080i behind a **128 MB**
+console (`mem_total` gate). The gauge HUD makes the headroom visible while testing.
+
+**Game-memory side (the other 32 MB):** PD's N64 heap is small (4–8 MB on real
+hardware; the 32-bit Xbox build has 4-byte pointers, so structs are smaller than the
+64-bit desktop build), so 32 MB is generous for game logic + audio + net buffers. The
+heap is sized at boot in `port/src/pdmain.c` (`mainProc`/memory init) — that's the
+hook to pin to 32 MB on Xbox; **to wire when the build runs** (renderer-independent,
+but needs a real footprint measurement first).
 
 ## The renderer reality (the hard part)
 
@@ -101,6 +149,9 @@ committing to a native backend implementing `GfxRenderingAPI` /
 |---|---|
 | `src/include/platform.h` | `NXDK` OS branch (before `_WIN32`) → `PLATFORM_NXDK` + `PLATFORM_POSIX` |
 | `CMakeLists.txt` | `XBOX_NXDK` branches: platform id, SDL3 (portlibs fallback), GL libs, `USE_SDLGPU OFF`, extra libs, Win32-subsystem guard, `cxbe` POST_BUILD |
+| `port/src/video.c` | perf/memory HUD accessors; per-second NXDK mem log; M4 inert HD-mode table (`g_XboxVideoModes` / `xboxVideoModeAvailable`, `PLATFORM_NXDK`) |
+| `src/game/luaai_api.c` + `scripts/perf_overlay.lua` | `pd.perf()` cpu/gpu/mem fields + HUD lines |
+| `port/fast3d/gfx_opengl.cpp` | unconditional GL-capability log at init (M2 bring-up evidence) |
 | `cmake/toolchain-nxdk.cmake` (new) | NXDK clang toolchain skeleton (sets `XBOX_NXDK`) |
 | `tools/buildscripts/xbox_nxdk.sh` (new) | configure+build wrapper (mirrors `nswitch_docker.sh`) |
 | `docs/PORT_XBOX_NXDK.md` (new) | this doc |
