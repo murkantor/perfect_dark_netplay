@@ -47,7 +47,13 @@
 /*
 ** By default, Lua on Windows use (some) specific Windows features
 */
-#if !defined(LUA_USE_C89) && defined(_WIN32) && !defined(_WIN32_WCE)
+/*
+** NXDK's clang triple is win32-like and defines _WIN32, but it is NOT Windows:
+** pdclib has no _popen/_pclose/_fseeki64/_ftelli64 (and no Win32 DLL loader), so
+** don't take the LUA_USE_WINDOWS path. With neither WINDOWS nor POSIX defined, Lua
+** uses its generic ISO-C fallbacks (popen -> "not supported", l_fseek -> fseek).
+*/
+#if !defined(LUA_USE_C89) && defined(_WIN32) && !defined(_WIN32_WCE) && !defined(NXDK)
 #define LUA_USE_WINDOWS  /* enable goodies for regular Windows */
 #endif
 
