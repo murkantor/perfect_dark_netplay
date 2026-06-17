@@ -26,6 +26,9 @@
 #include <pbkit/pbkit.h>
 #include <hal/video.h>
 #include <hal/debug.h>
+#include <xboxkrnl/xboxkrnl.h> // MmAllocateContiguousMemory for GPU-visible vertex data
+#include <xgu/xgu.h>           // NV2A helper: transform/combiner/state pushes
+#include <xgu/xgux.h>          // NV2A helper: vertex attribute arrays + draw
 #include "../include/xboxtrace.h"
 
 #include "gfx_rendering_api.h"
@@ -62,7 +65,20 @@ static struct {
     double time0;             // get_time() origin
     int target_fps;
     uint32_t width, height;
+
+    // --- Phase 1 geometry state ---
+    int vp_x, vp_y, vp_w, vp_h;       // current viewport (from set_viewport)
+    bool depth_test, depth_mask;      // from set_depth_mode
+    bool use_alpha;                   // from set_use_alpha (blend enable)
+
+    // GPU-visible (physically contiguous) vertex scratch. fast3d hands us a CPU
+    // buffer each draw; the NV2A reads vertices via DMA, so we copy into this.
+    // De-interleaved to a fixed [x,y,z,w, r,g,b,a] layout (8 floats/vertex).
+    float *vtx;
+    size_t vtx_caps;                  // capacity in vertices
 } g;
+
+#define NXDK_VTX_FLOATS 8 // x,y,z,w, r,g,b,a
 
 // ---------------------------------------------------------------------------------
 // Identification / capabilities
@@ -185,43 +201,139 @@ static int nxdk_get_max_anisotropy_level(void) { return 1; /* TODO(nv2a): NV2A s
 
 static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare,
                                 bool depth_source_prim, uint16_t zmode) {
-    (void)depth_test; (void)depth_update; (void)depth_compare; (void)depth_source_prim; (void)zmode;
-    // TODO(nv2a): NV_PGRAPH depth-test enable / write-mask / func + the zmode bias.
+    (void)depth_compare; (void)depth_source_prim; (void)zmode;
+    g.depth_test = depth_test;
+    g.depth_mask = depth_update;
+    uint32_t *p = pb_begin();
+    p = xgu_set_depth_test_enable(p, depth_test);
+    p = xgu_set_depth_mask(p, depth_update);
+    p = xgu_set_depth_func(p, XGU_FUNC_LESS_OR_EQUAL);
+    pb_end(p);
 }
 
 static void nxdk_set_depth_range(float znear, float zfar) {
     (void)znear; (void)zfar;
-    // TODO(nv2a): depth range / viewport Z scale-bias.
+    // Depth range is folded into the viewport Z scale/offset (see nxdk_set_viewport).
 }
 
 static void nxdk_set_viewport(int x, int y, int width, int height) {
-    (void)x; (void)y; (void)width; (void)height;
-    // TODO(nv2a): NV2A viewport (offset + scale). Note get_clip_parameters depends
-    // on the Y convention chosen here.
+    g.vp_x = x; g.vp_y = y; g.vp_w = width; g.vp_h = height;
+    // Map clip space -> screen. fast3d emits clip space with the D3D/NV2A convention
+    // (z 0..1, invert_y=false), so the NV2A does the perspective divide + this
+    // viewport. Screen y grows downward, NDC y grows up -> negative Y scale.
+    const float ox = (float)x + (float)width  * 0.5f;
+    const float oy = (float)y + (float)height * 0.5f;
+    const float sx = (float)width  * 0.5f;
+    const float sy = -(float)height * 0.5f;
+    // 24-bit depth buffer: NDC z [0,1] -> [0, 0xFFFFFF]. (Tune if depth is wrong.)
+    const float oz = 0.0f;
+    const float sz = (float)0xFFFFFF;
+    uint32_t *p = pb_begin();
+    p = xgu_set_viewport_offset(p, ox, oy, oz, 0.0f);
+    p = xgu_set_viewport_scale(p, sx, sy, sz, 0.0f);
+    pb_end(p);
 }
 
 static void nxdk_set_scissor(int x, int y, int width, int height) {
     (void)x; (void)y; (void)width; (void)height;
-    // TODO(nv2a): NV2A clip-rectangle.
+    // TODO(nv2a): NV2A clip-rectangle (NV097_SET_SURFACE_CLIP_*). Not gating Phase 1.
 }
 
 static void nxdk_set_use_alpha(bool use_alpha, bool modulate) {
-    (void)use_alpha; (void)modulate;
-    // TODO(nv2a): alpha-blend enable + the blend func (modulate vs straight alpha).
+    (void)modulate;
+    g.use_alpha = use_alpha;
+    uint32_t *p = pb_begin();
+    p = xgu_set_blend_enable(p, use_alpha);
+    if (use_alpha) {
+        p = xgu_set_blend_func_sfactor(p, XGU_FACTOR_SRC_ALPHA);
+        p = xgu_set_blend_func_dfactor(p, XGU_FACTOR_ONE_MINUS_SRC_ALPHA);
+    }
+    pb_end(p);
 }
 
 // ---------------------------------------------------------------------------------
-// Drawing -- THE central TODO.
+// Drawing
 // ---------------------------------------------------------------------------------
 
+// Compute, from the decoded combiner, the per-vertex float stride and the byte offset
+// of the first combiner input (used as the diffuse colour) and texcoord0. Layout
+// mirrors gfx_opengl's vertex builder: pos(4), per-tex uv(2)+clamp(0..2), fog(4),
+// grayscale(4), then per-input (3 or 4).
+static void nxdk_vertex_layout(const struct CCFeatures *cc, int *stride,
+                               int *color_off, int *color_size, int *uv0_off) {
+    int n = 4; // position xyzw
+    *uv0_off = -1;
+    for (int i = 0; i < 2; i++) {
+        if (cc->used_textures[i]) {
+            if (i == 0) { *uv0_off = n; }
+            n += 2;
+            for (int j = 0; j < 2; j++) {
+                if (cc->clamp[i][j]) { n += 1; }
+            }
+        }
+    }
+    if (cc->opt_fog) { n += 4; }
+    if (cc->opt_grayscale) { n += 4; }
+
+    if (cc->num_inputs >= 1) {
+        *color_off = n;
+        *color_size = cc->opt_alpha ? 4 : 3;
+    } else {
+        *color_off = -1;
+        *color_size = 0;
+    }
+
+    int total = n;
+    for (int i = 0; i < cc->num_inputs; i++) {
+        total += cc->opt_alpha ? 4 : 3;
+    }
+    *stride = total;
+}
+
 static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
-    (void)buf_vbo; (void)buf_vbo_len; (void)buf_vbo_num_tris;
-    // TODO(nv2a): submit buf_vbo as a triangle list through pbkit. The per-vertex
-    // float layout matches g.cur_shader (4 pos + per-texture UVs + per-input combiner
-    // colours + optional fog/grayscale) -- mirror gfx_opengl's draw_triangles
-    // attribute walk. Positions arrive in CLIP space already (the immediate path),
-    // so program an identity transform (or fold uMVP/the fixups via set_mvp). Push
-    // the inline vertex data + a DRAW_ARRAYS to the NV2A.
+    (void)buf_vbo_len;
+    if (!g.cur_shader) { return; }
+
+    int stride, color_off, color_size, uv0_off;
+    nxdk_vertex_layout(&g.cur_shader->cc, &stride, &color_off, &color_size, &uv0_off);
+
+    const size_t nverts = buf_vbo_num_tris * 3;
+    if (nverts == 0) { return; }
+
+    // Grow the GPU-visible scratch if needed.
+    if (nverts > g.vtx_caps) {
+        if (g.vtx) { MmFreeContiguousMemory(g.vtx); }
+        g.vtx_caps = nverts + 256;
+        g.vtx = (float *)MmAllocateContiguousMemory(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
+        if (!g.vtx) { g.vtx_caps = 0; return; }
+    }
+
+    // De-interleave fast3d's variable layout into a fixed [pos4, colour4].
+    for (size_t v = 0; v < nverts; v++) {
+        const float *src = buf_vbo + v * (size_t)stride;
+        float *dst = g.vtx + v * NXDK_VTX_FLOATS;
+        dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+        if (color_off >= 0) {
+            const float *c = src + color_off;
+            dst[4] = c[0]; dst[5] = c[1]; dst[6] = c[2];
+            dst[7] = (color_size == 4) ? c[3] : 1.0f;
+        } else {
+            dst[4] = dst[5] = dst[6] = dst[7] = 1.0f;
+        }
+    }
+
+    // Bind the arrays and draw. TODO(nv2a): texcoords + texture sampling + the real
+    // N64 colour-combiner -> NV2A register combiners. Phase 1 is position + the shade
+    // colour only (relying on pbkit's default combiner to surface the diffuse).
+    const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
+    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, g.vtx);
+    xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, g.vtx + 4);
+    // Disable arrays we don't supply so a previous draw's binding can't dangle.
+    xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
+    xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
+    xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
+
+    xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)nverts);
 }
 
 // ---------------------------------------------------------------------------------
@@ -239,8 +351,29 @@ static void nxdk_init(void) {
 }
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
-static void nxdk_start_frame(void) { /* TODO(pbkit): pb_wait_for_vbl / begin push buffer */ }
-static void nxdk_end_frame(void) { /* TODO(pbkit): flush the push buffer */ }
+
+static void nxdk_start_frame(void) {
+    // Per-frame global transform state. fast3d hands us CLIP-space vertices (it does
+    // the CPU transform), so program the NV2A fixed-function transform as a pass-
+    // through: identity composite matrix -> the GPU only does the perspective divide
+    // + viewport (set in nxdk_set_viewport). Lighting/culling off (fast3d culls on
+    // the CPU and bakes lighting into the vertex colours).
+    static const float ident[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    uint32_t *p = pb_begin();
+    p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
+    p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
+    p = xgu_set_lighting_enable(p, false);
+    p = xgu_set_cull_face_enable(p, false);
+    p = xgu_set_composite_matrix(p, ident);
+    pb_end(p);
+}
+
+static void nxdk_end_frame(void) { /* push buffer is flushed by the WM swap */ }
 static void nxdk_finish_render(void) { /* TODO(pbkit): pb_finished / wait for GPU idle */ }
 
 // ---------------------------------------------------------------------------------

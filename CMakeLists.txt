@@ -403,6 +403,18 @@ if(XBOX_NXDK)
                     "native NV2A renderer will fail to link; build an NXDK graphics "
                     "sample (e.g. samples/triangle) once to produce it.")
   endif()
+
+  # XGU: header-only NV2A helper (vertex submission, transform/combiner state) the
+  # gfx_nxdk renderer uses on top of pbkit. nxdk-sdl3 vendors it under
+  # nxdk_glue/render/xgu/ (a submodule). Add its parent so `#include <xgu/xgu.h>`
+  # resolves. Header-only, so nothing to link.
+  if(DEFINED NXDK_SDL3_DIR AND EXISTS "${NXDK_SDL3_DIR}/nxdk_glue/render/xgu/xgu.h")
+    include_directories(SYSTEM "${NXDK_SDL3_DIR}/nxdk_glue/render")
+  else()
+    message(WARNING "XBOX_NXDK: XGU headers not found under "
+                    "${NXDK_SDL3_DIR}/nxdk_glue/render/xgu -- the gfx_nxdk renderer "
+                    "will not compile. Ensure nxdk-sdl3 submodules are checked out.")
+  endif()
 endif()
 if(USE_SDLGPU)
   if(USE_SDLGPU_STATIC)
