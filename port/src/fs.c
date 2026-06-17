@@ -419,24 +419,6 @@ void *fsFileLoad(const char *name, u32 *outSize)
 	const s32 size = ftell(f);
 	fseek(f, 0, SEEK_SET);
 
-#ifdef NXDK
-	{
-		u32 memUsed = 0, memTotal = 0;
-		videoGetMemoryUsage(&memUsed, &memTotal);
-		NXDK_FS_TRACE("PDBOOT: mem used %u MB / total %u MB, free %u MB\n",
-			memUsed / 1048576u, memTotal / 1048576u,
-			(memTotal > memUsed) ? (memTotal - memUsed) / 1048576u : 0u);
-		// The 32 MB ROM calloc hangs without returning, and the screen flashes make
-		// the readout above hard to catch. Halt right before the big alloc so the mem
-		// line stays static and readable. Gated to large loads so small file reads
-		// during boot don't trip it. DIAGNOSTIC -- remove once the alloc is sorted.
-		if (size > 1024 * 1024) {
-			NXDK_FS_TRACE("PDBOOT: HALT before %d-byte alloc (read mem line above)\n", size);
-			for (;;) { /* freeze with the memory readout on screen */ }
-		}
-	}
-#endif
-
 	NXDK_FS_TRACE("PDBOOT: fsFileLoad size %d, allocating\n", size);
 
 	if (size < 0) {
@@ -447,16 +429,32 @@ void *fsFileLoad(const char *name, u32 *outSize)
 
 	void *buf = NULL;
 	if (size) {
-		buf = sysMemZeroAlloc(size + 1); // sick hack for a free null terminator
+#ifdef NXDK
+		// calloc(size+1) hung on the 32 MB ROM despite 45 MB free: the issue isn't an
+		// OOM but the 32 MB zero-fill (slow/faulting on NV2A). fread overwrites the
+		// whole buffer anyway, so use a plain malloc and set just the trailing null
+		// byte (the "free null terminator" the calloc was for). Trace right after the
+		// malloc so a malloc-hang is distinguishable from a fill/read hang.
+		buf = sysMemAlloc(size + 1);
 		if (!buf) {
-			NXDK_FS_TRACE("PDBOOT: fsFileLoad alloc FAILED (%d bytes)\n", size + 1);
+			NXDK_FS_TRACE("PDBOOT: fsFileLoad malloc FAILED (%d bytes)\n", size + 1);
 			sysLogPrintf(LOG_ERROR, "fsFileLoad: could not alloc %d bytes for file: %s", size, fullName);
 			fclose(f);
 			return NULL;
 		}
-		NXDK_FS_TRACE("PDBOOT: fsFileLoad alloc ok, reading %d bytes\n", size);
+		((u8 *)buf)[size] = '\0';
+		NXDK_FS_TRACE("PDBOOT: fsFileLoad malloc ok, reading %d bytes\n", size);
 		fread(buf, 1, size, f);
 		NXDK_FS_TRACE("PDBOOT: fsFileLoad read complete\n");
+#else
+		buf = sysMemZeroAlloc(size + 1); // sick hack for a free null terminator
+		if (!buf) {
+			sysLogPrintf(LOG_ERROR, "fsFileLoad: could not alloc %d bytes for file: %s", size, fullName);
+			fclose(f);
+			return NULL;
+		}
+		fread(buf, 1, size, f);
+#endif
 	}
 
 	fclose(f);
