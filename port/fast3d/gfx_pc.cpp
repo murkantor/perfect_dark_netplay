@@ -3485,9 +3485,16 @@ extern "C" void gfx_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
 
 #ifdef NXDK
 // Temporary boot bring-up tracing (a video mode is forced in main()). debugPrint
-// is C-linkage and NXDK-only. Remove once boot is solid.
+// is C-linkage and NXDK-only. Remove once boot is solid. A short per-trace delay
+// matches main.c's paced boot trace so the gfx burst (which is otherwise too fast
+// to read) is legible and the exact hang point is visible on a frozen screen.
 #include <hal/debug.h>
-#define NXDK_GFX_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#include <threads.h>
+static inline void nxdk_gfx_trace_delay(void) {
+    struct timespec ts = { 0, 150 * 1000 * 1000 }; // 150ms
+    thrd_sleep(&ts, NULL);
+}
+#define NXDK_GFX_TRACE(s) do { debugPrint("PDBOOT: " s "\n"); nxdk_gfx_trace_delay(); } while (0)
 #else
 #define NXDK_GFX_TRACE(s) ((void)0)
 #endif
@@ -3527,6 +3534,7 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
 #endif
         NXDK_GFX_TRACE("gfx: texbuf");
         tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
+        NXDK_GFX_TRACE(tex_upload_buffer ? "gfx: texbuf ok" : "gfx: texbuf NULL");
     }
     NXDK_GFX_TRACE("gfx: done");
 
