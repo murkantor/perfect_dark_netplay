@@ -346,6 +346,18 @@ if(DEDICATED_SERVER OR NINTENDO_SWITCH OR XBOX_NXDK)
   # No Vulkan / glslang on the Switch or OG Xbox.
   set(USE_SDLGPU OFF)
 endif()
+
+if(XBOX_NXDK)
+  # NXDK's clang triple (i386-pc-win32) defines _MSC_VER and _WIN32, so several
+  # vendored libs take their MSVC/Windows code paths, which don't suit the OG Xbox:
+  #  * minimp3 selects its SSE2 SIMD path, but the Pentium III only has SSE1 ->
+  #    MINIMP3_NO_SIMD forces the scalar decoder.
+  #  * glad's GL-version parse calls MSVC's sscanf_s (pdclib has no sscanf_s) ->
+  #    remap the token to plain sscanf. Only glad uses it, and nothing on NXDK
+  #    declares a real sscanf_s, so the macro is contained.
+  add_compile_definitions(MINIMP3_NO_SIMD)
+  add_compile_definitions(sscanf_s=sscanf)
+endif()
 if(USE_SDLGPU)
   if(USE_SDLGPU_STATIC)
     # Static link. MSYS2 ships .a archives alongside the DLLs, but the glslang
