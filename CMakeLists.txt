@@ -393,6 +393,16 @@ if(XBOX_NXDK)
                     "build NXDK's net lib (it ships with the networking samples) or "
                     "ENet will fail to link.")
   endif()
+
+  # pbkit: the native NV2A renderer (gfx_nxdk) drives the GPU through pbkit. Always
+  # present in NXDK (built with the triangle/graphics samples).
+  if(EXISTS "$ENV{NXDK_DIR}/lib/libpbkit.lib")
+    list(APPEND LIBS "$ENV{NXDK_DIR}/lib/libpbkit.lib")
+  else()
+    message(WARNING "XBOX_NXDK: libpbkit.lib not found in $ENV{NXDK_DIR}/lib -- the "
+                    "native NV2A renderer will fail to link; build an NXDK graphics "
+                    "sample (e.g. samples/triangle) once to produce it.")
+  endif()
 endif()
 if(USE_SDLGPU)
   if(USE_SDLGPU_STATIC)

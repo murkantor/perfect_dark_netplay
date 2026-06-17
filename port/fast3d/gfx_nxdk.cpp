@@ -23,6 +23,10 @@
 #include <string.h>
 #include <time.h>
 
+#include <pbkit/pbkit.h>
+#include <hal/video.h>
+#include <hal/debug.h>
+
 #include "gfx_rendering_api.h"
 #include "gfx_window_manager_api.h"
 #include "gfx_cc.h"
@@ -399,11 +403,22 @@ static void wm_init(const struct GfxWindowInitSettings *settings) {
     g.width = settings ? settings->width : 640;
     g.height = settings ? settings->height : 480;
     g.time0 = nxdk_now();
-    // TODO(pbkit): bring up the NV2A display (pb_init + set the initial video mode;
-    // see the M4 HD-mode table / xboxVideoModeAvailable in video.c).
+    // Phase 0: bring up the NV2A display via pbkit (the native renderer owns the
+    // device; there's no SDL GL window). main() already set a video mode for the
+    // boot trace; pb_init wants to own it, so set it again at our dimensions.
+    XVideoSetMode((int)g.width, (int)g.height, 32, REFRESH_DEFAULT);
+    int err = pb_init();
+    if (err) {
+        debugPrint("PDBOOT: pb_init FAILED %d\n", err);
+        return;
+    }
+    pb_show_front_screen();
+    g.width = (uint32_t)pb_back_buffer_width();
+    g.height = (uint32_t)pb_back_buffer_height();
+    debugPrint("PDBOOT: pb_init ok %dx%d\n", (int)g.width, (int)g.height);
 }
 
-static void wm_close(void) { /* TODO(pbkit): pb_kill */ }
+static void wm_close(void) { pb_kill(); }
 
 static int wm_get_display_mode(int modenum, int *out_w, int *out_h) {
     // TODO(M4): enumerate the Xbox-allowed modes (480i/480p/720p/1080i) filtered by
@@ -466,9 +481,26 @@ static void wm_handle_events(void) {
     // no-op if gfx_sdl is the real WM.
 }
 
-static bool wm_start_frame(void) { return true; }
-static void wm_swap_buffers_begin(void) { /* TODO(pbkit): present the back buffer */ }
-static void wm_swap_buffers_end(void) { /* TODO(pbkit): pb_wait_for_vbl */ }
+static bool wm_start_frame(void) {
+    pb_wait_for_vbl();
+    pb_reset();
+    pb_target_back_buffer();
+    // Phase 0: clear the whole back buffer to a recognisable colour so we can confirm
+    // the NV2A present path works before any geometry is wired. ARGB; 0xFF0000FF =
+    // blue. (Once draw_triangles works, the engine's clear_framebuffer takes over.)
+    int w = pb_back_buffer_width();
+    int h = pb_back_buffer_height();
+    pb_erase_depth_stencil_buffer(0, 0, w, h);
+    pb_fill(0, 0, w, h, 0xFF0000FF);
+    pb_erase_text_screen();
+    while (pb_busy()) { }
+    return true;
+}
+static void wm_swap_buffers_begin(void) { /* present happens in swap_buffers_end */ }
+static void wm_swap_buffers_end(void) {
+    while (pb_busy()) { }
+    while (pb_finished()) { }
+}
 static double wm_get_time(void) { return nxdk_now() - g.time0; }
 static int32_t wm_get_target_fps(void) { return g.target_fps; }
 static void wm_set_target_fps(int fps) { g.target_fps = fps; }
