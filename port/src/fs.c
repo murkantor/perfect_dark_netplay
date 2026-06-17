@@ -19,6 +19,16 @@
 #include <direct.h>
 #endif
 
+#ifdef NXDK
+// Temporary boot-bring-up tracing: the ROM load path is invisible via sysLogPrintf
+// on NXDK (stdout/console not surfaced during boot), so trace the resolved fopen
+// path + result to the debug overlay. Remove once boot is solid.
+#include <hal/debug.h>
+#define NXDK_FS_TRACE(...) debugPrint(__VA_ARGS__)
+#else
+#define NXDK_FS_TRACE(...) ((void)0)
+#endif
+
 #define DEFAULT_BASEDIR_NAME "data"
 
 static char baseDir[FS_MAXPATH + 1]; // replaces $B
@@ -373,8 +383,11 @@ void *fsFileLoad(const char *name, u32 *outSize)
 {
 	const char *fullName = fsFullPath(name);
 
+	NXDK_FS_TRACE("PDBOOT: fsFileLoad open '%s'\n", fullName);
+
 	FILE *f = fopen(fullName, "rb");
 	if (!f) {
+		NXDK_FS_TRACE("PDBOOT: fsFileLoad fopen FAILED '%s'\n", fullName);
 		sysLogPrintf(LOG_ERROR, "fsFileLoad: could not find file: %s", fullName);
 		return NULL;
 	}
@@ -382,6 +395,8 @@ void *fsFileLoad(const char *name, u32 *outSize)
 	fseek(f, 0, SEEK_END);
 	const s32 size = ftell(f);
 	fseek(f, 0, SEEK_SET);
+
+	NXDK_FS_TRACE("PDBOOT: fsFileLoad size %d, allocating\n", size);
 
 	if (size < 0) {
 		sysLogPrintf(LOG_ERROR, "fsFileLoad: empty file or invalid size (%d): %s", size, fullName);
@@ -401,6 +416,8 @@ void *fsFileLoad(const char *name, u32 *outSize)
 	}
 
 	fclose(f);
+
+	NXDK_FS_TRACE("PDBOOT: fsFileLoad done '%s' (%d bytes)\n", fullName, size);
 
 	if (outSize) {
 		*outSize = size;

@@ -274,7 +274,14 @@ void sysFatalError(const char *fmt, ...)
 	fflush(stdout);
 	fflush(stderr);
 
-#ifndef DEDICATED_SERVER
+#ifdef NXDK
+	// On NXDK sysLogPrintf goes nowhere visible (stdout/stderr are dropped during
+	// boot and the in-game console isn't rendered yet) and SDL_ShowSimpleMessageBox
+	// crashes nxdk-sdl3. Print the reason to the debug text overlay and halt so it
+	// stays readable on screen / in xemu instead of corrupting into garbage.
+	debugPrint("PDFATAL: %s\n", errmsg);
+	for (;;) { /* spin so the message stays on screen */ }
+#elif !defined(DEDICATED_SERVER)
 	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Fatal error", errmsg, NULL);
 #endif
 
