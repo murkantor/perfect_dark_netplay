@@ -26,6 +26,10 @@
 #include <hal/debug.h>
 #define NXDK_FS_TRACE(...) debugPrint(__VA_ARGS__)
 
+// For the boot-time memory readout before the big ROM alloc. Declared extern to
+// avoid pulling video.h (and SDL) into fs.c.
+extern void videoGetMemoryUsage(u32 *used, u32 *total);
+
 // NXDK's file API (kernel CreateFile) requires BACKSLASH path separators and chokes
 // on the forward slashes our path code builds (e.g. "D:/data/pd.ntsc-final.z64" hung
 // the box mid-fopen instead of opening or cleanly failing). Translate '/'->'\' at the
@@ -414,6 +418,16 @@ void *fsFileLoad(const char *name, u32 *outSize)
 	fseek(f, 0, SEEK_END);
 	const s32 size = ftell(f);
 	fseek(f, 0, SEEK_SET);
+
+#ifdef NXDK
+	{
+		u32 memUsed = 0, memTotal = 0;
+		videoGetMemoryUsage(&memUsed, &memTotal);
+		NXDK_FS_TRACE("PDBOOT: mem used %u MB / total %u MB, free %u MB\n",
+			memUsed / 1048576u, memTotal / 1048576u,
+			(memTotal > memUsed) ? (memTotal - memUsed) / 1048576u : 0u);
+	}
+#endif
 
 	NXDK_FS_TRACE("PDBOOT: fsFileLoad size %d, allocating\n", size);
 
