@@ -423,10 +423,13 @@ void lvReset(s32 stagenum)
 		}
 	}
 
-	LVBOOT_TRACE("lvReset: animsReset");
+	LVBOOT_TRACE("lvReset: mpSetDefaultNames");
 	mpSetDefaultNamesIfEmpty();
+	LVBOOT_TRACE("lvReset: animsReset");
 	animsReset();
+	LVBOOT_TRACE("lvReset: objectivesReset");
 	objectivesReset();
+	LVBOOT_TRACE("lvReset: vtxstoreReset");
 	vtxstoreReset();
 	LVBOOT_TRACE("lvReset: modelmgrReset");
 	modelmgrReset();
