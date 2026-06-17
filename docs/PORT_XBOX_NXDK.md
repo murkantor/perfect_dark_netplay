@@ -33,9 +33,10 @@ export NXDK_SDL3_DIR=/path/to/nxdk-sdl3
 # -> build_xbox/default.xbe  (run in xemu or on hardware)
 ```
 
-Internally this drives `cmake/toolchain-nxdk.cmake` (sets `XBOX_NXDK`, uses NXDK's
-own `nxdk-cc`/`nxdk-cxx`/`nxdk-as` wrappers as the compilers) and the `XBOX_NXDK`
-branches in `CMakeLists.txt`. `NXDK_DIR` must be exported (the wrappers expand it).
+Internally this drives `cmake/toolchain-nxdk.cmake`, which `include()`s NXDK's own
+`$NXDK_DIR/share/toolchain-nxdk.cmake` (compilers/archiver/linker/suffixes) and adds
+`XBOX_NXDK` + the `cxbe` path, plus the `XBOX_NXDK` branches in `CMakeLists.txt`.
+`NXDK_DIR` must be exported (the nxdk-cc/cxx wrappers expand it).
 
 ## Milestones
 
@@ -155,18 +156,22 @@ in `nxdk_copy_framebuffer`.
 
 - [ ] **NXDK predefine** — is it `NXDK`? (`platform.h` + toolchain assume `-DNXDK` /
       `defined(NXDK)`.)
-- [x] **CMake toolchain** — RESOLVED. `cmake/toolchain-nxdk.cmake` no longer guesses
-      the clang triple/flags: it drives NXDK's own `$NXDK_DIR/bin/nxdk-cc` /
-      `nxdk-cxx` / `nxdk-as` wrapper scripts as the CMake compilers, so the project's
-      compile/link invocation is byte-for-byte the verified one (target
-      `i386-pc-win32`, `-march=pentium3`, `-fuse-ld=nxdk-link`, `-ffreestanding
-      -nostdlib`, the pdclib/winapi/xboxrt include roots, `-DNXDK`). Static archives
-      go through `nxdk-lib`; the final-link `.exe` suffix is pinned so the `cxbe`
-      POST_BUILD finds `${BIN_NAME}.exe`. `cxbe` is auto-located under
-      `$NXDK_DIR/tools/cxbe`. NXDK does ship its own `bin/nxdk-cmake` wrapper (a thin
-      `cmake -DCMAKE_TOOLCHAIN_FILE=...` shim); we keep our own toolchain file so the
-      `XBOX_NXDK` flag + find-root + SDL3 branch stay under our control. Still needs a
-      real configure+build on the NXDK install to shake out per-target flag gaps.
+- [x] **CMake toolchain** — RESOLVED by *delegation*. `cmake/toolchain-nxdk.cmake`
+      now `include()`s NXDK's own authoritative toolchain at
+      `$NXDK_DIR/share/toolchain-nxdk.cmake` (the file the `nxdk-cmake` wrapper
+      drives), then layers only `XBOX_NXDK` + the `cxbe` path on top. This was a
+      correction: hand-setting `CMAKE_AR = nxdk-lib` broke the compiler probe
+      (`nxdk-lib qc libfoo.a` → `qc: no such file` — `nxdk-lib` is `llvm-lib`,
+      lib.exe-style, but CMake drives `CMAKE_AR` with GNU `ar qc ...` syntax). NXDK's
+      toolchain instead archives static libs with **`llvm-ar`** (`CMAKE_C_COMPILER_AR`)
+      and links the `.exe` with a custom `nxdk-link ... -out:<TARGET>` rule plus the
+      standard Xbox libs (`libwinapi`/`libxboxkrnl`/`libxboxrt`/`libpdclib`/
+      `libnxdk_hal`/`libnxdk`/`nxdk_usb`, +`libc++` for C++). It also sets `.lib`/
+      `.exe` suffixes, `CMAKE_SYSROOT=$NXDK_DIR`, `WIN32 1`, and `NXDK 1`. Because it
+      sets `WIN32 1`, every `XBOX_NXDK` branch in `CMakeLists.txt` is listed BEFORE
+      its `WIN32` branch so `XBOX_NXDK` wins. `cxbe` is auto-located under
+      `$NXDK_DIR/tools/cxbe`. The compiler probe now passes; next is the engine
+      compile + `find_package(ZLIB)`.
 - [ ] **PE→XBE step** — `cxbe` path/flags in the `CMakeLists.txt` POST_BUILD (NXDK
       normally drives this from its Makefile). Output: `default.xbe`.
 - [x] **nxdk-sdl3 integration** — RESOLVED. It has **no install step**: per its
