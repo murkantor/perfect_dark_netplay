@@ -3483,15 +3483,28 @@ extern "C" void gfx_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
     gfx_wapi->get_dimensions(width, height, posX, posY);
 }
 
+#ifdef NXDK
+// Temporary boot bring-up tracing (a video mode is forced in main()). debugPrint
+// is C-linkage and NXDK-only. Remove once boot is solid.
+#include <hal/debug.h>
+#define NXDK_GFX_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#else
+#define NXDK_GFX_TRACE(s) ((void)0)
+#endif
+
 extern "C" void gfx_init(const GfxInitSettings *settings) {
     gfx_wapi = settings->wapi;
     gfx_rapi = settings->rapi;
+    NXDK_GFX_TRACE("gfx: wapi.init");
     gfx_wapi->init(&settings->window_settings);
+    NXDK_GFX_TRACE("gfx: rapi.init");
     gfx_rapi->init();
+    NXDK_GFX_TRACE("gfx: fbparams");
     gfx_rapi->update_framebuffer_parameters(0, settings->window_settings.width, settings->window_settings.height, 1, false, true, true, true);
     gfx_current_dimensions.internal_mul = 1;
     gfx_current_game_window_viewport.width = gfx_current_dimensions.width = settings->window_settings.width;
     gfx_current_game_window_viewport.height = gfx_current_dimensions.height = settings->window_settings.height;
+    NXDK_GFX_TRACE("gfx: createfb");
     game_framebuffer = gfx_rapi->create_framebuffer();
     game_framebuffer_msaa_resolved = gfx_rapi->create_framebuffer();
 
@@ -3507,8 +3520,15 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
     if (tex_upload_buffer == nullptr) {
         // We cap texture max to 8k, because why would you need more?
         int max_tex_size = std::min(8192, gfx_rapi->get_max_texture_size());
+#ifdef NXDK
+        // 64 MB unified RAM: an 8192^2 RGBA buffer is 256 MB. The N64 uploads tiny
+        // textures (and HD packs are off on Xbox), so cap hard (1024^2 = 4 MB).
+        max_tex_size = std::min(max_tex_size, 1024);
+#endif
+        NXDK_GFX_TRACE("gfx: texbuf");
         tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
     }
+    NXDK_GFX_TRACE("gfx: done");
 
     rsp.lookat[0].dir[0] = rsp.lookat[1].dir[1] = 0x7F;
     rsp.current_lookat_coeffs[0][0] = rsp.current_lookat_coeffs[1][1] = 1.f;
