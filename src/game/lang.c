@@ -474,6 +474,18 @@ char *langGet(s32 textid)
 		addr = 0;
 	}
 
+#ifndef PLATFORM_N64
+	// Never return NULL: many callers strcpy/sprintf the result, and NXDK's libc
+	// faults on a NULL %s / strcpy(dst, NULL) (glibc tolerates it). Degrade missing
+	// or unresolved text to an empty string instead of crashing. (If text is coming
+	// back empty in-game, the lang bank data didn't resolve -- a separate content
+	// issue, not a crash.)
+	if (addr == 0) {
+		static char s_LangEmpty[1] = "";
+		return s_LangEmpty;
+	}
+#endif
+
 	return (char *)addr;
 }
 
