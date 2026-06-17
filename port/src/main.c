@@ -120,36 +120,17 @@ static void cleanup(void)
 #ifdef NXDK
 #include <hal/debug.h>
 #include <hal/video.h>
-#include <stdint.h>
-// Boot-stage tracing for the Original Xbox bring-up: prints each init stage to the
-// screen (debugPrint, visible until the renderer takes the framebuffer) AND appends
-// it to "pdboot.log" (flushed each stage) so the LAST line names the stage that hung
-// even after a hard lock -- read the log back over FTP / a file manager. The hung
-// stage is the last one printed (it was entered but never completed). Remove this
-// scaffolding once boot is solid. See docs/PORT_XBOX_NXDK.md.
-//
-// A short delay paces the trace so later stages don't fly past in one unreadable
-// burst. Both thrd_sleep AND KeStallExecutionProcessor HANG once pb_init() (in
-// videoInit's gfx_wapi->init) has reconfigured the NV2A + timer state -- the freeze
-// showed up as the first paced delay after pb_init. So spin on rdtsc instead: it's a
-// pure CPU instruction that keeps counting regardless of timer/interrupt state and
-// can't deadlock. The OG Xbox CPU is a fixed 733.33 MHz, so 32ms ~= 23.5M ticks.
-static inline uint64_t xboxRdtsc(void)
-{
-	uint32_t lo, hi;
-	__asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
-	return ((uint64_t)hi << 32) | lo;
-}
-static inline void xboxBootDelay(void)
-{
-	const uint64_t target = xboxRdtsc() + 23500000ULL; // ~32ms at 733MHz
-	while (xboxRdtsc() < target) { __asm__ __volatile__("" ::: "memory"); }
-}
+#include "xboxtrace.h"
+// Boot-stage tracing for the Original Xbox bring-up. xboxTraceStage() accumulates
+// every stage and reprints the whole list on a cleared screen, so the frozen screen
+// always shows the complete numbered sequence with the hung stage as the last line --
+// no delays (every timer-based pacing we tried hangs or no-ops after pb_init). Also
+// appends to "pdboot.log" so the trace can be read back over FTP / a file manager.
+// Remove this scaffolding once boot is solid. See docs/PORT_XBOX_NXDK.md.
 #define XBOX_BOOT_TRACE(stage) do { \
-		debugPrint("PDBOOT: " stage "\n"); \
+		xboxTraceStage(stage); \
 		FILE *_bt = fopen("pdboot.log", "a"); \
 		if (_bt) { fputs("PDBOOT: " stage "\n", _bt); fclose(_bt); } \
-		xboxBootDelay(); \
 	} while (0)
 #else
 #define XBOX_BOOT_TRACE(stage) ((void)0)
@@ -164,7 +145,7 @@ int main(int argc, const char **argv)
 	// every early PDBOOT line draws to nothing and an early hang looks like a frozen
 	// boot logo. SDL re-sets the mode in videoInit(); this is just for bring-up.
 	XVideoSetMode(640, 480, 32, REFRESH_DEFAULT);
-	debugPrint("PDBOOT: main() entered\n");
+	xboxTraceStage("main() entered");
 #endif
 	sysInitArgs(argc, argv);
 
