@@ -25,8 +25,25 @@
 // path + result to the debug overlay. Remove once boot is solid.
 #include <hal/debug.h>
 #define NXDK_FS_TRACE(...) debugPrint(__VA_ARGS__)
+
+// NXDK's file API (kernel CreateFile) requires BACKSLASH path separators and chokes
+// on the forward slashes our path code builds (e.g. "D:/data/pd.ntsc-final.z64" hung
+// the box mid-fopen instead of opening or cleanly failing). Translate '/'->'\' at the
+// OS open boundary. The result lives in a private static buffer, distinct from
+// fsFullPath's, so fopen(fsOsPath(fsFullPath(x))) is safe.
+static const char *fsOsPath(const char *path)
+{
+	static char osbuf[FS_MAXPATH + 1];
+	u32 i = 0;
+	for (; path[i] && i < FS_MAXPATH; ++i) {
+		osbuf[i] = (path[i] == '/') ? '\\' : path[i];
+	}
+	osbuf[i] = '\0';
+	return osbuf;
+}
 #else
 #define NXDK_FS_TRACE(...) ((void)0)
+#define fsOsPath(p) (p)
 #endif
 
 #define DEFAULT_BASEDIR_NAME "data"
@@ -51,10 +68,10 @@ static s32 fsPathIsWritable(const char *path)
 	// (NXDK has no access()/W_OK either; probe by trying to create a temp file).
 	char tmp[FS_MAXPATH + 1] = { 0 };
 	snprintf(tmp, sizeof(tmp), "%s/.tmp", path);
-	FILE *f = fopen(tmp, "wb");
+	FILE *f = fopen(fsOsPath(tmp), "wb");
 	if (f) {
 		fclose(f);
-		remove(tmp);
+		remove(fsOsPath(tmp));
 		return 1;
 	}
 	return 0;
@@ -352,7 +369,7 @@ s32 fsFileLoadTo(const char *name, void *dst, u32 dstSize)
 {
 	const char *fullName = fsFullPath(name);
 
-	FILE *f = fopen(fullName, "rb");
+	FILE *f = fopen(fsOsPath(fullName), "rb");
 	if (!f) {
 		return -1;
 	}
@@ -383,14 +400,16 @@ void *fsFileLoad(const char *name, u32 *outSize)
 {
 	const char *fullName = fsFullPath(name);
 
-	NXDK_FS_TRACE("PDBOOT: fsFileLoad open '%s'\n", fullName);
+	NXDK_FS_TRACE("PDBOOT: fsFileLoad open '%s'\n", fsOsPath(fullName));
 
-	FILE *f = fopen(fullName, "rb");
+	FILE *f = fopen(fsOsPath(fullName), "rb");
 	if (!f) {
-		NXDK_FS_TRACE("PDBOOT: fsFileLoad fopen FAILED '%s'\n", fullName);
+		NXDK_FS_TRACE("PDBOOT: fsFileLoad fopen FAILED '%s'\n", fsOsPath(fullName));
 		sysLogPrintf(LOG_ERROR, "fsFileLoad: could not find file: %s", fullName);
 		return NULL;
 	}
+
+	NXDK_FS_TRACE("PDBOOT: fsFileLoad fopen ok, seeking\n");
 
 	fseek(f, 0, SEEK_END);
 	const s32 size = ftell(f);
@@ -431,7 +450,7 @@ s32 fsFileSize(const char *name)
 	const char *fullName = fsFullPath(name);
 #ifdef NXDK
 	// NXDK has no stat(); size via open + seek-to-end.
-	FILE *f = fopen(fullName, "rb");
+	FILE *f = fopen(fsOsPath(fullName), "rb");
 	if (!f) {
 		return -1;
 	}
@@ -451,12 +470,12 @@ s32 fsFileSize(const char *name)
 
 FILE *fsFileOpenWrite(const char *name)
 {
-	return fopen(fsFullPath(name), "wb");
+	return fopen(fsOsPath(fsFullPath(name)), "wb");
 }
 
 FILE *fsFileOpenRead(const char *name)
 {
-	return fopen(fsFullPath(name), "rb");
+	return fopen(fsOsPath(fsFullPath(name)), "rb");
 }
 
 void fsFileFree(FILE *f)
