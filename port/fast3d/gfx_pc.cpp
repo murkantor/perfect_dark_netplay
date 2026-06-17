@@ -3534,7 +3534,11 @@ extern "C" void gfx_init(const GfxInitSettings *settings) {
 #endif
         NXDK_GFX_TRACE("gfx: texbuf");
         tex_upload_buffer = (uint8_t*)malloc(max_tex_size * max_tex_size * 4);
-        NXDK_GFX_TRACE(tex_upload_buffer ? "gfx: texbuf ok" : "gfx: texbuf NULL");
+        if (tex_upload_buffer) {
+            NXDK_GFX_TRACE("gfx: texbuf ok");
+        } else {
+            NXDK_GFX_TRACE("gfx: texbuf NULL");
+        }
     }
     NXDK_GFX_TRACE("gfx: done");
 
