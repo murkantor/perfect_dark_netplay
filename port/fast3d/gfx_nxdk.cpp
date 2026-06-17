@@ -483,18 +483,6 @@ static void wm_handle_events(void) {
 }
 
 static bool wm_start_frame(void) {
-    // Phase 0 decisive checkpoint: on the FIRST render-loop entry, print an
-    // unmistakable marker (via raw debugPrint, which we know works) and HALT before
-    // anything clears the screen. If this shows, boot completed all init and reached
-    // the render loop (so a later black screen is a present/clear issue, not a hang);
-    // if it never shows, boot is stuck before the loop (e.g. the input->audio
-    // transition) and we look there. Remove once boot is solid.
-    static int s_first_frame = 1;
-    if (s_first_frame) {
-        s_first_frame = 0;
-        xboxTraceStage("RENDER LOOP REACHED (frame 0)");
-        for (;;) { /* halt with the marker on screen */ }
-    }
     pb_wait_for_vbl();
     pb_reset();
     pb_target_back_buffer();
@@ -507,9 +495,9 @@ static bool wm_start_frame(void) {
     pb_fill(0, 0, w, h, 0xFF0000FF);
     pb_erase_text_screen();
     while (pb_busy()) { }
-    // Phase 0 liveness marker: a frame counter drawn over the blue clear. If this
-    // number ticks up on screen, the render loop + present are alive (and we debug
-    // colour); if the screen is frozen with no number, boot hung before/in frame 1.
+    // Phase 0 liveness marker: a frame counter drawn over the blue clear (raw
+    // debugPrint, screen-only -- not the boot log, so it doesn't spam E:\pdboot.log
+    // per frame). A ticking number on a blue field confirms the loop + present work.
     static unsigned s_nxdk_frame = 0;
     debugPrint("PDBOOT: frame %u\n", s_nxdk_frame++);
     return true;
