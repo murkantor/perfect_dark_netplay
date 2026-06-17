@@ -19,6 +19,9 @@
 #include "lib/rng.h"
 #include "data.h"
 #include "types.h"
+#ifdef NXDK
+#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
+#endif
 
 u8 g_MpFeaturesForceUnlocked[40];
 u8 g_MpFeaturesUnlocked[80];
@@ -418,6 +421,11 @@ struct mpconfigfull *challengeLoadConfig(s32 confignum, u8 *buffer, s32 len)
 		{ (BTYPE)REF_SEG _mpstringsISegmentRomStart, (BTYPE)REF_SEG _mpstringsISegmentRomEnd },
 	};
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: chLoadCfg cfg=%d lang=%u seg=%p", confignum, language_id,
+		(void *)REF_SEG _mpconfigsSegmentRomStart);
+#endif
+
 	// Load mpconfigs
 #ifdef PLATFORM_N64
 	mpconfig = dmaExecWithAutoAlign(buffer, (BTYPE)&_mpconfigsSegmentRomStart[confignum], sizeof(struct mpconfig));
@@ -425,9 +433,17 @@ struct mpconfigfull *challengeLoadConfig(s32 confignum, u8 *buffer, s32 len)
 	mpconfig = dmaExecWithAutoAlign(buffer, (BTYPE)REF_SEG _mpconfigsSegmentRomStart + confignum * sizeof(struct mpconfig), sizeof(struct mpconfig));
 #endif
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: chLoadCfg mpconfig dma ok, bank=%p", (void *)banks[language_id][0]);
+#endif
+
 	// Load mpstrings
 	bank = banks[language_id][0];
 	loadedstrings = dmaExecWithAutoAlign(buffer2, bank + confignum * sizeof(struct mpstrings), sizeof(struct mpstrings));
+
+#ifdef NXDK
+	xboxTracef("PDBOOT: chLoadCfg strings dma ok");
+#endif
 
 	mpconfig->config = g_MpConfigs[confignum];
 	mpconfig->strings = *loadedstrings;
