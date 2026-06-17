@@ -19,9 +19,6 @@
 #include "lib/rng.h"
 #include "data.h"
 #include "types.h"
-#ifdef NXDK
-#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
-#endif
 
 u8 g_MpFeaturesForceUnlocked[40];
 u8 g_MpFeaturesUnlocked[80];
@@ -90,10 +87,6 @@ void challengeDetermineUnlockedFeatures(void)
 	s32 i;
 	s32 j;
 	s32 k;
-
-#ifdef NXDK
-	xboxTracef("PDBOOT: cDUF start");
-#endif
 
 	// Clear all challenge availability
 	for (challengeindex = 0; challengeindex < ARRAYCOUNT(g_MpChallenges); challengeindex++) {
@@ -218,9 +211,6 @@ void challengeDetermineUnlockedFeatures(void)
 		g_MpFeaturesUnlocked[j] = flag;
 	}
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: cDUF weapons loop (n=%d)", func0f188bcc());
-#endif
 	for (j = 0; j < func0f188bcc(); j++) {
 		struct mpweapon *weapon = &g_MpWeapons[j];
 
@@ -229,14 +219,8 @@ void challengeDetermineUnlockedFeatures(void)
 		}
 	}
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: cDUF func0f1895e8");
-#endif
 	func0f1895e8();
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: cDUF 8bots block");
-#endif
 	// If the ability to have 8 simulants hasn't been unlocked, limit them to 4
 	if (!challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
 		for (k = 4; k < MAX_BOTS; k++) {
@@ -249,10 +233,6 @@ void challengeDetermineUnlockedFeatures(void)
 			g_Vars.mpquickteamnumsims = 4;
 		}
 	}
-
-#ifdef NXDK
-	xboxTracef("PDBOOT: cDUF done");
-#endif
 }
 
 void challengePerformSanityChecks(void)
@@ -708,9 +688,12 @@ void challengeRemoveForceUnlocks(void)
 void challengeApply(void)
 {
 	s32 i;
-	u8 buffer[0x1ca];
+	// sizeof(struct mpconfigfull), not the N64 magic 0x1ca: the port's u64
+	// mpsetup.options grows the struct past 0x1ca, so a fixed 0x1ca buffer overflows
+	// in challengeLoadConfig (crashes on 32-bit Xbox). == 0x1ca on N64.
+	u8 buffer[sizeof(struct mpconfigfull)];
 
-	mpApplyConfig(challengeLoadCurrent(buffer, 0x1ca));
+	mpApplyConfig(challengeLoadCurrent(buffer, sizeof(buffer)));
 	mpSetLock(MPLOCKTYPE_CHALLENGE, 5);
 
 	for (i = 0; i < MAX_PLAYERS; i++) {
@@ -744,7 +727,10 @@ void challengeLoadAndStoreCurrent(u8 *buffer, s32 len)
 	// points into it). Static storage is fine because only one challenge is
 	// ever loaded at a time — challengeUnsetCurrent clears the pointer when
 	// the menu closes.
-	static u8 s_ChallengeBuffer[sizeof(struct mpconfig) + 32];
+	// Must hold a full mpconfigfull (config + strings); sizeof(struct mpconfig) + 32
+	// was too small (challengeLoadConfig writes mpconfig->strings past the end -> a
+	// static-buffer overflow, fatal on 32-bit Xbox).
+	static u8 s_ChallengeBuffer[sizeof(struct mpconfigfull) + 32];
 	if (!buffer || len < (s32) sizeof(s_ChallengeBuffer)) {
 		buffer = s_ChallengeBuffer;
 		len = sizeof(s_ChallengeBuffer);

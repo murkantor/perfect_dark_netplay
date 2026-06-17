@@ -4645,7 +4645,10 @@ void mpApplyConfig(struct mpconfigfull *config)
 void mp0f18dec4(s32 slot)
 {
 	struct mpconfigfull *config;
-	u8 buffer[0x1ca];
+	// sizeof(struct mpconfigfull), not the N64 magic 0x1ca: the port's u64 mpsetup.options
+	// grows the struct past 0x1ca, so a fixed 0x1ca buffer overflows in challengeLoadConfig
+	// (crashes on 32-bit Xbox). == 0x1ca on N64.
+	u8 buffer[sizeof(struct mpconfigfull)];
 	s32 confignum = 0;
 	u32 i;
 
