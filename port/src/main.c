@@ -120,7 +120,7 @@ static void cleanup(void)
 #ifdef NXDK
 #include <hal/debug.h>
 #include <hal/video.h>
-#include <threads.h> // C11 thrd_sleep for the readable boot-trace pacing
+#include <xboxkrnl/xboxkrnl.h> // KeStallExecutionProcessor for the boot-trace pacing
 // Boot-stage tracing for the Original Xbox bring-up: prints each init stage to the
 // screen (debugPrint, visible until the renderer takes the framebuffer) AND appends
 // it to "pdboot.log" (flushed each stage) so the LAST line names the stage that hung
@@ -128,13 +128,13 @@ static void cleanup(void)
 // stage is the last one printed (it was entered but never completed). Remove this
 // scaffolding once boot is solid. See docs/PORT_XBOX_NXDK.md.
 //
-// A short delay paces the trace: once the ROM loads, the later stages fly past in a
-// single unreadable burst, so without this the last line before a hang is impossible
-// to read off the screen. ~150ms/stage keeps the sequence readable during bring-up.
+// A short delay paces the trace so the later stages don't fly past in one unreadable
+// burst. Use KeStallExecutionProcessor (a kernel CPU busy-stall in microseconds), NOT
+// thrd_sleep/Sleep: the scheduler/timer-based sleeps hang once pb_init() has
+// reconfigured the NV2A + timer state, whereas the kernel stall is independent of it.
 static inline void xboxBootDelay(void)
 {
-	struct timespec ts = { 0, 150 * 1000 * 1000 }; // 150ms
-	thrd_sleep(&ts, NULL);
+	KeStallExecutionProcessor(32 * 1000); // 32ms
 }
 #define XBOX_BOOT_TRACE(stage) do { \
 		debugPrint("PDBOOT: " stage "\n"); \

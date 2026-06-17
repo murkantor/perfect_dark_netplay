@@ -3488,11 +3488,13 @@ extern "C" void gfx_get_dimensions(uint32_t* width, uint32_t* height, int32_t* p
 // is C-linkage and NXDK-only. Remove once boot is solid. A short per-trace delay
 // matches main.c's paced boot trace so the gfx burst (which is otherwise too fast
 // to read) is legible and the exact hang point is visible on a frozen screen.
+// Uses KeStallExecutionProcessor (kernel CPU busy-stall), NOT thrd_sleep: the
+// timer-based sleeps hang once gfx_wapi->init()'s pb_init() has reconfigured the
+// NV2A/timer state, which manifested as a freeze right after "gfx: rapi.init".
 #include <hal/debug.h>
-#include <threads.h>
+#include <xboxkrnl/xboxkrnl.h>
 static inline void nxdk_gfx_trace_delay(void) {
-    struct timespec ts = { 0, 150 * 1000 * 1000 }; // 150ms
-    thrd_sleep(&ts, NULL);
+    KeStallExecutionProcessor(32 * 1000); // 32ms
 }
 #define NXDK_GFX_TRACE(s) do { debugPrint("PDBOOT: " s "\n"); nxdk_gfx_trace_delay(); } while (0)
 #else
