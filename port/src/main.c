@@ -119,6 +119,7 @@ static void cleanup(void)
 
 #ifdef NXDK
 #include <hal/debug.h>
+#include <hal/video.h>
 // Boot-stage tracing for the Original Xbox bring-up: prints each init stage to the
 // screen (debugPrint, visible until the renderer takes the framebuffer) AND appends
 // it to "pdboot.log" (flushed each stage) so the LAST line names the stage that hung
@@ -136,6 +137,15 @@ static void cleanup(void)
 
 int main(int argc, const char **argv)
 {
+#ifdef NXDK
+	// Force a video mode up front so debugPrint() actually renders during early
+	// init. Standard NXDK sets one in its CRT, but the nxdk-sdl3 path doesn't set
+	// one until videoInit() -- long after the first boot traces -- so without this
+	// every early PDBOOT line draws to nothing and an early hang looks like a frozen
+	// boot logo. SDL re-sets the mode in videoInit(); this is just for bring-up.
+	XVideoSetMode(640, 480, 32, REFRESH_DEFAULT);
+	debugPrint("PDBOOT: main() entered\n");
+#endif
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {
