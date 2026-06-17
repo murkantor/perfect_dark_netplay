@@ -482,6 +482,18 @@ static void wm_handle_events(void) {
 }
 
 static bool wm_start_frame(void) {
+    // Phase 0 decisive checkpoint: on the FIRST render-loop entry, print an
+    // unmistakable marker (via raw debugPrint, which we know works) and HALT before
+    // anything clears the screen. If this shows, boot completed all init and reached
+    // the render loop (so a later black screen is a present/clear issue, not a hang);
+    // if it never shows, boot is stuck before the loop (e.g. the input->audio
+    // transition) and we look there. Remove once boot is solid.
+    static int s_first_frame = 1;
+    if (s_first_frame) {
+        s_first_frame = 0;
+        debugPrint("PDBOOT: RENDER LOOP REACHED (frame 0)\n");
+        for (;;) { /* halt with the marker on screen */ }
+    }
     pb_wait_for_vbl();
     pb_reset();
     pb_target_back_buffer();
