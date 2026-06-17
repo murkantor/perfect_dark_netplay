@@ -25,6 +25,10 @@ Experimental OG Xbox port on branch **`port-net-xbox`** (branched from
 ```sh
 # bootstrap NXDK once per its README (its `make` build), then:
 export NXDK_DIR=/path/to/nxdk
+# nxdk-sdl3 is a CMake subproject (no install). EITHER clone it and point at it
+# (offline), OR omit NXDK_SDL3_DIR to have CMake FetchContent it from master:
+git clone --recursive https://github.com/Ryzee119/nxdk-sdl3.git /path/to/nxdk-sdl3
+export NXDK_SDL3_DIR=/path/to/nxdk-sdl3
 ./tools/buildscripts/xbox_nxdk.sh build_xbox -DROMID=ntsc-final
 # -> build_xbox/default.xbe  (run in xemu or on hardware)
 ```
@@ -165,9 +169,16 @@ in `nxdk_copy_framebuffer`.
       real configure+build on the NXDK install to shake out per-target flag gaps.
 - [ ] **PE→XBE step** — `cxbe` path/flags in the `CMakeLists.txt` POST_BUILD (NXDK
       normally drives this from its Makefile). Output: `default.xbe`.
-- [ ] **nxdk-sdl3** — does it export an SDL3 CMake config (else the manual include
-      fallback path in `CMakeLists.txt` must match its install layout)? Does it
-      provide `SDL_GL_CreateContext`, audio, Xbox-gamepad input?
+- [x] **nxdk-sdl3 integration** — RESOLVED. It has **no install step**: per its
+      README it's consumed as a CMake **subproject** exposing `SDL3::SDL3` +
+      `SDL3::Headers`. `CMakeLists.txt`'s `XBOX_NXDK` SDL3 branch now does
+      `add_subdirectory(${NXDK_SDL3_DIR})` (local checkout, offline) or, if
+      `NXDK_SDL3_DIR` is unset, `FetchContent` from master. Pass it via
+      `NXDK_SDL3_DIR=/path ./tools/buildscripts/xbox_nxdk.sh ...`. (The README also
+      documents pulling SDL_image/ttf/mixer the same way if ever needed.) Its GL
+      backend is "fully hardware accelerated" (pbgl) but `SDL_gpu.h` is unsupported
+      — matches our `USE_SDLGPU OFF`. `SDL_GL_CreateContext` capability still to be
+      probed in M2.
 - [ ] **GL caps** — `GL_VERSION`/`GL_RENDERER`/GLSL strings pbgl reports (record in M2).
 - [ ] **ENet / sockets** — `port/external/enet.c` over NXDK lwIP/BSD sockets (netplay).
 - [ ] **libc gaps** — threads (`port/src/system.c`), filesystem/FATX paths + `D:`

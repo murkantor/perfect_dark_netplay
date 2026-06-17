@@ -28,6 +28,14 @@ export NXDK_DIR
 BUILD_DIR="${1:-build_xbox}"
 shift || true
 
+# nxdk-sdl3 is a CMake subproject (no install step). If NXDK_SDL3_DIR points at a
+# local checkout, use it (offline); otherwise CMake FetchContents it at configure
+# time. Forward the env var as a cache entry so either path works.
+NXDK_SDL3_ARGS=()
+if [ -n "${NXDK_SDL3_DIR}" ]; then
+  NXDK_SDL3_ARGS+=("-DNXDK_SDL3_DIR=${NXDK_SDL3_DIR}")
+fi
+
 # NXDK's activate script exports the LLVM toolchain + tool paths it expects.
 if [ -f "${NXDK_DIR}/bin/activate" ]; then
   # shellcheck disable=SC1091
@@ -38,6 +46,7 @@ export PATH="${NXDK_DIR}/bin:${PATH}"
 echo "Configuring (NXDK_DIR=${NXDK_DIR})..."
 cmake -G "Unix Makefiles" \
   -DCMAKE_TOOLCHAIN_FILE="$(pwd)/cmake/toolchain-nxdk.cmake" \
+  "${NXDK_SDL3_ARGS[@]}" \
   -B "${BUILD_DIR}" "$@" . || exit 1
 
 echo "Building..."

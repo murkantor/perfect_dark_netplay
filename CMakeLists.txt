@@ -245,17 +245,23 @@ set(LIBS )
 # SDL3 — not needed by the dedicated server (no window/audio/input).
 if(NOT DEDICATED_SERVER)
   if(XBOX_NXDK)
-    # nxdk-sdl3 (https://github.com/Ryzee119/nxdk-sdl3). Prefer its CMake config;
-    # fall back to a manual include + link name if the config isn't exported.
-    # NXDK_DIR is the NXDK checkout; adjust the fallback include path to match
-    # where nxdk-sdl3 installs its headers. See docs/PORT_XBOX_NXDK.md.
-    find_package(SDL3 CONFIG)
-    if(TARGET SDL3::SDL3)
-      list(APPEND LIBS SDL3::SDL3)
+    # nxdk-sdl3 (https://github.com/Ryzee119/nxdk-sdl3) has NO install step: per its
+    # README it is consumed as a CMake subproject, exposing the targets SDL3::SDL3
+    # (link) and SDL3::Headers (include dirs). Point NXDK_SDL3_DIR at a local
+    # checkout (preferred, offline), else FetchContent pulls it at configure time
+    # (needs network). See docs/PORT_XBOX_NXDK.md.
+    if(NXDK_SDL3_DIR)
+      message(STATUS "nxdk-sdl3: add_subdirectory(${NXDK_SDL3_DIR})")
+      add_subdirectory("${NXDK_SDL3_DIR}" "${CMAKE_BINARY_DIR}/nxdk-sdl3-build")
     else()
-      include_directories(SYSTEM "$ENV{NXDK_DIR}/lib/sdl/SDL3/include")
-      list(APPEND LIBS "SDL3")
+      message(STATUS "nxdk-sdl3: NXDK_SDL3_DIR unset -- fetching via FetchContent (master)")
+      include(FetchContent)
+      FetchContent_Declare(nxdk_sdl3
+        GIT_REPOSITORY https://github.com/Ryzee119/nxdk-sdl3.git
+        GIT_TAG master)
+      FetchContent_MakeAvailable(nxdk_sdl3)
     endif()
+    list(APPEND LIBS SDL3::SDL3 SDL3::Headers)
   elseif(NINTENDO_SWITCH)
     # devkitPro portlibs fallback in case the SDL3 CMake config is missing
     # (code includes <SDL3/SDL.h>, so point at the include root).
