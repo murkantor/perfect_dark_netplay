@@ -10,6 +10,7 @@
 #include <time.h>
 #ifdef NXDK
 #include <threads.h> // C11 thrd_sleep (NXDK has no <sys/time.h>/nanosleep)
+#include <xboxkrnl/xboxkrnl.h> // MmAllocateContiguousMemory for large allocations
 #else
 #include <sys/time.h>
 #endif
@@ -420,23 +421,99 @@ void sysGetHomePath(char *outPath, const u32 outLen)
 #endif
 }
 
+#ifdef NXDK
+// NXDK's malloc hangs on large single allocations (the 32 MB ROM buffer froze the box
+// despite 45 MB free; the engine heap and the inflated data segment are large too).
+// Route big allocations through the kernel's physically-contiguous allocator and track
+// them so sysMemFree picks the matching free. Small allocations stay on malloc (they
+// are frequent and MmAllocateContiguousMemory is page-granular + a scarcer resource).
+#define NXDK_BIG_ALLOC_MIN (1u * 1024u * 1024u) // 1 MB
+#define NXDK_BIG_ALLOC_MAX 64
+static void *g_NxdkBigPtrs[NXDK_BIG_ALLOC_MAX];
+static u32 g_NxdkBigSizes[NXDK_BIG_ALLOC_MAX];
+static u32 g_NxdkBigCount;
+
+static void nxdkBigTrack(void *p, u32 size)
+{
+	if (p && g_NxdkBigCount < NXDK_BIG_ALLOC_MAX) {
+		g_NxdkBigSizes[g_NxdkBigCount] = size;
+		g_NxdkBigPtrs[g_NxdkBigCount++] = p;
+	}
+}
+
+// Returns the tracked size of p and removes it, or 0 if p wasn't a tracked big alloc.
+static u32 nxdkBigUntrack(void *p)
+{
+	for (u32 i = 0; i < g_NxdkBigCount; ++i) {
+		if (g_NxdkBigPtrs[i] == p) {
+			const u32 sz = g_NxdkBigSizes[i];
+			--g_NxdkBigCount;
+			g_NxdkBigPtrs[i] = g_NxdkBigPtrs[g_NxdkBigCount];
+			g_NxdkBigSizes[i] = g_NxdkBigSizes[g_NxdkBigCount];
+			return sz;
+		}
+	}
+	return 0;
+}
+#endif
+
 void *sysMemAlloc(const u32 size)
 {
+#ifdef NXDK
+	if (size >= NXDK_BIG_ALLOC_MIN) {
+		void *p = MmAllocateContiguousMemory(size);
+		nxdkBigTrack(p, size);
+		return p;
+	}
+#endif
 	return malloc(size);
 }
 
 void *sysMemZeroAlloc(const u32 size)
 {
+#ifdef NXDK
+	if (size >= NXDK_BIG_ALLOC_MIN) {
+		void *p = MmAllocateContiguousMemory(size);
+		if (p) {
+			nxdkBigTrack(p, size);
+			memset(p, 0, size);
+		}
+		return p;
+	}
+#endif
 	return calloc(1, size);
 }
 
 void *sysMemRealloc(void *ptr, const u32 newSize)
 {
+#ifdef NXDK
+	// A tracked contiguous block must not be handed to libc realloc (which would read
+	// malloc metadata off a kernel allocation). Re-allocate and copy. Small malloc'd
+	// blocks (untracked) fall through to realloc as usual -- in practice only small
+	// buffers (display modes, ext_tex tables) are realloc'd; the big allocations
+	// (heap/ROM/dataSeg) are fixed-size and never reach here.
+	const u32 oldBig = ptr ? nxdkBigUntrack(ptr) : 0;
+	if (oldBig) {
+		void *p = MmAllocateContiguousMemory(newSize);
+		if (p) {
+			nxdkBigTrack(p, newSize);
+			memcpy(p, ptr, oldBig < newSize ? oldBig : newSize);
+		}
+		MmFreeContiguousMemory(ptr);
+		return p;
+	}
+#endif
 	return realloc(ptr, newSize);
 }
 
 void sysMemFree(void *ptr)
 {
+#ifdef NXDK
+	if (ptr && nxdkBigUntrack(ptr)) {
+		MmFreeContiguousMemory(ptr);
+		return;
+	}
+#endif
 	free(ptr);
 }
 

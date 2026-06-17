@@ -265,7 +265,7 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 
 	u8 scratch[5 * 1024];
 	if (rzipInflate(zipped, dataSeg, scratch) < 0) {
-		free(dataSeg);
+		sysMemFree(dataSeg); // matches sysMemAlloc (may be a kernel contiguous alloc on NXDK)
 		sysFatalError("Could not inflate data segment.");
 	}
 
