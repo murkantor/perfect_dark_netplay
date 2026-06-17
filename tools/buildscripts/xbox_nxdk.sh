@@ -36,10 +36,15 @@ if [ -n "${NXDK_SDL3_DIR}" ]; then
   NXDK_SDL3_ARGS+=("-DNXDK_SDL3_DIR=${NXDK_SDL3_DIR}")
 fi
 
-# NXDK's activate script exports the LLVM toolchain + tool paths it expects.
+# NXDK's activate script exports the LLVM toolchain + tool paths it expects. It
+# `exec`s "$@" when given args, so source it with the positional params cleared --
+# otherwise it tries to exec our cmake args (e.g. `exec -DROMID=...`).
 if [ -f "${NXDK_DIR}/bin/activate" ]; then
+  _saved_args=("$@")
+  set --
   # shellcheck disable=SC1091
-  source "${NXDK_DIR}/bin/activate" || true
+  source "${NXDK_DIR}/bin/activate" >/dev/null 2>&1 || true
+  set -- "${_saved_args[@]}"
 fi
 export PATH="${NXDK_DIR}/bin:${PATH}"
 
