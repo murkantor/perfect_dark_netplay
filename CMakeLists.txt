@@ -358,6 +358,10 @@ if(XBOX_NXDK)
   add_compile_definitions(MINIMP3_NO_SIMD)
   add_compile_definitions(sscanf_s=sscanf)
 
+  # Stub headers for POSIX bits NXDK's pdclib lacks but vendored code reaches for
+  # (e.g. <sys/types.h> for zlib's off_t). Lowest precedence: real NXDK headers win.
+  include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/port/include/nxdk-stubs")
+
   # Force-include a tiny libc compat header into every TU to fill gaps in NXDK's
   # pdclib (e.g. strncasecmp/strcasecmp). New shims go in port/include/nxdk_compat.h.
   # The SHELL: prefix keeps "-include <path>" together (CMake would otherwise
