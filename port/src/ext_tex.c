@@ -1,5 +1,21 @@
+#ifdef NXDK
+// NXDK's pdclib has no <dirent.h>/<sys/stat.h>. External (HD) texture packs are
+// loaded by scanning directories, which the Xbox build doesn't support yet, so
+// provide stubs that make every directory scan come up empty: opendir() returns
+// NULL and stat() fails, and ext_tex's existing "no directory" branches then just
+// load no external textures. See docs/PORT_XBOX_NXDK.md (filesystem).
+typedef struct { int dummy; } DIR;
+struct dirent { char d_name[256]; };
+static inline DIR *opendir(const char *p) { (void)p; return (DIR *)0; }
+static inline struct dirent *readdir(DIR *d) { (void)d; return (struct dirent *)0; }
+static inline int closedir(DIR *d) { (void)d; return 0; }
+struct stat { unsigned long st_mode; long st_size; };
+#define S_ISDIR(m) (0)
+static inline int stat(const char *p, struct stat *s) { (void)p; (void)s; return -1; }
+#else
 #include <dirent.h>
 #include <sys/stat.h>
+#endif
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "external/stb_image.h"

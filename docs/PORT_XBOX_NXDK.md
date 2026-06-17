@@ -205,8 +205,13 @@ in `nxdk_copy_framebuffer`.
       `defined(NXDK)` branch: `clock_gettime`/`gettimeofday`/`CLOCK_MONOTONIC`
       shimmed on pdclib's C11 `timespec_get()`, `SOMAXCONN` fallback, atomics routed
       to the clang `__atomic` builtins, non-blocking via `ioctlsocket(FIONBIO)`.
-      Still ahead: threads (`port/src/system.c`), filesystem/FATX paths + `D:`
-      (`fs.c`), signals/backtrace (`crash.c`, `headless.c`).
+      Done: `headless.c` console/signal handlers are a no-op on NXDK (no console);
+      `fs.c` file size via `fopen`/`ftell` (no `stat`), writability via temp-file
+      probe (no `access`), `fsCreateDir` stubbed (TODO: real FATX `CreateDirectoryA`
+      — saves won't persist yet); `ext_tex.c` HD-texture dir scan stubbed out
+      (`opendir`/`stat` return empty — no external texture packs on Xbox yet).
+      Still ahead: threads (`port/src/system.c`), real FATX dir creation +
+      `D:`-path mapping (`fs.c`), signals/backtrace (`crash.c`).
 - [~] **zlib** — NXDK bundles it (`libzlib.lib` in the sample link lines), but
       `find_package(ZLIB)` can't see it under the win32-like sysroot. The `XBOX_NXDK`
       branch in `CMakeLists.txt` now points `ZLIB_LIBRARY`/`ZLIB_INCLUDE_DIR` at

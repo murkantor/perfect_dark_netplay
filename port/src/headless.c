@@ -4,7 +4,16 @@
 #include "system.h"
 #include "headless.h"
 
-#ifdef _WIN32
+#if defined(NXDK)
+
+// Original Xbox via NXDK: no interactive console and no Unix signals to catch,
+// so there is nothing to install. (The dedicated-server console-shutdown path is
+// meaningless on the console.)
+void headlessInstallSignalHandlers(void)
+{
+}
+
+#elif defined(_WIN32)
 #include <windows.h>
 
 // Windows console control handler. Fires for Ctrl-C, the window's X button

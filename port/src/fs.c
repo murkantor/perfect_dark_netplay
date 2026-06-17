@@ -4,7 +4,9 @@
 #include <limits.h>
 #include <ctype.h>
 #include <unistd.h>
-#include <sys/stat.h>
+#ifndef NXDK
+#include <sys/stat.h> // NXDK's pdclib has no <sys/stat.h>; fs uses fopen/ftell instead
+#endif
 #include <stdbool.h>
 #include <PR/ultratypes.h>
 #include "constants.h"
@@ -34,8 +36,9 @@ u32 g_ModNum = 0;
 
 static s32 fsPathIsWritable(const char *path)
 {
-#ifdef PLATFORM_WIN32
+#if defined(PLATFORM_WIN32) || defined(NXDK)
 	// on windows access() on directories will only check if the directory exists, so
+	// (NXDK has no access()/W_OK either; probe by trying to create a temp file).
 	char tmp[FS_MAXPATH + 1] = { 0 };
 	snprintf(tmp, sizeof(tmp), "%s/.tmp", path);
 	FILE *f = fopen(tmp, "wb");
@@ -409,12 +412,24 @@ void *fsFileLoad(const char *name, u32 *outSize)
 s32 fsFileSize(const char *name)
 {
 	const char *fullName = fsFullPath(name);
+#ifdef NXDK
+	// NXDK has no stat(); size via open + seek-to-end.
+	FILE *f = fopen(fullName, "rb");
+	if (!f) {
+		return -1;
+	}
+	fseek(f, 0, SEEK_END);
+	long sz = ftell(f);
+	fclose(f);
+	return (sz < 0) ? -1 : (s32)sz;
+#else
 	struct stat st;
 	if (stat(fullName, &st) < 0) {
 		return -1;
 	} else {
 		return st.st_size;
 	}
+#endif
 }
 
 FILE *fsFileOpenWrite(const char *name)
@@ -439,7 +454,14 @@ void fsFileFree(FILE *f)
 
 s32 fsCreateDir(const char *path)
 {
-#ifdef PLATFORM_WIN32
+#if defined(NXDK)
+	// TODO(nxdk): real FATX directory creation (CreateDirectoryA). pdclib has no
+	// mkdir(); stub success for now so save-dir setup doesn't fail the boot path.
+	// Saves won't actually persist until this is implemented -- see
+	// docs/PORT_XBOX_NXDK.md (filesystem).
+	(void)path;
+	return 0;
+#elif defined(PLATFORM_WIN32)
 	return _mkdir(fsFullPath(path));
 #else
 	return mkdir(fsFullPath(path), 0777);
