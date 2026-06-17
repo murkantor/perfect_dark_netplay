@@ -113,6 +113,15 @@ static void gfx_sdl_get_active_window_refresh_rate(uint32_t* refresh_rate) {
     *refresh_rate = mode ? (uint32_t)mode->refresh_rate : 60;
 }
 
+#ifdef NXDK
+// Temporary boot bring-up tracing (a video mode is forced in main()). Remove once
+// the renderer is solid.
+#include <hal/debug.h>
+#define NXDK_SDL_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#else
+#define NXDK_SDL_TRACE(s) ((void)0)
+#endif
+
 static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     window_width = set->width;
     window_height = set->height;
@@ -120,6 +129,7 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         sysFatalError("Could not init SDL:\n%s", SDL_GetError());
     }
+    NXDK_SDL_TRACE("sdl: SDL_Init ok");
 
 #ifdef PLATFORM_WIN32
     // Windows sizes windows in physical pixels, so on a scaled desktop
@@ -233,21 +243,28 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, vmin);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, vprof);
 
+        NXDK_SDL_TRACE("sdl: CreateWindow(GL)");
         wnd = SDL_CreateWindow(set->title, window_width, window_height, flags);
         if (!wnd) {
+            NXDK_SDL_TRACE("sdl: window FAIL");
             sysLogPrintf(LOG_WARNING, "SDL: could not open SDL window for GL%d.%d%s:\n%s", vmaj, vmin, vprofstr, SDL_GetError());
             continue;
         }
 
+        NXDK_SDL_TRACE("sdl: window ok, CreateContext");
         ctx = SDL_GL_CreateContext(wnd);
         if (!ctx) {
+            NXDK_SDL_TRACE("sdl: context FAIL");
             sysLogPrintf(LOG_WARNING, "SDL: could not create GL%d.%d%s context: %s", vmaj, vmin, vprofstr, SDL_GetError());
             SDL_DestroyWindow(wnd);
             wnd = nullptr;
+        } else {
+            NXDK_SDL_TRACE("sdl: context OK");
         }
     }
 
     if (!wnd || !ctx) {
+        NXDK_SDL_TRACE("sdl: FATAL - no GL context (nxdk-sdl3 has no OpenGL?)");
         sysFatalError("Could not open SDL window with an OpenGL context of any supported version:\n%s", SDL_GetError());
     } else {
         sysLogPrintf(LOG_NOTE, "SDL: created GL%d.%d%s context", vmaj, vmin, vprofstr);
@@ -269,9 +286,11 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
         SDL_GL_SetSwapInterval(1);
     }
 
+    NXDK_SDL_TRACE("sdl: ShowWindow");
     SDL_ShowWindow(wnd);
 
     qpc_freq = SDL_GetPerformanceFrequency();
+    NXDK_SDL_TRACE("sdl: init done");
 }
 
 static void gfx_sdl_close(void) {
