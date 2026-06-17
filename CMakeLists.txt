@@ -362,6 +362,14 @@ if(XBOX_NXDK)
   # (e.g. <sys/types.h> for zlib's off_t). Lowest precedence: real NXDK headers win.
   include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/port/include/nxdk-stubs")
 
+  # PD ships its own bit-exact N64 math routines (acosf/asinf/atan2f/ceilf/cosf/
+  # floorf/sinf) for cross-platform determinism, but pdclib defines the same names
+  # and its objects get pulled transitively, so lld-link sees duplicates. PD's
+  # regular objects link before the pdclib archive, so /force:multiple keeps PD's
+  # (first wins) and drops pdclib's -- matching how the desktop build's archive
+  # semantics resolve it. (Desktop/GNU-ld never pulls libm's copies at all.)
+  add_link_options("-force:multiple")
+
   # Force-include a tiny libc compat header into every TU to fill gaps in NXDK's
   # pdclib (e.g. strncasecmp/strcasecmp). New shims go in port/include/nxdk_compat.h.
   # The SHELL: prefix keeps "-include <path>" together (CMake would otherwise
