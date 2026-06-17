@@ -409,10 +409,15 @@ void mainLoop(void)
 	s32 numplayers;
 	u32 stack;
 
+	PDBOOT_TRACE("mainLoop: func0f175f98");
 	func0f175f98();
 
 	var8005d9c4 = 0;
+	PDBOOT_TRACE("mainLoop: argGetLevel");
 	argGetLevel(&g_StageNum);
+#ifdef NXDK
+	xboxTracef("PDBOOT: mainLoop: stage=%d", (s32)g_StageNum);
+#endif
 
 	if (g_DoBootPakMenu) {
 		g_Vars.pakstocheck = 0xfd;
@@ -420,9 +425,11 @@ void mainLoop(void)
 	}
 
 	if (g_StageNum != STAGE_TITLE) {
+		PDBOOT_TRACE("mainLoop: titleSetNextStage");
 		titleSetNextStage(g_StageNum);
 
 		if (g_StageNum < STAGE_TITLE) {
+			PDBOOT_TRACE("mainLoop: func0f01b148");
 			func0f01b148(0);
 
 			if (argFindByPrefix(1, "-hard")) {
@@ -430,6 +437,7 @@ void mainLoop(void)
 			}
 		}
 	}
+	PDBOOT_TRACE("mainLoop: pre outer loop");
 
 	if (g_StageNum == STAGE_CITRAINING && IS4MB()) {
 		g_StageNum = STAGE_4MBMENU;
@@ -438,12 +446,15 @@ void mainLoop(void)
 	rngSetSeed(osGetCount());
 	rngCosmeticSetSeed(osGetCount()); // cosmetic stream: unsynced, may diverge
 
+	PDBOOT_TRACE("mainLoop: outer loop enter");
+
 	// Outer loop - this is infinite because ending is never changed
 	while (!ending) {
 		g_MainNumGfxTasks = 0;
 		g_MainGameLogicEnabled = true;
 		g_MainIsEndscreen = false;
 
+		PDBOOT_TRACE("mainLoop: stage alloc block");
 		if (var8005d9b0 && var8005d9c4 == 0) {
 			index = -1;
 
