@@ -8,7 +8,11 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#ifdef NXDK
+#include <threads.h> // C11 thrd_sleep (NXDK has no <sys/time.h>/nanosleep)
+#else
 #include <sys/time.h>
+#endif
 #ifndef DEDICATED_SERVER
 #include <SDL3/SDL.h>
 #elif !defined(_WIN32)
@@ -167,9 +171,16 @@ s32 sysArgGetInt(const char *arg, s32 defval)
 
 u64 sysGetMicroseconds(void)
 {
+#ifdef NXDK
+	// NXDK has no gettimeofday/struct timeval; use C11 timespec_get.
+	struct timespec ts;
+	timespec_get(&ts, TIME_UTC);
+	return ((u64)ts.tv_sec * USEC_IN_SEC + (u64)ts.tv_nsec / 1000) - startTick;
+#else
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	return ((u64)tv.tv_sec * USEC_IN_SEC + (u64)tv.tv_usec) - startTick;
+#endif
 }
 
 float sysGetSeconds(void)
@@ -404,6 +415,10 @@ void sysSleep(const s64 hns)
 	li.QuadPart = -hns;
 	SetWaitableTimer(timer, &li, 0, NULL, NULL, FALSE);
 	WaitForSingleObject(timer, INFINITE);
+#elif defined(NXDK)
+	// NXDK has no nanosleep; use C11 thrd_sleep (hns = 100ns units).
+	const struct timespec spec = { 0, hns * 100 };
+	thrd_sleep(&spec, NULL);
 #else
 	const struct timespec spec = { 0, hns * 100 };
 	nanosleep(&spec, NULL);

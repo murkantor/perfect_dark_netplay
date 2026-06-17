@@ -24,6 +24,8 @@ extern s32 g_NetDedicatedMode;
 	// bring-up (see docs/PORT_XBOX_NXDK.md); MmQueryStatistics is the standard
 	// Xbox-kernel export.
 	#include <xboxkrnl/xboxkrnl.h>
+	// XGetVideoFlags() + the XC_VIDEO_FLAGS_HDTV_* mode bits (the HD-mode table).
+	#include <hal/video.h>
 #elif defined(PLATFORM_POSIX)
 	#include <unistd.h>
 #endif
