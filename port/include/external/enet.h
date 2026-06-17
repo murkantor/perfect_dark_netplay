@@ -83,6 +83,9 @@
 	#ifndef MSG_NOSIGNAL
 		#define MSG_NOSIGNAL 0
 	#endif
+	#ifndef SOMAXCONN
+		#define SOMAXCONN 128
+	#endif
 
 	typedef int ENetSocket;
 
@@ -853,7 +856,7 @@ extern "C" {
 =======================================================================
 */
 
-	#ifdef _MSC_VER
+	#if defined(_MSC_VER) && !defined(NXDK)
 		#define ENET_AT_CASSERT_PRED(predicate) sizeof(char[2 * !!(predicate) - 1])
 		#define ENET_IS_SUPPORTED_ATOMIC(size) ENET_AT_CASSERT_PRED(size == 1 || size == 2 || size == 4 || size == 8)
 		#define ENET_ATOMIC_SIZEOF(variable) (ENET_IS_SUPPORTED_ATOMIC(sizeof(*(variable))), sizeof(*(variable)))
@@ -1167,7 +1170,7 @@ extern "C" {
 =======================================================================
 */
 
-	#ifdef _WIN32
+	#if defined(_WIN32) && !defined(NXDK)
 		static LARGE_INTEGER gettime_offset(void) {
 			SYSTEMTIME s;
 			FILETIME f;
@@ -1234,6 +1237,29 @@ extern "C" {
 			return 0;
 		}
 		#endif
+	#elif defined(NXDK)
+		/* PD vendored patch: NXDK has no clock_gettime/gettimeofday/CLOCK_MONOTONIC,
+		 * but pdclib provides the C11 timespec_get(), so shim both on top of it.
+		 * (Wall-clock, not strictly monotonic, but ENet only needs a steady ms
+		 * timer and tolerates the source.) */
+		#ifndef CLOCK_MONOTONIC
+			#define CLOCK_MONOTONIC 1
+		#endif
+
+		static int clock_gettime(int clk, struct timespec* ts) {
+			(void)clk;
+			return timespec_get(ts, TIME_UTC) == TIME_UTC ? 0 : -1;
+		}
+
+		static int gettimeofday(struct timeval* tv, void* tz) {
+			struct timespec ts;
+			(void)tz;
+			if (timespec_get(&ts, TIME_UTC) != TIME_UTC)
+				return -1;
+			tv->tv_sec = (long)ts.tv_sec;
+			tv->tv_usec = (long)(ts.tv_nsec / 1000);
+			return 0;
+		}
 	#elif __APPLE__ && (__MAC_OS_X_VERSION_MIN_REQUIRED < 101200 || __IPHONE_OS_VERSION_MIN_REQUIRED < 100000) && !defined(CLOCK_MONOTONIC)
 		#define CLOCK_MONOTONIC 0
 
@@ -4531,7 +4557,17 @@ extern "C" {
 
 			switch (option) {
 				case ENET_SOCKOPT_NONBLOCK:
+#if defined(NXDK)
+					/* PD vendored patch: lwIP defines fcntl() as a 3-arg macro, so
+					 * ENet's 2-arg fcntl(fd, F_GETFL) won't compile. Toggle
+					 * non-blocking via ioctlsocket(FIONBIO) instead. */
+					{
+						int nonBlocking = value ? 1 : 0;
+						result = ioctlsocket(socket, FIONBIO, &nonBlocking);
+					}
+#else
 					result = fcntl(socket, F_SETFL, (value ? O_NONBLOCK : 0) | (fcntl(socket, F_GETFL) & ~O_NONBLOCK));
+#endif
 
 					break;
 

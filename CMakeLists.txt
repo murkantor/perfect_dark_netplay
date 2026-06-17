@@ -358,6 +358,10 @@ if(XBOX_NXDK)
   add_compile_definitions(MINIMP3_NO_SIMD)
   add_compile_definitions(sscanf_s=sscanf)
 
+  # Force-include a tiny libc compat header into every TU to fill gaps in NXDK's
+  # pdclib (e.g. strncasecmp/strcasecmp). New shims go in port/include/nxdk_compat.h.
+  add_compile_options("-include" "${CMAKE_SOURCE_DIR}/port/include/nxdk_compat.h")
+
   # ENet (port/include/external/enet.h) is routed onto NXDK's lwIP TCP/IP stack
   # (see the `defined(NXDK)` branch there). Mirror the include dirs NXDK's own
   # net Makefile uses (lwip/src/include + the nForce-NIC lwipopts in

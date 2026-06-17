@@ -196,9 +196,17 @@ in `nxdk_copy_framebuffer`.
       (`lwip/src/include`, `nforceif/include`, `nvnetdrv`) and links `libnxdk_net`.
       **Runtime not yet wired:** lwIP still needs bring-up at boot (`nxNetInit`)
       before sockets carry traffic — a port-layer init TODO, not a build blocker.
-- [ ] **libc gaps** — threads (`port/src/system.c`), filesystem/FATX paths + `D:`
-      (`fs.c`), signals/backtrace (`crash.c`, `headless.c`). Guard with
-      `#ifdef PLATFORM_NXDK`, mirroring the `DEDICATED_SERVER`/Switch stub idiom.
+- [~] **libc gaps** — IN PROGRESS. pdclib is missing a number of POSIX/MSVC
+      functions the port/vendored code assumes. Approach: a force-included compat
+      header `port/include/nxdk_compat.h` (added via `-include` in the `XBOX_NXDK`
+      CMake branch) holds tiny `static inline` shims, visible in every TU without
+      editing individual files; add new shims there as gaps surface. Filled so far:
+      `strncasecmp`/`strcasecmp`. ENet's own gaps were handled inline in its
+      `defined(NXDK)` branch: `clock_gettime`/`gettimeofday`/`CLOCK_MONOTONIC`
+      shimmed on pdclib's C11 `timespec_get()`, `SOMAXCONN` fallback, atomics routed
+      to the clang `__atomic` builtins, non-blocking via `ioctlsocket(FIONBIO)`.
+      Still ahead: threads (`port/src/system.c`), filesystem/FATX paths + `D:`
+      (`fs.c`), signals/backtrace (`crash.c`, `headless.c`).
 - [~] **zlib** — NXDK bundles it (`libzlib.lib` in the sample link lines), but
       `find_package(ZLIB)` can't see it under the win32-like sysroot. The `XBOX_NXDK`
       branch in `CMakeLists.txt` now points `ZLIB_LIBRARY`/`ZLIB_INCLUDE_DIR` at
