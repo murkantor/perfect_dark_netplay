@@ -105,6 +105,12 @@
 #include "net/netmsg.h"
 #include "spectator.h"
 #include "video.h"
+#ifdef NXDK
+#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
+#define LVBOOT_TRACE(s) xboxTraceStage(s)
+#else
+#define LVBOOT_TRACE(s) ((void)0)
+#endif
 #endif
 
 struct sndstate *g_MiscSfxAudioHandles[3];
@@ -333,19 +339,27 @@ void lvReset(s32 stagenum)
 
 	g_MiscAudioHandle = NULL;
 
+	LVBOOT_TRACE("lvReset: musicReset");
 	musicReset();
 	modelmgrSetLvResetting(true);
+	LVBOOT_TRACE("lvReset: surfaceReset");
 	surfaceReset();
+	LVBOOT_TRACE("lvReset: texReset");
 	texReset();
+	LVBOOT_TRACE("lvReset: textReset");
 	textReset();
+	LVBOOT_TRACE("lvReset: hudmsgsReset");
 	hudmsgsReset();
+	LVBOOT_TRACE("lvReset: pre stage branch");
 
 	if (stagenum == STAGE_TEST_OLD) {
 		titleReset();
 	}
 
 	if (stagenum == STAGE_TITLE) {
+		LVBOOT_TRACE("lvReset: titleReset");
 		titleReset();
+		LVBOOT_TRACE("lvReset: titleReset done");
 	} else if (stagenum == STAGE_BOOTPAKMENU) {
 		// empty
 	} else if (stagenum == STAGE_CREDITS) {
