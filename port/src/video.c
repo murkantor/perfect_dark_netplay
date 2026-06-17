@@ -431,9 +431,18 @@ void videoGetMemoryUsage(u32 *used, u32 *total)
 // --- OG Xbox HD video modes (Milestone 4; see docs/PORT_XBOX_NXDK.md) -----------
 // INERT SCAFFOLD: the table + availability gate are ready to feed the display-mode
 // list once a native Xbox window-manager (or nxdk-sdl3's video layer) exists and the
-// renderer draws (M2). Nothing calls these yet. CONFIRM the XGetVideoFlags() header /
-// XC_VIDEO_FLAGS_* names against the NXDK install (hal/video.h).
-#include <hal/video.h>
+// renderer draws (M2). Nothing calls these yet.
+//
+// NXDK has no XGetVideoFlags()/XC_VIDEO_FLAGS_HDTV_* API in any header (the OG-XDK
+// dashboard video-flags surface isn't exposed), so provide local fallbacks: the
+// HD-mode bits are 0 and XGetVideoFlags() returns 0 (no HD advertised). Wire the
+// real dashboard query here when a native Xbox WM is built.
+#ifndef XC_VIDEO_FLAGS_HDTV_480p
+#define XC_VIDEO_FLAGS_HDTV_480p  0
+#define XC_VIDEO_FLAGS_HDTV_720p  0
+#define XC_VIDEO_FLAGS_HDTV_1080i 0
+static inline u32 XGetVideoFlags(void) { return 0; }
+#endif
 
 // 1080i's scanout framebuffers nearly fill the 32 MB GPU half of a 64 MB box (the
 // render-low+upscale path keeps it ~29 MB; see the budget table in the doc). We

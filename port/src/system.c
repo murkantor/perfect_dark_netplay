@@ -44,7 +44,12 @@ __attribute__((dllexport)) u32 AmdPowerXpressRequestHighPerformance = 1;
 #include <unistd.h>
 
 // figure out how to yield
-#if defined(PLATFORM_X86) || defined(PLATFORM_X86_64)
+#if defined(NXDK)
+// Pentium III has no SSE2, so clang's _mm_pause() (which it places in <emmintrin.h>)
+// isn't available. The PAUSE opcode (F3 90) decodes as NOP on pre-P4 CPUs, so emit
+// it directly.
+#define DO_YIELD() __asm__ __volatile__("pause" ::: "memory")
+#elif defined(PLATFORM_X86) || defined(PLATFORM_X86_64)
 // this should work even if the code is not built with SSE enabled, at least on gcc and clang,
 // but if it doesn't we'll have to use  __builtin_ia32_pause() or something
 #include <immintrin.h>
