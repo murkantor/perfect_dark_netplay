@@ -68,6 +68,15 @@ __attribute__((dllexport)) u32 AmdPowerXpressRequestHighPerformance = 1;
 #define CRASHLOG_FNAME "pd.crash.log"
 #define USEC_IN_SEC 1000000ULL
 
+#ifdef NXDK
+// Temporary boot-bring-up tracing: render a marker to the screen via debugPrint
+// (a video mode is forced in main() before this runs). Remove once boot is solid.
+#include <hal/debug.h>
+#define NXDK_BOOT_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#else
+#define NXDK_BOOT_TRACE(s) ((void)0)
+#endif
+
 static u64 startTick = 0;
 static char logPath[2048];
 
@@ -100,7 +109,9 @@ void sysInitArgs(s32 argc, const char **argv)
 
 void sysInit(void)
 {
+	NXDK_BOOT_TRACE("sysInit: micros");
 	startTick = sysGetMicroseconds();
+	NXDK_BOOT_TRACE("sysInit: args");
 
 	if (sysArgCheck("--log")) {
 		// --log [path]: optional path after the flag (e.g. master-spawned
@@ -116,14 +127,23 @@ void sysInit(void)
 		}
 	}
 
+	NXDK_BOOT_TRACE("sysInit: verlog");
 #ifdef VERSION_HASH
 	sysLogPrintf(LOG_NOTE, "version: " VERSION_BRANCH " " VERSION_HASH " (" VERSION_TARGET ")");
 #endif
 
+	NXDK_BOOT_TRACE("sysInit: date");
+#ifdef NXDK
+	// pdclib's localtime() can return NULL on the Xbox (no timezone database),
+	// which would then fault inside strftime(); skip the cosmetic startup-date log.
+	sysLogPrintf(LOG_NOTE, "startup date: (n/a on xbox)");
+#else
 	char timestr[256];
 	const time_t curtime = time(NULL);
 	strftime(timestr, sizeof(timestr), "%d %b %Y %H:%M:%S", localtime(&curtime));
 	sysLogPrintf(LOG_NOTE, "startup date: %s", timestr);
+#endif
+	NXDK_BOOT_TRACE("sysInit: done");
 
 #ifdef PLATFORM_WIN32
 	// this function is only present on Vista+, so try to import it from kernel32 by hand
