@@ -12,6 +12,18 @@
 
 #include <stddef.h>
 #include <ctype.h>
+#include <stdio.h>
+
+// MSVC "secure CRT" fopen_s: vendored libs (e.g. stb_image) select it because
+// NXDK's clang triple defines _MSC_VER, but pdclib has no fopen_s. Wrap fopen;
+// stb checks `0 != fopen_s(...)`, so return 0 on success and non-zero on failure.
+static inline int fopen_s(FILE **f, const char *name, const char *mode) {
+	if (f == NULL) {
+		return 1;
+	}
+	*f = fopen(name, mode);
+	return (*f != NULL) ? 0 : 1;
+}
 
 // POSIX <strings.h> case-insensitive compares: pdclib doesn't provide them.
 static inline int strncasecmp(const char *a, const char *b, size_t n) {
