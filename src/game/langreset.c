@@ -7,6 +7,9 @@
 #include "data.h"
 #include "types.h"
 #include "platform.h"
+#ifdef NXDK
+#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
+#endif
 
 extern u8 *g_LangBuffer;
 extern s32 g_LangBufferSize;
@@ -50,7 +53,13 @@ void langReset(s32 stagenum)
 	size *= 2;
 #endif
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: langReset mempAlloc(%d, STAGE)", (s32)ALIGN16(size));
+#endif
 	g_LangBuffer = mempAlloc(ALIGN16(size), MEMPOOL_STAGE);
+#ifdef NXDK
+	xboxTracef("PDBOOT: langReset buf=%p, langReload", (void *)g_LangBuffer);
+#endif
 	g_LangBufferSize = size;
 
 	langReload();

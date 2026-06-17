@@ -484,6 +484,10 @@ void langReload(void)
 
 	g_LangBufferPos = (u8 *) align32((uintptr_t) g_LangBuffer);
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: langReload pos=%p", (void *)g_LangBufferPos);
+#endif
+
 	for (i = 0; i < ARRAYCOUNT(g_LangBanks); i++) {
 		if (g_LangBanks[i] != NULL) {
 			langLoad(i);
