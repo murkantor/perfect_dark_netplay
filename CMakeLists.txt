@@ -357,6 +357,23 @@ if(XBOX_NXDK)
   #    declares a real sscanf_s, so the macro is contained.
   add_compile_definitions(MINIMP3_NO_SIMD)
   add_compile_definitions(sscanf_s=sscanf)
+
+  # ENet (port/include/external/enet.h) is routed onto NXDK's lwIP TCP/IP stack
+  # (see the `defined(NXDK)` branch there). Mirror the include dirs NXDK's own
+  # net Makefile uses (lwip/src/include + the nForce-NIC lwipopts in
+  # nforceif/include + the nvnetdrv driver header) and link libnxdk_net, which
+  # the base NXDK link set does not pull in automatically.
+  include_directories(SYSTEM
+    "$ENV{NXDK_DIR}/lib/net/lwip/src/include"
+    "$ENV{NXDK_DIR}/lib/net/nforceif/include"
+    "$ENV{NXDK_DIR}/lib/net/nvnetdrv")
+  if(EXISTS "$ENV{NXDK_DIR}/lib/libnxdk_net.lib")
+    list(APPEND LIBS "$ENV{NXDK_DIR}/lib/libnxdk_net.lib")
+  else()
+    message(WARNING "XBOX_NXDK: libnxdk_net.lib not found in $ENV{NXDK_DIR}/lib -- "
+                    "build NXDK's net lib (it ships with the networking samples) or "
+                    "ENet will fail to link.")
+  endif()
 endif()
 if(USE_SDLGPU)
   if(USE_SDLGPU_STATIC)

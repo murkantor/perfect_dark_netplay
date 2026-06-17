@@ -56,7 +56,46 @@
 =======================================================================
 */
 
-#ifdef _WIN32
+#if defined(NXDK)
+	/* PD vendored patch: Original Xbox via NXDK. The TCP/IP stack is lwIP, so
+	 * pull in lwIP's BSD socket API rather than winsock (NXDK's clang triple
+	 * defines _WIN32, but it is not Windows). With LWIP_COMPAT_SOCKETS +
+	 * LWIP_POSIX_SOCKETS_IO_NAMES (both default-on in NXDK's lwipopts) the
+	 * unprefixed BSD names (socket/bind/connect/recvmsg/sendmsg/select/poll/
+	 * fcntl/close/...) plus struct msghdr/iovec, sockaddr_in6, in6addr_any and
+	 * MSG_NOSIGNAL are all provided, so the UNIX socket implementation below is
+	 * reused verbatim. lwIP has no getnameinfo(), so enet_address_get_hostname()
+	 * falls back to the numeric address. NOTE: lwIP must be brought up at boot
+	 * (nxNetInit) for any of these sockets to actually carry traffic. */
+	#include <string.h>
+	#include <stdlib.h>
+	#include <lwip/sockets.h>
+	#include <lwip/inet.h>
+	#include <lwip/netdb.h>
+	#include <lwip/errno.h>
+
+	#ifndef PF_INET
+		#define PF_INET AF_INET
+	#endif
+	#ifndef PF_INET6
+		#define PF_INET6 AF_INET6
+	#endif
+	#ifndef MSG_NOSIGNAL
+		#define MSG_NOSIGNAL 0
+	#endif
+
+	typedef int ENetSocket;
+
+	#define ENET_SOCKET_NULL -1
+
+	typedef struct {
+		void* data;
+		size_t dataLength;
+	} ENetBuffer;
+
+	#define ENET_CALLBACK
+	#define ENET_API extern
+#elif defined(_WIN32)
 	#ifndef ENET_NO_PRAGMA_LINK
 		#pragma comment(lib, "ws2_32.lib")
 		#pragma comment(lib, "winmm.lib")
@@ -4308,6 +4347,12 @@ extern "C" {
 	}
 
 	int enet_address_get_hostname(const ENetAddress* address, char* name, size_t nameLength) {
+#if defined(NXDK)
+		/* PD vendored patch: lwIP provides no getnameinfo(), and the Xbox has no
+		 * reverse DNS, so return the numeric address (the same fallback the
+		 * EAI_NONAME path below uses). */
+		return enet_address_get_ip(address, name, nameLength);
+#else
 		struct sockaddr_in6 sin;
 		int err;
 
@@ -4330,6 +4375,7 @@ extern "C" {
 			return -1;
 
 		return enet_address_get_ip(address, name, nameLength);
+#endif
 	}
 
 /*
@@ -4340,7 +4386,7 @@ extern "C" {
 =======================================================================
 */
 
-	#ifndef _WIN32
+	#if !defined(_WIN32) || defined(NXDK)
 		int enet_initialize(void) {
 			return 0;
 		}
@@ -4769,7 +4815,7 @@ extern "C" {
 =======================================================================
 */
 
-	#ifdef _WIN32
+	#if defined(_WIN32) && !defined(NXDK)
 		int enet_initialize(void) {
 			WORD versionRequested = MAKEWORD(2, 2);
 			WSADATA wsaData;

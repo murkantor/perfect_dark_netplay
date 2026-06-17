@@ -185,7 +185,17 @@ in `nxdk_copy_framebuffer`.
       — matches our `USE_SDLGPU OFF`. `SDL_GL_CreateContext` capability still to be
       probed in M2.
 - [ ] **GL caps** — `GL_VERSION`/`GL_RENDERER`/GLSL strings pbgl reports (record in M2).
-- [ ] **ENet / sockets** — `port/external/enet.c` over NXDK lwIP/BSD sockets (netplay).
+- [~] **ENet / sockets** — IMPLEMENTED (compile-stage). NXDK's lwIP has IPv6
+      (`LWIP_IPV6=1`), `recvmsg`/`sendmsg`/`poll`, DNS, and POSIX-name compat
+      (`LWIP_COMPAT_SOCKETS` + `LWIP_POSIX_SOCKETS_IO_NAMES` default-on), so the
+      amalgamated `enet.h` now has a `defined(NXDK)` branch that includes lwIP's
+      socket headers and **reuses ENet's existing UNIX socket impl** (routed via the
+      `#if !defined(_WIN32) || defined(NXDK)` / `#if defined(_WIN32) && !defined(NXDK)`
+      guards). Only `getnameinfo` is missing (lwIP omits it) → `enet_address_get_hostname`
+      falls back to the numeric address on NXDK. CMake adds the lwIP include dirs
+      (`lwip/src/include`, `nforceif/include`, `nvnetdrv`) and links `libnxdk_net`.
+      **Runtime not yet wired:** lwIP still needs bring-up at boot (`nxNetInit`)
+      before sockets carry traffic — a port-layer init TODO, not a build blocker.
 - [ ] **libc gaps** — threads (`port/src/system.c`), filesystem/FATX paths + `D:`
       (`fs.c`), signals/backtrace (`crash.c`, `headless.c`). Guard with
       `#ifdef PLATFORM_NXDK`, mirroring the `DEDICATED_SERVER`/Switch stub idiom.
