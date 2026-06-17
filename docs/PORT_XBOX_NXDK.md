@@ -123,6 +123,29 @@ committing to a native backend implementing `GfxRenderingAPI` /
 `GfxWindowManagerAPI` (`port/fast3d/gfx_rendering_api.h`,
 `gfx_window_manager_api.h`).
 
+### Native NV2A backend skeleton — `gfx_nxdk` (the fallback)
+
+`port/fast3d/gfx_nxdk.{h,cpp}` is the **fallback renderer** for when M2 confirms the
+GL path is dead. It is a **complete, fillable skeleton**: every `GfxRenderingAPI` +
+`GfxWindowManagerAPI` member is present with sane stub behaviour and
+`TODO(nv2a)`/`TODO(pbkit)` markers; the combiner decode (`gfx_cc_get_features`) is
+already wired so `shader_get_info` reports the right vertex format and the engine
+builds correct vertex buffers — only the actual NV2A rasterisation is left to write.
+The whole file is `#ifdef PLATFORM_NXDK` (empty TU elsewhere; compiles clean on
+desktop, CI-green). Key decisions baked in:
+- **Display-list cache + palette report "unsupported"** (`cache_create_*` return 0),
+  so `gfx_pc` cleanly falls back to the immediate path — matches dlcache-off on Xbox.
+- **Windowing split is open**: use `gfx_nxdk_wm` for a native pbkit window, OR keep
+  `gfx_sdl` (nxdk-sdl3) for windowing+input and use only `gfx_nxdk_api` for rendering
+  (the lower-risk split most NXDK ports take). The skeleton supports either.
+- **Not wired by default** — the pbgl-GL path is tried first (M2). To switch: in
+  `videoInit`, under `PLATFORM_NXDK`, set `renderingAPI = &gfx_nxdk_api` (and
+  optionally `wmAPI = &gfx_nxdk_wm`).
+
+The big TODO is `nxdk_draw_triangles` (submit `buf_vbo` via pbkit) + `nxdk_load_shader`
+(map the N64 combiner in `cc` to NV2A register combiners); the M4 upscale-blit lands
+in `nxdk_copy_framebuffer`.
+
 ## Open unknowns — confirm on a real NXDK install
 
 - [ ] **NXDK predefine** — is it `NXDK`? (`platform.h` + toolchain assume `-DNXDK` /
@@ -152,6 +175,7 @@ committing to a native backend implementing `GfxRenderingAPI` /
 | `port/src/video.c` | perf/memory HUD accessors; per-second NXDK mem log; M4 inert HD-mode table (`g_XboxVideoModes` / `xboxVideoModeAvailable`, `PLATFORM_NXDK`) |
 | `src/game/luaai_api.c` + `scripts/perf_overlay.lua` | `pd.perf()` cpu/gpu/mem fields + HUD lines |
 | `port/fast3d/gfx_opengl.cpp` | unconditional GL-capability log at init (M2 bring-up evidence) |
+| `port/fast3d/gfx_nxdk.{h,cpp}` (new) | native NV2A renderer + WM **skeleton** (`PLATFORM_NXDK`; vtable stubs + combiner decode wired; TODO bodies) |
 | `cmake/toolchain-nxdk.cmake` (new) | NXDK clang toolchain skeleton (sets `XBOX_NXDK`) |
 | `tools/buildscripts/xbox_nxdk.sh` (new) | configure+build wrapper (mirrors `nswitch_docker.sh`) |
 | `docs/PORT_XBOX_NXDK.md` (new) | this doc |
