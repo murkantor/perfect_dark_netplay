@@ -444,7 +444,29 @@ void *fsFileLoad(const char *name, u32 *outSize)
 		}
 		((u8 *)buf)[size] = '\0';
 		NXDK_FS_TRACE("PDBOOT: fsFileLoad malloc ok, reading %d bytes\n", size);
-		fread(buf, 1, size, f);
+		// Read in 1 MB chunks rather than one giant fread: a single 32 MB read from the
+		// emulated DVD stalled, and chunking also lets us trace progress (slow vs hung).
+		{
+			u8 *p = (u8 *)buf;
+			u32 remaining = (u32)size;
+			u32 readTotal = 0;
+			u32 nextTrace = 8u * 1024u * 1024u; // progress every 8 MB
+			while (remaining > 0) {
+				u32 want = remaining < (1024u * 1024u) ? remaining : (1024u * 1024u);
+				size_t got = fread(p, 1, want, f);
+				if (got == 0) {
+					NXDK_FS_TRACE("PDBOOT: fsFileLoad read stalled at %u bytes\n", readTotal);
+					break;
+				}
+				p += got;
+				remaining -= (u32)got;
+				readTotal += (u32)got;
+				if (readTotal >= nextTrace) {
+					NXDK_FS_TRACE("PDBOOT: fsFileLoad read %u MB\n", readTotal / 1048576u);
+					nextTrace += 8u * 1024u * 1024u;
+				}
+			}
+		}
 		NXDK_FS_TRACE("PDBOOT: fsFileLoad read complete\n");
 #else
 		buf = sysMemZeroAlloc(size + 1); // sick hack for a free null terminator
