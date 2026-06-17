@@ -13,6 +13,9 @@
 #ifndef PLATFORM_N64
 #include "video.h"
 #endif
+#ifdef NXDK
+#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
+#endif
 
 /**
  * Officially, the NTSC versions are American English only, while the PAL
@@ -409,13 +412,22 @@ s32 langGetFileId(s32 bank)
 void langLoad(s32 bank)
 {
 #if VERSION >= VERSION_PAL_BETA
+#ifdef NXDK
+	xboxTracef("PDBOOT: langLoad b%d fid=%d getsize", bank, langGetFileId(bank));
+#endif
 	s32 len = fileGetInflatedSize(langGetFileId(bank), LOADTYPE_LANG);
+#ifdef NXDK
+	xboxTracef("PDBOOT: langLoad b%d len=%d", bank, len);
+#endif
 
 	if ((uintptr_t)g_LangBuffer + len + g_LangBufferSize - (uintptr_t)g_LangBufferPos >= 0) {
 		s32 len2 = (uintptr_t)g_LangBuffer + g_LangBufferSize - (uintptr_t)g_LangBufferPos;
 		len2 = len2 / 32 * 32;
 		g_LoadType = LOADTYPE_LANG;
 		g_LangBanks[bank] = fileLoadToAddr(langGetFileId(bank), FILELOADMETHOD_DEFAULT, (u8 *)g_LangBufferPos, len2);
+#ifdef NXDK
+		xboxTracef("PDBOOT: langLoad b%d loaded", bank);
+#endif
 		g_LangBufferPos = (u8 *)(align32((uintptr_t)g_LangBufferPos + len));
 	} else {
 		CRASH();
