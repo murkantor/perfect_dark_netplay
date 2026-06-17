@@ -494,6 +494,11 @@ static bool wm_start_frame(void) {
     pb_fill(0, 0, w, h, 0xFF0000FF);
     pb_erase_text_screen();
     while (pb_busy()) { }
+    // Phase 0 liveness marker: a frame counter drawn over the blue clear. If this
+    // number ticks up on screen, the render loop + present are alive (and we debug
+    // colour); if the screen is frozen with no number, boot hung before/in frame 1.
+    static unsigned s_nxdk_frame = 0;
+    debugPrint("PDBOOT: frame %u\n", s_nxdk_frame++);
     return true;
 }
 static void wm_swap_buffers_begin(void) { /* present happens in swap_buffers_end */ }
