@@ -317,12 +317,18 @@ void mainInit(void)
 		argSetString("          -ml0 -me0 -mgfx100 -mvtx50 -mt700 -ma400");
 	}
 
+	PDBOOT_TRACE("mainInit: mempSetHeap");
 	mempSetHeap(g_MempHeap, g_MempHeapSize);
 
+	PDBOOT_TRACE("mainInit: mempResetPool 8");
 	mempResetPool(MEMPOOL_8);
+	PDBOOT_TRACE("mainInit: mempResetPool perm");
 	mempResetPool(MEMPOOL_PERMANENT);
+	PDBOOT_TRACE("mainInit: crashReset");
 	crashReset();
+	PDBOOT_TRACE("mainInit: challengesInit");
 	challengesInit();
+	PDBOOT_TRACE("mainInit: utilsInit");
 	utilsInit();
 	PDBOOT_TRACE("mainInit: texInit");
 	texInit();
