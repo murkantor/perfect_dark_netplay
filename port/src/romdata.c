@@ -12,6 +12,9 @@
 #include "platform.h"
 #include "video.h" // taskbar progress during boot preprocessing
 #include "data.h" // g_Stages, for the chain ROM stage table import
+#ifdef NXDK
+#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
+#endif
 
 /**
  * asset files and ROM segments can be replaced by optional external files,
@@ -997,10 +1000,18 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 
 	u8 *out = NULL;
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: romdataFileLoad f%d src=%d name=%p", fileNum,
+		(s32)fileSlots[g_ModNum][fileNum].source, (void *)fileSlots[g_ModNum][fileNum].name);
+#endif
+
 	// try to load external file
 	if (fileSlots[g_ModNum][fileNum].source == SRC_UNLOADED) {
 		char tmp[FS_MAXPATH] = { 0 };
 		snprintf(tmp, sizeof(tmp), ROMDATA_FILEDIR "/%s", fileSlots[g_ModNum][fileNum].name);
+#ifdef NXDK
+		xboxTracef("PDBOOT: romdataFileLoad f%d fsFileSize '%s'", fileNum, tmp);
+#endif
 
 		// All Solos in Multi Mod: do not load in solo, coop, counter-op (excluding playable skedar model)
 		if (fsFileSize(tmp) > 0 && (!g_NotLoadMod || fileNum == FILE_CSKEDAR2 || fileNum == FILE_GHAND_SKEDAR)) {
@@ -1032,6 +1043,9 @@ u8 *romdataFileLoad(s32 fileNum, u32 *outSize)
 		*outSize = fileSlots[g_ModNum][fileNum].size;
 	}
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: romdataFileLoad f%d -> %p", fileNum, (void *)out);
+#endif
 	return out;
 }
 
