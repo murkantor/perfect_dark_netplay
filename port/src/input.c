@@ -802,8 +802,16 @@ static inline void inputLoadBinds(void)
 	}
 }
 
+#ifdef NXDK
+#include <hal/debug.h>
+#define NXDK_INPUT_TRACE(s) debugPrint("PDBOOT: " s "\n")
+#else
+#define NXDK_INPUT_TRACE(s) ((void)0)
+#endif
+
 s32 inputInit(void)
 {
+	NXDK_INPUT_TRACE("input: enter");
 	if (g_NetDedicatedMode == 1) {
 		// Headless dedicated: no input devices, no event watcher. inputUpdate
 		// short-circuits below; inputKeyPressed reads SDL keyboard state which
@@ -840,9 +848,11 @@ s32 inputInit(void)
 #endif
 	}
 
+	NXDK_INPUT_TRACE("input: SDL_InitSubSystem");
 	if (!SDL_WasInit(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC)) {
 		SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
 	}
+	NXDK_INPUT_TRACE("input: subsys ok");
 
 	// try to load controller db from an external file in the save folder
 	// NOTE: SDL3 expects SDL3-format mapping lines; SDL2-era db files may not apply
@@ -854,11 +864,14 @@ s32 inputInit(void)
 		}
 	}
 
+	NXDK_INPUT_TRACE("input: AllControllers");
 	inputInitAllControllers();
 
+	NXDK_INPUT_TRACE("input: eventwatch");
 	// since the main event loop is elsewhere, we can receive some events we need using a watcher
 	SDL_AddEventWatch(inputEventFilter, NULL);
 
+	NXDK_INPUT_TRACE("input: keynames");
 	inputInitKeyNames();
 
 	for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
