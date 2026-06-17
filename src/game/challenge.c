@@ -91,6 +91,10 @@ void challengeDetermineUnlockedFeatures(void)
 	s32 j;
 	s32 k;
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: cDUF start");
+#endif
+
 	// Clear all challenge availability
 	for (challengeindex = 0; challengeindex < ARRAYCOUNT(g_MpChallenges); challengeindex++) {
 		g_MpChallenges[challengeindex].availability = 0;
@@ -214,6 +218,9 @@ void challengeDetermineUnlockedFeatures(void)
 		g_MpFeaturesUnlocked[j] = flag;
 	}
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: cDUF weapons loop (n=%d)", func0f188bcc());
+#endif
 	for (j = 0; j < func0f188bcc(); j++) {
 		struct mpweapon *weapon = &g_MpWeapons[j];
 
@@ -222,8 +229,14 @@ void challengeDetermineUnlockedFeatures(void)
 		}
 	}
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: cDUF func0f1895e8");
+#endif
 	func0f1895e8();
 
+#ifdef NXDK
+	xboxTracef("PDBOOT: cDUF 8bots block");
+#endif
 	// If the ability to have 8 simulants hasn't been unlocked, limit them to 4
 	if (!challengeIsFeatureUnlocked(MPFEATURE_8BOTS)) {
 		for (k = 4; k < MAX_BOTS; k++) {
@@ -236,6 +249,10 @@ void challengeDetermineUnlockedFeatures(void)
 			g_Vars.mpquickteamnumsims = 4;
 		}
 	}
+
+#ifdef NXDK
+	xboxTracef("PDBOOT: cDUF done");
+#endif
 }
 
 void challengePerformSanityChecks(void)
@@ -421,11 +438,6 @@ struct mpconfigfull *challengeLoadConfig(s32 confignum, u8 *buffer, s32 len)
 		{ (BTYPE)REF_SEG _mpstringsISegmentRomStart, (BTYPE)REF_SEG _mpstringsISegmentRomEnd },
 	};
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: chLoadCfg cfg=%d lang=%u seg=%p", confignum, language_id,
-		(void *)REF_SEG _mpconfigsSegmentRomStart);
-#endif
-
 	// Load mpconfigs
 #ifdef PLATFORM_N64
 	mpconfig = dmaExecWithAutoAlign(buffer, (BTYPE)&_mpconfigsSegmentRomStart[confignum], sizeof(struct mpconfig));
@@ -433,17 +445,9 @@ struct mpconfigfull *challengeLoadConfig(s32 confignum, u8 *buffer, s32 len)
 	mpconfig = dmaExecWithAutoAlign(buffer, (BTYPE)REF_SEG _mpconfigsSegmentRomStart + confignum * sizeof(struct mpconfig), sizeof(struct mpconfig));
 #endif
 
-#ifdef NXDK
-	xboxTracef("PDBOOT: chLoadCfg mpconfig dma ok, bank=%p", (void *)banks[language_id][0]);
-#endif
-
 	// Load mpstrings
 	bank = banks[language_id][0];
 	loadedstrings = dmaExecWithAutoAlign(buffer2, bank + confignum * sizeof(struct mpstrings), sizeof(struct mpstrings));
-
-#ifdef NXDK
-	xboxTracef("PDBOOT: chLoadCfg strings dma ok");
-#endif
 
 	mpconfig->config = g_MpConfigs[confignum];
 	mpconfig->strings = *loadedstrings;
