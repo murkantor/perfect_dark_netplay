@@ -37,12 +37,33 @@ at the NXDK target) and the `XBOX_NXDK` branches in `CMakeLists.txt`.
 - **M0 — branch + unknowns** (this doc). Branch created; open unknowns below.
 - **M1 — build scaffolding** *(in progress)*: cross-compile + link to `default.xbe`.
   CMake/toolchain/platform plumbing landed; needs a real NXDK install to compile.
-- **M2 — renderer: validate SDL3/pbgl GL**: drive the existing `gfx_sdl` + `gfx_opengl`
-  on nxdk-sdl3 and **record exactly where it fails** (expected: the GLSL wall). Use
-  the result to scope a native NV2A backend (`gfx_nxdk`) as the *next* milestone.
-- **M3 — perf/memory HUD**: extend `pd.perf()` (`src/game/luaai_api.c`) +
-  `scripts/perf_overlay.lua` to show FPS, CPU%, GPU%, and **memory used/total** (the
-  live 64 MB watchdog). Also log memory once/second before the renderer is up.
+- **M2 — renderer: validate SDL3/pbgl GL** *(diagnostics in place)*: the existing
+  `gfx_sdl` + `gfx_opengl` path now **records exactly where it fails** on first boot,
+  no CLI flag needed (the Xbox can't pass one):
+  - GL capability strings (version/vendor/renderer/**GLSL**/extensions) log
+    unconditionally at init (`gfx_opengl.cpp` `gfx_opengl_log_info`, moved out of the
+    `--debug-gl` gate).
+  - The GL≥2.1 gate already fatals with the reported version if pbgl gives an old
+    context (`gfx_opengl.cpp:1357`).
+  - Shader compile/link failures already dump the **full GLSL compiler log** + fatal
+    error (`gfx_opengl.cpp:764`/`777`) — the expected GLSL wall, captured precisely.
+  Run on hardware/xemu, copy these log lines into the "renderer findings" section
+  below; they scope the native NV2A backend (`gfx_nxdk`) as the *next* milestone.
+- **M3 — perf/memory HUD** *(done; desktop-tested)*: `pd.perf()`
+  (`src/game/luaai_api.c`) + `scripts/perf_overlay.lua` now show FPS, **CPU%**,
+  **GPU%** (n/a until a backend times the GPU), and **physical memory used/total**
+  (the live 64 MB watchdog) via `videoGetCpuPercent`/`videoGetGpuPercent`/
+  `videoGetMemoryUsage` (`port/src/video.c`). Toggle with `/fps` + `/mem`. On Xbox,
+  memory also logs once/second (`#ifdef PLATFORM_NXDK` in `videoEndFrame`) so the
+  budget is visible even before the renderer is up. **Confirm the NXDK memory call**
+  (`MmQueryStatistics` / `MM_STATISTICS`) on bring-up — it's the one line to fix if
+  the kernel struct differs; desktop uses `sysconf` + `/proc/self/statm`.
+
+## Renderer findings (fill in on first boot)
+
+```
+(paste the GL: version / renderer / GLSL log lines + any shader-compile fatal here)
+```
 
 ## The renderer reality (the hard part)
 

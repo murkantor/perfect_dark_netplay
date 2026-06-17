@@ -620,24 +620,34 @@ static int l_pd_dlcache_stats(lua_State *L)
 s32 g_LuaShowFps = 0; /* toggled by /fps; read by scripts/perf_overlay.lua via pd.perf() */
 s32 g_LuaShowMem = 0; /* toggled by /mem */
 
-/* pd.perf() -> table { fps, frame_ms, vtx_used, vtx_total, show_fps, show_mem }.
- * Render rate (video.c's 1s-averaged FPS) + the per-frame vtx scratch pool that
- * the No Room Culling / /octree bigroom whole-level render stresses (process RSS
- * isn't useful here: the pools are pre-allocated, so RSS doesn't move with load).
- * show_fps / show_mem are the /fps and /mem toggle states. */
+/* pd.perf() -> table { fps, frame_ms, cpu_pct, gpu_pct, mem_used, mem_total,
+ * vtx_used, vtx_total, show_fps, show_mem }. Render rate (video.c's 1s-averaged
+ * FPS) + CPU/GPU load as a % of the 60 Hz budget (gpu_pct < 0 = n/a) + physical
+ * memory used/total in bytes (0 = unknown -- the 64 MB OG-Xbox budget watchdog) +
+ * the per-frame vtx scratch pool. show_fps / show_mem are the /fps and /mem
+ * toggle states. */
 static int l_pd_perf(lua_State *L)
 {
 	extern f32 videoGetAverageFPS(void);
+	extern f32 videoGetCpuPercent(void);
+	extern f32 videoGetGpuPercent(void);
+	extern void videoGetMemoryUsage(u32 *used, u32 *total);
 	extern u32 gfxGetFreeVtx(void);
 	extern u32 gfxGetVtxPoolSize(void);
 	f32 fps = videoGetAverageFPS();
 	u32 total = gfxGetVtxPoolSize();
 	u32 freev = gfxGetFreeVtx();
 	u32 used = (freev <= total) ? (total - freev) : total;
+	u32 memused = 0, memtotal = 0;
+	videoGetMemoryUsage(&memused, &memtotal);
 
-	lua_createtable(L, 0, 6);
+	lua_createtable(L, 0, 10);
 	lua_pushnumber(L, (lua_Number)fps);                              lua_setfield(L, -2, "fps");
 	lua_pushnumber(L, fps > 0.0f ? 1000.0 / (lua_Number)fps : 0.0);  lua_setfield(L, -2, "frame_ms");
+	lua_pushnumber(L, (lua_Number)videoGetCpuPercent());            lua_setfield(L, -2, "cpu_pct");
+	lua_pushnumber(L, (lua_Number)videoGetGpuPercent());            lua_setfield(L, -2, "gpu_pct");
+	lua_pushinteger(L, (lua_Integer)memused);                       lua_setfield(L, -2, "mem_used");
+	lua_pushinteger(L, (lua_Integer)memtotal);                      lua_setfield(L, -2, "mem_total");
 	lua_pushinteger(L, (lua_Integer)used);                          lua_setfield(L, -2, "vtx_used");
 	lua_pushinteger(L, (lua_Integer)total);                         lua_setfield(L, -2, "vtx_total");
 	lua_pushboolean(L, g_LuaShowFps);                               lua_setfield(L, -2, "show_fps");

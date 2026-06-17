@@ -18,6 +18,16 @@ extern s32 g_NetDedicatedMode;
 #include "../fast3d/gfx_opengl.h"
 #include "../fast3d/gfx_sdlgpu.h"
 
+// Platform memory-query headers for the perf/memory HUD (videoGetMemoryUsage).
+#if defined(PLATFORM_NXDK)
+	// OG Xbox: physical RAM via the kernel. CONFIRM the exact API/struct on
+	// bring-up (see docs/PORT_XBOX_NXDK.md); MmQueryStatistics is the standard
+	// Xbox-kernel export.
+	#include <xboxkrnl/xboxkrnl.h>
+#elif defined(PLATFORM_POSIX)
+	#include <unistd.h>
+#endif
+
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
 #define DEFAULT_VID_HEIGHT 720
@@ -119,6 +129,12 @@ static f64 startTime, endTime;
 static f64 accumDelta = 0.0;
 static f64 fpsTime = 0.0;
 static s32 fpsNumFrames = 0;
+// Perf HUD: smoothed CPU work time per frame (frame start -> just before the swap/
+// vsync wait), in ms. Excludes the present/vsync block, so it tracks real CPU load.
+static f64 cpuFrameMs = 0.0;
+// GPU frame time (ms) for the HUD; <0 = n/a. A backend that times the GPU (a future
+// NV2A/pbkit path, or a GL timer query) sets this; nothing does yet, so it reads n/a.
+f64 g_VideoGpuFrameMs = -1.0;
 
 static s32 videoInitDisplayModes(void);
 static s32 videoVRRCap(void);
@@ -305,6 +321,13 @@ void videoEndFrame(void)
 		return;
 	}
 
+	// CPU work this frame = now (before the present/vsync block in gfx_end_frame)
+	// minus the frame-start stamp from videoStartFrame. Smoothed for a stable HUD.
+	{
+		const f64 work = (wmAPI->get_time() - startTime) * 1000.0;
+		cpuFrameMs = (cpuFrameMs <= 0.0) ? work : (cpuFrameMs * 0.9 + work * 0.1);
+	}
+
 	gfx_end_frame();
 
 	++frames;
@@ -321,6 +344,20 @@ void videoEndFrame(void)
 		accumDelta = 0.0;
 		fpsTime = endTime + vidDisplayFPSInterval;
 	}
+
+#if defined(PLATFORM_NXDK)
+	// 64 MB budget watchdog: log memory once a second on the Xbox so the budget is
+	// observable even without the on-screen HUD. Desktop relies on the HUD instead.
+	{
+		static f64 nextMemLog = 0.0;
+		if (endTime >= nextMemLog) {
+			u32 mu = 0, mt = 0;
+			videoGetMemoryUsage(&mu, &mt);
+			sysLogPrintf(LOG_NOTE, "mem: %u / %u MiB", mu >> 20, mt >> 20);
+			nextMemLog = endTime + 1.0;
+		}
+	}
+#endif
 }
 
 
@@ -328,6 +365,64 @@ void videoEndFrame(void)
 f32 videoGetAverageFPS(void)
 {
 	return vidAvgFPS;
+}
+
+// Perf HUD helpers (read by pd.perf() -> scripts/perf_overlay.lua). CPU/GPU load
+// are reported as a percentage of the 60 Hz sim budget (16.67 ms): 100% = a full
+// frame of work, >100% = can't hold 60 fps. GPU returns <0 ("n/a") until a backend
+// times the GPU (the NV2A/pbkit path on Xbox, or a GL timer query).
+f32 videoGetCpuPercent(void)
+{
+	const f64 budget = 1000.0 / 60.0;
+	return (f32)(cpuFrameMs / budget * 100.0);
+}
+
+f32 videoGetGpuPercent(void)
+{
+	if (g_VideoGpuFrameMs < 0.0) {
+		return -1.0f; // n/a
+	}
+	const f64 budget = 1000.0 / 60.0;
+	return (f32)(g_VideoGpuFrameMs / budget * 100.0);
+}
+
+// Physical memory used / total, in bytes, for the 64 MB-budget HUD. Platform query;
+// 0 means "unknown" (the HUD then hides that figure).
+void videoGetMemoryUsage(u32 *used, u32 *total)
+{
+	u32 u = 0, t = 0;
+#if defined(PLATFORM_NXDK)
+	// OG Xbox physical RAM via the kernel (page = 4 KiB). CONFIRM field names on
+	// bring-up; this is the one call to fix if the NXDK struct differs.
+	MM_STATISTICS ms;
+	ms.Length = sizeof(ms);
+	if (NT_SUCCESS(MmQueryStatistics(&ms))) {
+		t = (u32)(ms.TotalPhysicalPages * 4096u);
+		u = (u32)((ms.TotalPhysicalPages - ms.AvailablePages) * 4096u);
+	}
+#elif defined(PLATFORM_POSIX)
+	// Total via sysconf; used via the process RSS from /proc/self/statm (Linux).
+	// Other POSIX desktops report total only (used stays 0 = hidden).
+	const long pgsz = sysconf(_SC_PAGE_SIZE);
+	const long phys = sysconf(_SC_PHYS_PAGES);
+	if (pgsz > 0 && phys > 0) {
+		t = (u32)((u64)phys * (u64)pgsz);
+	}
+	FILE *f = fopen("/proc/self/statm", "r");
+	if (f) {
+		unsigned long total_pg = 0, rss_pg = 0;
+		if (fscanf(f, "%lu %lu", &total_pg, &rss_pg) == 2 && pgsz > 0) {
+			u = (u32)((u64)rss_pg * (u64)pgsz);
+		}
+		fclose(f);
+	}
+#endif
+	if (used) {
+		*used = u;
+	}
+	if (total) {
+		*total = t;
+	}
 }
 
 void videoClearScreen(void)

@@ -76,6 +76,9 @@ f32 videoGetGlareBrightness(void);
 f32 videoGetOverexposureScale(void);
 
 f32 videoGetAverageFPS(void);
+f32 videoGetCpuPercent(void);            // CPU work as % of the 60 Hz budget
+f32 videoGetGpuPercent(void);            // GPU work as % of budget; <0 = n/a
+void videoGetMemoryUsage(u32 *used, u32 *total); // physical bytes; 0 = unknown
 
 void videoCapFramerate(s32 limit);
 

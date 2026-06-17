@@ -1348,10 +1348,14 @@ static void gfx_opengl_init(void) {
 
     gfx_opengl_init_extensions();
 
+    // Log the GL capability strings (version/vendor/renderer/GLSL/extensions) once
+    // at init, unconditionally. This is the evidence the OG Xbox / pbgl renderer
+    // bring-up needs (no --debug-gl flag is reachable there) and is harmless one-time
+    // output elsewhere. See Milestone 2 in docs/PORT_XBOX_NXDK.md.
+    gfx_opengl_log_info();
+
     if (sysArgCheck("--debug-gl")) {
         gfx_opengl_enable_debug();
-        // dump version info as early as possible
-        gfx_opengl_log_info();
     }
 
     if (GLVersion.major < 2 || (GLVersion.major == 2 && GLVersion.minor < 1)) {
