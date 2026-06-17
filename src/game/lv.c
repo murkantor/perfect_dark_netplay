@@ -423,25 +423,34 @@ void lvReset(s32 stagenum)
 		}
 	}
 
+	LVBOOT_TRACE("lvReset: animsReset");
 	mpSetDefaultNamesIfEmpty();
 	animsReset();
 	objectivesReset();
 	vtxstoreReset();
+	LVBOOT_TRACE("lvReset: modelmgrReset");
 	modelmgrReset();
 	psReset();
+	LVBOOT_TRACE("lvReset: setupLoadFiles");
 	setupLoadFiles(stagenum);
+	LVBOOT_TRACE("lvReset: scenarioReset");
 	scenarioReset();
 	varsReset();
+	LVBOOT_TRACE("lvReset: propsReset");
 	propsReset();
 	chrmgrReset();
+	LVBOOT_TRACE("lvReset: bodiesReset");
 	bodiesReset(stagenum);
+	LVBOOT_TRACE("lvReset: setupCreateProps");
 	setupCreateProps(stagenum);
+	LVBOOT_TRACE("lvReset: tagsReset");
 	tagsReset();
 	explosionsReset();
 	smokeReset();
 	sparksReset();
 	weatherReset();
 	lvResetMiscSfx();
+	LVBOOT_TRACE("lvReset: post resets");
 
 	switch (g_Vars.stagenum) {
 	case STAGE_ESCAPE:
@@ -557,6 +566,8 @@ void lvReset(s32 stagenum)
 		setCurrentPlayerNum(0);
 	}
 
+	LVBOOT_TRACE("lvReset: post stage2 branch");
+
 	if (g_Vars.lvmpbotlevel) {
 		mpCalculateTeamIsOnlyAi();
 	}
@@ -587,10 +598,12 @@ void lvReset(s32 stagenum)
 	}
 #endif
 
+	LVBOOT_TRACE("lvReset: finishing");
 	modelmgrSetLvResetting(false);
 	var80084018 = 1;
 	schedResetArtifacts();
 	lvSetPaused(0);
+	LVBOOT_TRACE("lvReset: done");
 
 #if PIRACYCHECKS
 	{
