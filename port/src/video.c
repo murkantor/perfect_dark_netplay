@@ -17,6 +17,9 @@ extern s32 g_NetDedicatedMode;
 #include "../fast3d/gfx_sdl.h"
 #include "../fast3d/gfx_opengl.h"
 #include "../fast3d/gfx_sdlgpu.h"
+#ifdef PLATFORM_NXDK
+#include "../fast3d/gfx_nxdk.h"
+#endif
 
 // Platform memory-query headers for the perf/memory HUD (videoGetMemoryUsage).
 #if defined(PLATFORM_NXDK)
@@ -172,8 +175,19 @@ s32 videoInit(void)
 	// to 1 in main(), so we never reach here anyway).
 	return 0;
 #else
+#ifdef PLATFORM_NXDK
+	// nxdk-sdl3 provides no OpenGL context (SDL_CreateWindow with SDL_WINDOW_OPENGL
+	// fails on the NV2A — confirmed at boot), so the gfx_sdl/gfx_opengl GL path is a
+	// dead end on the Original Xbox. Use the native NV2A backend (pbkit/XGU). This is
+	// the Milestone-2 verdict — see docs/PORT_XBOX_NXDK.md. NOTE: gfx_nxdk is still a
+	// skeleton, so this boots past videoInit and runs but draws nothing until the
+	// NV2A backend is implemented.
+	wmAPI = &gfx_nxdk_wm;
+	renderingAPI = &gfx_nxdk_api;
+#else
 	wmAPI = &gfx_sdl;
 	renderingAPI = &gfx_opengl_api;
+#endif
 
 	// Push the configured texture-cache cap into the renderer (Video.TextureCacheSize
 	// from pd.ini). Sets a renderer global read live at texture import; safe pre-context.

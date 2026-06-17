@@ -53,9 +53,22 @@ Internally this drives `cmake/toolchain-nxdk.cmake`, which `include()`s NXDK's o
   boots to a black screen then hard-locks** — i.e. we're at the M1→M2 boundary; the
   next step is getting boot-stage diagnostic output to localise the hang (renderer
   bring-up vs. ROM-data load vs. an early init/exception).
-- **M2 — renderer: validate SDL3/pbgl GL** *(diagnostics in place)*: the existing
-  `gfx_sdl` + `gfx_opengl` path now **records exactly where it fails** on first boot,
-  no CLI flag needed (the Xbox can't pass one):
+- **M2 — renderer: GL VERDICT REACHED (2026-06-17), native NV2A backend needed**:
+  on-screen boot tracing (`PDBOOT:` via `debugPrint`, forced video mode in `main()`)
+  walked boot to `videoInit` → `gfx_init` → `gfx_wapi->init` (`gfx_sdl_init`) and
+  showed **`SDL_CreateWindow(SDL_WINDOW_OPENGL)` FAILS for every GL version**, then
+  `sysFatalError` (whose `SDL_ShowSimpleMessageBox` loops on Xbox = a flashing hang).
+  Conclusion: **nxdk-sdl3 provides no OpenGL context at all** — not a GLSL-version
+  wall, the GL window itself can't be created (the NV2A has no GL/EGL). So the
+  `gfx_sdl`+`gfx_opengl` path is a dead end on the OG Xbox **regardless of SDL2 vs
+  SDL3** — no SDL build exposes GL on the NV2A. **Action taken:** `videoInit` now
+  selects `gfx_nxdk_wm` + `gfx_nxdk_api` under `PLATFORM_NXDK` (the native pbkit/NV2A
+  backend) instead of the GL path. `gfx_nxdk` is still a **skeleton** (every
+  GfxRenderingAPI/WM member is a non-crashing stub), so the game now boots *past*
+  `videoInit` and runs but **draws nothing** until the backend is implemented — that
+  implementation (draw_triangles via pbkit, the N64 colour-combiner → NV2A register
+  combiners, textures, framebuffers, depth/blend) is the real M2 work, now starting.
+  The dead GL diagnostics, kept for reference:
   - GL capability strings (version/vendor/renderer/**GLSL**/extensions) log
     unconditionally at init (`gfx_opengl.cpp` `gfx_opengl_log_info`, moved out of the
     `--debug-gl` gate).
