@@ -849,9 +849,20 @@ s32 inputInit(void)
 	}
 
 	NXDK_INPUT_TRACE("input: SDL_InitSubSystem");
+#ifdef NXDK
+	// nxdk-sdl3's USB hidapi path hangs scanning USB during gamepad init on the
+	// Xbox; force it (and rawinput) off so SDL uses only the native Xbox gamepad
+	// driver, and init GAMEPAD alone (skip HAPTIC) for bring-up.
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+	SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+	if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
+		SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+	}
+#else
 	if (!SDL_WasInit(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC)) {
 		SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
 	}
+#endif
 	NXDK_INPUT_TRACE("input: subsys ok");
 
 	// try to load controller db from an external file in the save folder
