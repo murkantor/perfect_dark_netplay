@@ -537,6 +537,11 @@ static void nxdk_start_frame(void) {
     p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
     p = xgu_set_lighting_enable(p, false);
     p = xgu_set_cull_face_enable(p, false);
+    // The NV2A fixed-function transform needs modelview + projection set, not just the
+    // composite (matching nxdk-sdl3's SDL_render_xgu). All identity -> the GPU does only
+    // the perspective divide + viewport on fast3d's clip-space verts.
+    p = xgu_set_model_view_matrix(p, 0, ident);
+    p = xgu_set_projection_matrix(p, ident);
     p = xgu_set_composite_matrix(p, ident);
     pb_end(p);
     nxdk_setup_combiner();
@@ -820,6 +825,8 @@ static bool wm_start_frame(void) {
         p = xgu_set_lighting_enable(p, false);
         p = xgu_set_cull_face_enable(p, false);
         p = xgu_set_depth_test_enable(p, false);
+        p = xgu_set_model_view_matrix(p, 0, ident);
+        p = xgu_set_projection_matrix(p, ident);
         p = xgu_set_composite_matrix(p, ident);
         p = xgu_set_viewport_offset(p, (float)w * 0.5f, (float)h * 0.5f, 0.f, 0.f);
         p = xgu_set_viewport_scale(p, (float)w * 0.5f, -(float)h * 0.5f, (float)0xFFFFFF, 0.f);
