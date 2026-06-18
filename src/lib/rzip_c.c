@@ -2,9 +2,26 @@
 // and https://github.com/doomhack/perfect_dark/blob/master/src/lib/rzip.c
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <zlib.h>
 
 #include "lib/rzip.h"
+
+// NXDK's libzlib.lib is a Z_SOLO build -- it omits zlib's default zcalloc/zcfree, so
+// inflateInit2 with a zeroed z_stream (zalloc/zfree == NULL) returns Z_STREAM_ERROR.
+// Supply our own allocators; this is the documented zlib API and is valid on every
+// zlib build, so the desktop path behaves identically.
+static voidpf rzip_zalloc(voidpf opaque, uInt items, uInt size)
+{
+	(void)opaque;
+	return malloc((size_t)items * (size_t)size);
+}
+
+static void rzip_zfree(voidpf opaque, voidpf address)
+{
+	(void)opaque;
+	free(address);
+}
 
 #ifdef NXDK
 #include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
@@ -88,6 +105,11 @@ s32 rzipInflate(void *srcp, void *dst, void *scratch)
 	s32 ret = 0;
 	u8 *src = srcp;
 	z_stream strm = { 0 };
+
+	// Provide allocators (required by NXDK's Z_SOLO zlib; harmless elsewhere).
+	strm.zalloc = rzip_zalloc;
+	strm.zfree = rzip_zfree;
+	strm.opaque = Z_NULL;
 
 	ret = inflateInit2(&strm, -15);
 	if (ret != Z_OK) {
