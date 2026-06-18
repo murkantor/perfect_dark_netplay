@@ -800,6 +800,13 @@ static void wm_init(const struct GfxWindowInitSettings *settings) {
     pb_show_front_screen();
     g.width = (uint32_t)pb_back_buffer_width();
     g.height = (uint32_t)pb_back_buffer_height();
+    // Target the back buffer ONCE here (not per frame) -- pbkit's pb_finished() handles
+    // the flip + re-target each present. Then prime the first frame: reset the push
+    // buffer and clear depth/stencil so the first wm_start_frame can draw straight away.
+    // (Matches SDL_render_xgu's init + present split.)
+    pb_target_back_buffer();
+    pb_reset();
+    pb_erase_depth_stencil_buffer(0, 0, pb_back_buffer_width(), pb_back_buffer_height());
     xboxTracef("PDBOOT: pb_init ok %dx%d", (int)g.width, (int)g.height);
 }
 
@@ -867,33 +874,28 @@ static void wm_handle_events(void) {
 }
 
 static bool wm_start_frame(void) {
-    pb_wait_for_vbl();
-    pb_reset();
-    pb_target_back_buffer();
-    // Phase 0: clear the whole back buffer to a recognisable colour so we can confirm
-    // the NV2A present path works before any geometry is wired. ARGB; 0xFF0000FF =
-    // blue. (Once draw_triangles works, the engine's clear_framebuffer takes over.)
+    // Frame structure mirrors nxdk-sdl3's SDL_render_xgu: the back buffer is targeted
+    // ONCE at init (wm_init), and the push buffer reset + depth clear happen at the END
+    // of the previous frame's present (wm_swap_buffers_end). So here we only clear the
+    // COLOUR buffer (the engine's clear_framebuffer hook is a no-op on this backend) and
+    // wipe pbkit's text overlay. Re-targeting the back buffer every frame -- as this did
+    // before -- landed draws in a buffer that wasn't the one being scanned out (black).
     int w = pb_back_buffer_width();
     int h = pb_back_buffer_height();
-    pb_erase_depth_stencil_buffer(0, 0, w, h);
-    // Clear to BLACK (was blue). Black is the game's natural backdrop, so an
-    // empty-render frame is far less jarring than a blue strobe -- and this doubles
-    // as a flicker diagnostic: with a black clear, "title vs black" = empty render
-    // frames (downstream of the lang-bank NULLs), whereas still seeing the pre-launch
-    // dashboard / stale VRAM = a genuine pbkit present/buffer-rotation bug. ARGB.
-    pb_fill(0, 0, w, h, 0xFF000000);
-    // Clear pbkit's text overlay once per frame so lingering boot-trace text doesn't
-    // composite over the 3D scene. (No per-frame debugPrint -- the rdr: traces in
-    // E:\pdboot.log already prove the loop is live, and a per-frame text-screen write
-    // fights the 3D present.)
+    pb_fill(0, 0, w, h, 0xFF000000); // ARGB black
     pb_erase_text_screen();
-    while (pb_busy()) { }
     return true;
 }
 static void wm_swap_buffers_begin(void) { /* present happens in swap_buffers_end */ }
 static void wm_swap_buffers_end(void) {
+    // Present + prep next frame, matching SDL_render_xgu's XBOX_RenderPresent: wait for
+    // the GPU to drain, flip the completed back buffer to the front (pb_finished), wait
+    // for vblank, then reset the push buffer and clear depth/stencil for the next frame.
     while (pb_busy()) { }
     while (pb_finished()) { }
+    pb_wait_for_vbl();
+    pb_reset();
+    pb_erase_depth_stencil_buffer(0, 0, pb_back_buffer_width(), pb_back_buffer_height());
 }
 static double wm_get_time(void) { return nxdk_now() - g.time0; }
 static int32_t wm_get_target_fps(void) { return g.target_fps; }
