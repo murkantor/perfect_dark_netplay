@@ -798,6 +798,42 @@ static bool wm_start_frame(void) {
     pb_fill(0, 0, w, h, 0xFF0000FF);
     pb_erase_text_screen();
     while (pb_busy()) { }
+
+    // DIAGNOSTIC: a hardcoded triangle in clip space (w=1), depth off, bright colours,
+    // drawn with the same transform/viewport/combiner as fast3d. If THIS shows over the
+    // blue, the NV2A pipe (transform/viewport/combiner/vertex submit) works and the
+    // problem is fast3d's vertices/state; if not, the pipe itself is wrong. Remove once
+    // geometry renders.
+    {
+        static const float ident[16] = {
+            1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
+        };
+        static float tri[3 * NXDK_VTX_FLOATS] = {
+            // x      y      z    w     r  g  b  a     u  v
+            -0.6f, -0.6f, 0.5f, 1.f,  1.f,0.f,0.f,1.f,  0.f,0.f,
+             0.6f, -0.6f, 0.5f, 1.f,  0.f,1.f,0.f,1.f,  0.f,0.f,
+             0.0f,  0.6f, 0.5f, 1.f,  1.f,1.f,1.f,1.f,  0.f,0.f,
+        };
+        uint32_t *p = pb_begin();
+        p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
+        p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
+        p = xgu_set_lighting_enable(p, false);
+        p = xgu_set_cull_face_enable(p, false);
+        p = xgu_set_depth_test_enable(p, false);
+        p = xgu_set_composite_matrix(p, ident);
+        p = xgu_set_viewport_offset(p, (float)w * 0.5f, (float)h * 0.5f, 0.f, 0.f);
+        p = xgu_set_viewport_scale(p, (float)w * 0.5f, -(float)h * 0.5f, (float)0xFFFFFF, 0.f);
+        pb_end(p);
+        nxdk_setup_combiner();
+        const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
+        xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, tri);
+        xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, tri + 4);
+        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
+        xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
+        xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
+        xgux_draw_arrays(XGU_TRIANGLES, 0, 3);
+    }
+
     // Phase 0 liveness marker: a frame counter drawn over the blue clear (raw
     // debugPrint, screen-only -- not the boot log, so it doesn't spam E:\pdboot.log
     // per frame). A ticking number on a blue field confirms the loop + present work.
