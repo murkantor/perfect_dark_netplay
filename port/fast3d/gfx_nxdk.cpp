@@ -454,13 +454,14 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
 // ---------------------------------------------------------------------------------
 
 static void nxdk_init(void) {
-    memset(&g, 0, sizeof(g));
+    // NOTE: do NOT memset(&g) here -- the WM (wm_init) and this RAPI share the single
+    // file-static `g`, and gfx_init runs wm_init (which sets g.width/g.height from
+    // pb_back_buffer_*) BEFORE this. Zeroing g wiped the dimensions back to 0, which
+    // made gfx_pc compute a degenerate (0,1) viewport -> nothing visible. `g` is
+    // already zero-initialized at program start, so just set the RAPI fields.
     g.tex_filter = FILTER_LINEAR;
-    g.target_fps = 60;
+    if (g.target_fps == 0) { g.target_fps = 60; }
     g.next_framebuffer_id = 1;
-    // TODO(pbkit): pb_init() if this backend owns the device (vs. nxdk-sdl3 owning
-    // the window). Allocate the lo-res render target here (render-low + upscale per
-    // the M4 HD-mode plan).
 }
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
