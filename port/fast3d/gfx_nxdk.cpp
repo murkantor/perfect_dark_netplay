@@ -73,12 +73,28 @@ static struct {
 
     // GPU-visible (physically contiguous) vertex scratch. fast3d hands us a CPU
     // buffer each draw; the NV2A reads vertices via DMA, so we copy into this.
-    // De-interleaved to a fixed [x,y,z,w, r,g,b,a] layout (8 floats/vertex).
+    // De-interleaved to a fixed [x,y,z,w, r,g,b,a, u,v] layout (10 floats/vertex).
     float *vtx;
     size_t vtx_caps;                  // capacity in vertices
+
+    uint32_t tex_bound[2];            // bound texture id per tile (0 = none)
 } g;
 
-#define NXDK_VTX_FLOATS 8 // x,y,z,w, r,g,b,a
+#define NXDK_VTX_FLOATS 10 // x,y,z,w, r,g,b,a, u,v
+
+// ---------------------------------------------------------------------------------
+// Texture pool. fast3d hands RGBA8 (R,G,B,A bytes); we convert to NV2A A8R8G8B8
+// (0xAARRGGBB) in a GPU-visible contiguous buffer per texture, keyed by 1-based id.
+// ---------------------------------------------------------------------------------
+struct NxdkTexture {
+    uint8_t *argb;        // contiguous A8R8G8B8, NULL = unallocated
+    uint32_t w, h;
+    bool linear_filter;
+    uint32_t cms, cmt;    // wrap modes (G_TX_*); mapped to NV2A in nxdk_apply_texture
+};
+
+#define NXDK_MAX_TEXTURES 8192
+static struct NxdkTexture g_NxdkTex[NXDK_MAX_TEXTURES]; // [0] unused
 
 // ---------------------------------------------------------------------------------
 // Identification / capabilities
@@ -164,29 +180,69 @@ static void nxdk_clear_shaders(void) {
 // ---------------------------------------------------------------------------------
 
 static uint32_t nxdk_new_texture(void) {
-    return ++g.next_texture_id;
+    uint32_t id = ++g.next_texture_id;
+    if (id >= NXDK_MAX_TEXTURES) {
+        // Pool full -- wrap is wrong but better than OOB. Bump NXDK_MAX_TEXTURES.
+        id = 1;
+        g.next_texture_id = 1;
+    }
+    if (g_NxdkTex[id].argb) {
+        MmFreeContiguousMemory(g_NxdkTex[id].argb);
+    }
+    memset(&g_NxdkTex[id], 0, sizeof(g_NxdkTex[id]));
+    return id;
 }
 
 static void nxdk_select_texture(int tile, uint32_t texture_id, bool linear_filter) {
     g.cur_tile = tile;
-    (void)texture_id; (void)linear_filter;
-    // TODO(pbkit): bind texture_id to NV2A texture stage `tile`.
+    if (tile >= 0 && tile < 2) {
+        g.tex_bound[tile] = texture_id;
+    }
+    if (texture_id < NXDK_MAX_TEXTURES) {
+        g_NxdkTex[texture_id].linear_filter = linear_filter;
+    }
 }
 
 static void nxdk_upload_texture(const uint8_t *rgba32_buf, uint32_t width, uint32_t height, bool gen_mipmaps) {
-    (void)rgba32_buf; (void)width; (void)height; (void)gen_mipmaps;
-    // TODO(pbkit): allocate VRAM, swizzle RGBA8 (NV2A wants swizzled or linear-pitch
-    // textures), upload, build mips if requested, and key it to the current id.
+    (void)gen_mipmaps; // TODO(nv2a): mipmaps
+    if (g.cur_tile < 0 || g.cur_tile >= 2) { return; }
+    uint32_t id = g.tex_bound[g.cur_tile];
+    if (id == 0 || id >= NXDK_MAX_TEXTURES) { return; }
+    struct NxdkTexture *t = &g_NxdkTex[id];
+
+    if (t->argb) { MmFreeContiguousMemory(t->argb); t->argb = NULL; }
+    const size_t bytes = (size_t)width * height * 4;
+    if (!bytes) { return; }
+    t->argb = (uint8_t *)MmAllocateContiguousMemory(bytes);
+    if (!t->argb) { return; }
+    t->w = width;
+    t->h = height;
+
+    // RGBA8 (R,G,B,A bytes) -> A8R8G8B8 (u32 0xAARRGGBB, little-endian byte order B,G,R,A).
+    const uint8_t *s = rgba32_buf;
+    uint32_t *d = (uint32_t *)t->argb;
+    const size_t n = (size_t)width * height;
+    for (size_t i = 0; i < n; i++, s += 4) {
+        d[i] = ((uint32_t)s[3] << 24) | ((uint32_t)s[0] << 16) | ((uint32_t)s[1] << 8) | (uint32_t)s[2];
+    }
 }
 
 static void nxdk_set_sampler_parameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
-    (void)sampler; (void)linear_filter; (void)cms; (void)cmt; (void)mipmaps;
-    // TODO(nv2a): set the texture-stage filter + wrap (clamp/wrap/mirror) modes.
+    (void)mipmaps;
+    if (sampler < 0 || sampler >= 2) { return; }
+    uint32_t id = g.tex_bound[sampler];
+    if (id == 0 || id >= NXDK_MAX_TEXTURES) { return; }
+    g_NxdkTex[id].linear_filter = linear_filter;
+    g_NxdkTex[id].cms = cms;
+    g_NxdkTex[id].cmt = cmt;
 }
 
 static void nxdk_delete_texture(uint32_t texID) {
-    (void)texID;
-    // TODO(pbkit): free the VRAM backing texID.
+    if (texID == 0 || texID >= NXDK_MAX_TEXTURES) { return; }
+    if (g_NxdkTex[texID].argb) {
+        MmFreeContiguousMemory(g_NxdkTex[texID].argb);
+        g_NxdkTex[texID].argb = NULL;
+    }
 }
 
 static void nxdk_set_texture_filter(enum FilteringMode mode) { g.tex_filter = mode; }
@@ -290,12 +346,42 @@ static void nxdk_vertex_layout(const struct CCFeatures *cc, int *stride,
     *stride = total;
 }
 
+static inline int nxdk_ulog2(uint32_t v) { int r = 0; while (v > 1) { v >>= 1; r++; } return r; }
+
+// Program NV2A texture stage 0 from the bound texture (linear A8R8G8B8), or disable
+// it. PHASE 2, WRITTEN BLIND -- the XGU texture-register signatures/enums below are
+// best-effort and will need correcting against the real headers. The untextured path
+// is independent, so colour-only geometry is unaffected if this is wrong.
+static void nxdk_apply_texture(const struct CCFeatures *cc) {
+    const bool use = cc->used_textures[0] && g.tex_bound[0] && g.tex_bound[0] < NXDK_MAX_TEXTURES
+                     && g_NxdkTex[g.tex_bound[0]].argb;
+    uint32_t *p = pb_begin();
+    if (use) {
+        struct NxdkTexture *t = &g_NxdkTex[g.tex_bound[0]];
+        const uint32_t phys = (uint32_t)(uintptr_t)t->argb & 0x03ffffff;
+        const unsigned filt = t->linear_filter ? XGU_TEXTURE_FILTER_LINEAR : XGU_TEXTURE_FILTER_NEAREST;
+        p = xgu_set_texture_offset(p, 0, (const void *)(uintptr_t)phys);
+        p = xgu_set_texture_format(p, 0, 2, false, XGU_SOURCE_COLOR,
+                                   2, XGU_TEXTURE_FORMAT_A8R8G8B8,
+                                   1, nxdk_ulog2(t->w), nxdk_ulog2(t->h), 0);
+        p = xgu_set_texture_address(p, 0, XGU_WRAP_REPEAT, false, XGU_WRAP_REPEAT, false,
+                                    XGU_WRAP_CLAMP_TO_EDGE, false, false);
+        p = xgu_set_texture_control0(p, 0, true, 0, 0);
+        p = xgu_set_texture_filter(p, 0, 0, filt, filt, false, false, false, false);
+        p = xgu_set_texture_image_rect(p, 0, t->w, t->h);
+    } else {
+        p = xgu_set_texture_control0(p, 0, false, 0, 0);
+    }
+    pb_end(p);
+}
+
 static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     (void)buf_vbo_len;
     if (!g.cur_shader) { return; }
 
+    const struct CCFeatures *cc = &g.cur_shader->cc;
     int stride, color_off, color_size, uv0_off;
-    nxdk_vertex_layout(&g.cur_shader->cc, &stride, &color_off, &color_size, &uv0_off);
+    nxdk_vertex_layout(cc, &stride, &color_off, &color_size, &uv0_off);
 
     const size_t nverts = buf_vbo_num_tris * 3;
     if (nverts == 0) { return; }
@@ -308,7 +394,8 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
         if (!g.vtx) { g.vtx_caps = 0; return; }
     }
 
-    // De-interleave fast3d's variable layout into a fixed [pos4, colour4].
+    // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2].
+    const bool textured = (uv0_off >= 0);
     for (size_t v = 0; v < nverts; v++) {
         const float *src = buf_vbo + v * (size_t)stride;
         float *dst = g.vtx + v * NXDK_VTX_FLOATS;
@@ -320,16 +407,24 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
         } else {
             dst[4] = dst[5] = dst[6] = dst[7] = 1.0f;
         }
+        if (textured) {
+            dst[8] = src[uv0_off]; dst[9] = src[uv0_off + 1];
+        } else {
+            dst[8] = dst[9] = 0.0f;
+        }
     }
 
-    // Bind the arrays and draw. TODO(nv2a): texcoords + texture sampling + the real
-    // N64 colour-combiner -> NV2A register combiners. Phase 1 is position + the shade
-    // colour only (relying on pbkit's default combiner to surface the diffuse).
+    nxdk_apply_texture(cc);
+
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
     xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, g.vtx);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, g.vtx + 4);
-    // Disable arrays we don't supply so a previous draw's binding can't dangle.
-    xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
+    if (textured) {
+        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, g.vtx + 8);
+    } else {
+        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
+    }
+    // Disable arrays we never supply so a previous draw's binding can't dangle.
     xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
     xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
 

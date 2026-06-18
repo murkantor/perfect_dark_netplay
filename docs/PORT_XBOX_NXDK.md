@@ -148,6 +148,50 @@ the renderer is solid.
   pbkit/XGU), textures (swizzled VRAM upload), the N64 colour-combiner → NV2A register
   combiners, then depth/blend/scissor/framebuffers.
 
+## gfx_nxdk renderer architecture (in progress)
+
+`port/fast3d/gfx_nxdk.cpp` drives the NV2A via **pbkit** (device/present) + **XGU**
+(state/vertex pushes; header path wired in CMake from `nxdk-sdl3/nxdk_glue/render`).
+
+- **Transform = pass-through.** fast3d does the CPU vertex transform and hands us
+  CLIP-space verts (`get_clip_parameters`: z 0..1, invert_y=false — the D3D/NV2A
+  convention). So `nxdk_start_frame` sets the fixed-function transform to identity
+  (identity composite matrix, lighting+cull off); the NV2A only does the perspective
+  divide + viewport. `nxdk_set_viewport` programs the clip→screen offset/scale
+  (negative Y; 24-bit depth range — **tune if depth/Y is wrong**).
+- **Vertices.** fast3d's per-vertex float layout is *variable* (pos4, per-tex uv+clamp,
+  fog4, grayscale4, then per-input colours), computed from the decoded combiner by
+  `nxdk_vertex_layout`. `draw_triangles` de-interleaves it into a fixed
+  `[pos4, colour4, uv2]` buffer in **GPU-visible contiguous memory**
+  (`MmAllocateContiguousMemory`; the NV2A DMAs vertex data, so it can't read fast3d's
+  plain-malloc buffer), then binds XGU vertex/colour/texcoord arrays and
+  `xgux_draw_arrays`. Colour = the first combiner input (the shade). **The `g.vtx`
+  pointer may need `& 0x03ffffff` (physical) for XGU — verify.**
+- **Textures (`nxdk_upload_texture` etc.).** Management is solid: RGBA8 → A8R8G8B8
+  (0xAARRGGBB) into a per-texture contiguous buffer, keyed by 1-based id, freed on
+  `delete_texture`. `nxdk_apply_texture` programs texture stage 0 (linear A8R8G8B8,
+  dims, filter, wrap) — **written blind; the XGU texture-register signatures need
+  correcting against the real headers.** UVs may need texel-scaling vs normalized.
+- **Colour combiner — DESIGN (not yet wired; relies on pbkit's default).** Map the
+  decoded `CCFeatures` (`gfx_cc.h`: `c[2][2][4]` input slots, `do_single/do_multiply/
+  do_mix`, `opt_alpha`, `used_textures`) to NV2A **register combiners**:
+  - Common cases first: **shade-only** (output = diffuse) and **modulate** (output =
+    tex0 × diffuse), which cover the bulk of PD surfaces. `SHADER_TEXEL0` →
+    texture-stage-0 result; `SHADER_INPUT_n` → the per-vertex colour (diffuse);
+    `SHADER_1`/`SHADER_0` → const 1/0.
+  - Map the N64 combiner's general-stage (a*b + c*d style) to one NV2A general
+    combiner; the final combiner emits the result (+ alpha from the alpha lane when
+    `opt_alpha`). 2-cycle (`opt_2cyc`) → a second general combiner.
+  - `opt_alpha_threshold`/`opt_texture_edge` → alpha test; `opt_fog` → the NV2A fog
+    unit or fold into the final combiner.
+  Until wired, textured surfaces depend on whatever pbkit's default combiner does —
+  expect wrong colours there; shade-only geometry should be correct.
+- **Open/verify:** depth-buffer format vs the 24-bit viewport Z assumption; XGU
+  physical-address convention for vertex/texture pointers; scissor
+  (`nxdk_set_scissor` is a stub); framebuffer effects (`create_framebuffer` etc. still
+  stubbed — mirror/security-cam won't work yet). Boot trace is gated behind
+  `xboxTraceSetEnabled()` (`port/src/xboxtrace.c`), default on during bring-up.
+
 ## Milestone 4 — HD video output (480p / 720p / 1080i)
 
 Design + an **inert `PLATFORM_NXDK` mode table** (`port/src/video.c`, see

@@ -474,6 +474,22 @@ char *langGet(s32 textid)
 		addr = 0;
 	}
 
+#ifdef NXDK
+	// DIAGNOSTIC: lang text resolves empty on Xbox. Dump the first few misses so we
+	// can tell a NULL bank (not loaded) from a 0 offset-table entry (load/convert
+	// produced wrong data). bank[0] is the offset of the first string (~= the table
+	// size); if it's wildly wrong the overlapping inflate / byteswap is corrupt.
+	if (addr == 0) {
+		static int s_fires = 0;
+		if (s_fires < 8) {
+			s_fires++;
+			xboxTracef("PDBOOT: langGet0 id=%d bi=%d ti=%d bank=%p tbl0=%x ent=%x",
+				textid, bankindex, textindex, (void *)bank,
+				bank ? (unsigned)bank[0] : 0u, bank ? (unsigned)bank[textindex] : 0u);
+		}
+	}
+#endif
+
 #ifndef PLATFORM_N64
 	// Never return NULL: many callers strcpy/sprintf the result, and NXDK's libc
 	// faults on a NULL %s / strcpy(dst, NULL) (glibc tolerates it). Degrade missing

@@ -14,6 +14,9 @@ void xboxTraceStage(const char *stage);
 // printf-style trace for callers that need formatting (a trailing '\n' is trimmed).
 void xboxTracef(const char *fmt, ...);
 
+// Master on/off for all boot tracing (default on). Silences every PDBOOT/LVBOOT site.
+void xboxTraceSetEnabled(int enabled);
+
 #ifdef __cplusplus
 }
 #endif

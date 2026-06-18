@@ -27,6 +27,12 @@
 #define XBOX_LOG_PATH "E:\\pdboot.log"
 
 static int s_logStarted;
+// One switch for ALL boot tracing (the ~40 PDBOOT/LVBOOT sites route through the two
+// functions below). Default on during bring-up; call xboxTraceSetEnabled(0) once the
+// renderer is solid (or wire it to a config/console toggle) to silence it.
+static int s_enabled = 1;
+
+void xboxTraceSetEnabled(int enabled) { s_enabled = enabled; }
 
 static void xboxLogLine(const char *line)
 {
@@ -42,6 +48,7 @@ static void xboxLogLine(const char *line)
 
 void xboxTraceStage(const char *stage)
 {
+	if (!s_enabled) { return; }
 	char line[160];
 	snprintf(line, sizeof(line), "PDBOOT: %s", stage ? stage : "(null)");
 	debugPrint("%s\n", line);
@@ -50,6 +57,7 @@ void xboxTraceStage(const char *stage)
 
 void xboxTracef(const char *fmt, ...)
 {
+	if (!s_enabled) { return; }
 	char msg[224];
 	va_list ap;
 	va_start(ap, fmt);
@@ -70,5 +78,6 @@ void xboxTracef(const char *fmt, ...)
 
 void xboxTraceStage(const char *stage) { (void)stage; }
 void xboxTracef(const char *fmt, ...) { (void)fmt; }
+void xboxTraceSetEnabled(int enabled) { (void)enabled; }
 
 #endif
