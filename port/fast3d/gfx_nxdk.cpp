@@ -73,7 +73,6 @@ static struct {
 
     // --- Phase 1 geometry state ---
     int vp_x, vp_y, vp_w, vp_h;       // current viewport (from set_viewport)
-    int xform3d;                      // transform/viewport mode (-1 unset / 0 2D fixed / 1 3D shader)
     bool depth_test, depth_mask;      // from set_depth_mode
     bool use_alpha;                   // from set_use_alpha (blend enable)
 
@@ -351,10 +350,9 @@ static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_c
     g.depth_test = depth_test;
     g.depth_mask = depth_update;
     uint32_t *p = pb_begin();
-    // Depth currently has no effect: the 2-component screen-space position defaults z=0
-    // for every vertex (geometry draws in submission order). Honour the game's request
-    // anyway so the state is correct for when hardware depth is restored (3-component
-    // clip-space Z + viewport Z-scale).
+    // Depth-tested draws bind 3-component positions (X,Y screen pixels + NDC z in [0,1]);
+    // the viewport Z-scale (nxdk_set_viewport) maps that into the Z24 buffer so the world
+    // and models sort front-to-back. Depth-off draws bind 2 components (z defaults to 0).
     p = xgu_set_depth_test_enable(p, depth_test);
     p = xgu_set_depth_mask(p, depth_update);
     p = xgu_set_depth_func(p, XGU_FUNC_LESS_OR_EQUAL);
@@ -366,57 +364,26 @@ static void nxdk_set_depth_range(float znear, float zfar) {
     // Depth range is folded into the viewport Z scale/offset (see nxdk_set_viewport).
 }
 
-// Pass-through NV2A vertex program (assembled by nv2a-vsh from: mov oPos,v0; mov
-// oDiffuse,v3; mov oTex0,v9). Outputs fast3d's CLIP-space position straight to oPos so
-// the HARDWARE does the perspective divide (oPos.xyz/oPos.w) + viewport + depth -- the
-// thing the fixed-function transform with identity matrices refused to do (it forced
-// w=1, giving the "everything radiates from a point" look). v0/v3/v9 = the position/
-// diffuse/texcoord0 attribute slots we already bind (XGU_VERTEX/COLOR/TEXCOORD0_ARRAY).
-static const XguTransformProgramInstruction s_vsh_passthrough[] = {
-    {{ 0x00000000, 0x0020001b, 0x0836106c, 0x2070f800 }}, // mov oPos, v0
-    {{ 0x00000000, 0x0020061b, 0x0836106c, 0x2070f818 }}, // mov oDiffuse, v3
-    {{ 0x00000000, 0x0020121b, 0x0836106c, 0x2070f849 }}, // mov oTex0, v9
-};
-
-static void nxdk_load_vsh(void) {
-    static bool loaded = false;
-    if (loaded) { return; }
-    loaded = true;
-    uint32_t *p = pb_begin();
-    p = xgu_set_transform_program_load(p, 0);
-    p = xgu_set_transform_program(p, s_vsh_passthrough,
-                                  sizeof(s_vsh_passthrough) / sizeof(s_vsh_passthrough[0]));
-    p = xgu_set_transform_program_start(p, 0);
-    pb_end(p);
-}
-
-// Switch transform+viewport between 2D (fixed-function, identity viewport, CPU-
-// transformed screen pixels) and 3D (vertex program, NDC->screen viewport, raw clip
-// space). Cached so a run of same-mode draws doesn't re-push it.
-static void nxdk_set_transform_3d(bool is3d) {
-    if (g.xform3d == (int)is3d) { return; }
-    g.xform3d = (int)is3d;
-    if (is3d) { nxdk_load_vsh(); }
-    uint32_t *p = pb_begin();
-    if (is3d) {
-        p = xgu_set_transform_execution_mode(p, XGU_PROGRAM, XGU_RANGE_MODE_PRIVATE);
-        const float cx = (float)g.vp_x + (float)g.vp_w * 0.5f;
-        const float cy = (float)g.vp_y + (float)g.vp_h * 0.5f;
-        // After the HW divide: NDC [-1,1] -> screen (y flipped), NDC z [0,1] -> [0,0xFFFFFF].
-        p = xgu_set_viewport_offset(p, cx, cy, 0.0f, 0.0f);
-        p = xgu_set_viewport_scale(p, (float)g.vp_w * 0.5f, -(float)g.vp_h * 0.5f, (float)0xFFFFFF, 1.0f);
-    } else {
-        p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
-        p = xgu_set_viewport_offset(p, 0.0f, 0.0f, 0.0f, 0.0f);
-        p = xgu_set_viewport_scale(p, 1.0f, 1.0f, 1.0f, 1.0f);
-    }
-    pb_end(p);
-}
-
 static void nxdk_set_viewport(int x, int y, int width, int height) {
     g.vp_x = x; g.vp_y = y; g.vp_w = width; g.vp_h = height;
-    g.xform3d = -1; // dims changed -> re-apply transform+viewport on the next draw
+    // IDENTITY X/Y viewport (like nxdk-sdl3's SDL_render): draw_triangles does the
+    // clip->screen transform on the CPU (perspective divide + pixel mapping), so X/Y must
+    // pass through untouched. Wrestling the NV2A X/Y viewport scale/offset for clip-space
+    // input collapsed the geometry; pre-transforming to screen pixels is deterministic.
+    //
+    // DEPTH (Z) is the exception: the fixed-function pipeline still runs the viewport Z
+    // transform + clamp, so map the CPU-supplied NDC z [0,1] -> the Z24 buffer range
+    // [0, 0xFFFFFF] here (offset 0, scale 0xFFFFFF) AND pin the depth clip range to match.
+    // The earlier 3-comp attempt left the clip range at pbkit's default and wrote z values
+    // outside it, so the NV2A clamped every fragment to one depth -> no sorting ("no
+    // effect"). Setting both explicitly removes that unknown.
     NXDK_RTRACE("rdr: viewport %d %d %d %d", x, y, width, height);
+    uint32_t *p = pb_begin();
+    p = xgu_set_viewport_offset(p, 0.0f, 0.0f, 0.0f, 0.0f);
+    p = xgu_set_viewport_scale(p, 1.0f, 1.0f, (float)0xFFFFFF, 1.0f);
+    p = xgu_set_clip_min(p, 0.0f);
+    p = xgu_set_clip_max(p, (float)0xFFFFFF);
+    pb_end(p);
     NXDK_RTRACE("rdr: viewport ok");
 }
 
@@ -604,13 +571,10 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     if (g.vtx_off + nverts > g.vtx_caps) { return; }
     float *const base = g.vtx[g.vtx_frame] + g.vtx_off * NXDK_VTX_FLOATS;
 
-    // De-interleave fast3d's variable layout into [pos4, colour4, uv2]. Two modes:
-    //  - 2D (depth off): CPU perspective-divide + screen-pixel map; fixed-function +
-    //    identity viewport (proven for menus/HUD).
-    //  - 3D (depth on): pass raw clip space (x,y,z,w); the vertex program + HW do the
-    //    divide, viewport, near-plane clip and depth.
+    // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
+    // the clip->screen transform on the CPU (perspective divide + pixel mapping), since
+    // the NV2A viewport is identity. NDC y is up; screen y is down -> flip.
     const bool textured = (uv0_off >= 0);
-    const bool clip3d = g.depth_test;
     const float vpx = (float)g.vp_x, vpy = (float)g.vp_y;
     const float vpw = (float)g.vp_w, vph = (float)g.vp_h;
     // Swizzled textures live in a POT container; scale fast3d's normalised [0,1] UV by
@@ -625,17 +589,18 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     for (size_t v = 0; v < nverts; v++) {
         const float *src = buf_vbo + v * (size_t)stride;
         float *dst = base + v * NXDK_VTX_FLOATS;
-        if (clip3d) {
-            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; // raw clip space
-        } else {
-            const float cw = src[3];
-            const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
-            const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
-            dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
-            dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
-            dst[2] = ndcz * (float)0xFFFFFF;                    // 24-bit depth
-            dst[3] = 1.0f;
-        }
+        const float cw = src[3];
+        const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
+        const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
+        dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
+        dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
+        // NDC depth in [0,1] (0 = near). The viewport Z-scale (nxdk_set_viewport) maps it
+        // to the Z24 range [0, 0xFFFFFF]. The earlier 3-comp attempt pre-scaled to ~16M in
+        // the vertex while the clip range stayed at pbkit's default, so the NV2A clamped
+        // every fragment to one depth -> no sorting. Keep z in [0,1] and let the viewport
+        // do the scale.
+        dst[2] = ndcz;
+        dst[3] = 1.0f;
         if (color_off >= 0) {
             const float *c = src + color_off;
             dst[4] = c[0]; dst[5] = c[1]; dst[6] = c[2];
@@ -661,14 +626,16 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     nxdk_apply_texture(cc);
     NXDK_RTRACE("rdr: applied tex");
 
-    // Match the transform pipeline to the data: 3D = vertex program + clip-space viewport,
-    // 2D = fixed-function + identity viewport.
-    nxdk_set_transform_3d(clip3d);
-
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-    // 3D feeds 4-component clip space (x,y,z,w) to the vertex program (it divides); 2D
-    // feeds 2-component CPU-transformed screen pixels (NV2A defaults z=0,w=1, no clip).
-    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, clip3d ? 4 : 2, bstride, base);
+    // Bind THIS draw's arena region (base), not the arena start -- each queued draw must
+    // point at its own vertices. Position is CPU-pretransformed screen pixels (X,Y) like
+    // SDL_render_xgu's float pos[2]: the NV2A rasterises in screen space with no homogeneous
+    // clip. (Binding 4 components ran every vertex through the clip pipeline where z>>w
+    // clipped all geometry away.) For depth-tested draws bind 3 components so the per-vertex
+    // screen-space Z (dst[2], NDC z in [0,1]) reaches the Z24 buffer and the world/models
+    // sort front-to-back; depth-off 2D/HUD keeps 2 components (NV2A defaults z=0). Gated, so
+    // a Z mishap only touches depth-tested geometry, never the proven menu/HUD path.
+    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, g.depth_test ? 3 : 2, bstride, base);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
     if (textured) {
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, base + 8);
@@ -704,7 +671,6 @@ static void nxdk_init(void) {
     if (g.target_fps == 0) { g.target_fps = 60; }
     g.next_framebuffer_id = 1;
     g.combiner_textured = -1; // unset -> first nxdk_combiner_mode() pushes the input combiner
-    g.xform3d = -1;           // unset -> first nxdk_set_transform_3d() pushes mode + viewport
 }
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
@@ -853,7 +819,6 @@ static void nxdk_start_frame(void) {
     pb_end(p);
     nxdk_setup_combiner();
     g.combiner_textured = 0; // setup_combiner programmed the unlit input combiner
-    g.xform3d = -1;          // start_frame set FIXED mode; force the first draw to re-apply mode+viewport
     NXDK_RTRACE("rdr: start_frame ok");
 }
 
