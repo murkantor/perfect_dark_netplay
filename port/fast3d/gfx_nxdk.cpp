@@ -287,22 +287,14 @@ static void nxdk_set_depth_range(float znear, float zfar) {
 
 static void nxdk_set_viewport(int x, int y, int width, int height) {
     g.vp_x = x; g.vp_y = y; g.vp_w = width; g.vp_h = height;
-    // Map clip space -> screen. fast3d emits clip space with the D3D/NV2A convention
-    // (z 0..1, invert_y=false), so the NV2A does the perspective divide + this
-    // viewport. Screen y grows downward, NDC y grows up -> negative Y scale.
-    const float ox = (float)x + (float)width  * 0.5f;
-    const float oy = (float)y + (float)height * 0.5f;
-    const float sx = (float)width  * 0.5f;
-    const float sy = -(float)height * 0.5f;
-    // 24-bit depth buffer: NDC z [0,1] -> [0, 0xFFFFFF]. (Tune if depth is wrong.)
-    const float oz = 0.0f;
-    const float sz = (float)0xFFFFFF;
+    // Use an IDENTITY NV2A viewport (like nxdk-sdl3's SDL_render) and do the
+    // clip->screen transform on the CPU in draw_triangles (the perspective divide +
+    // pixel mapping). Wrestling the NV2A viewport scale/offset for clip-space input
+    // collapsed the geometry; pre-transforming to screen pixels is deterministic.
     NXDK_RTRACE("rdr: viewport %d %d %d %d", x, y, width, height);
     uint32_t *p = pb_begin();
-    p = xgu_set_viewport_offset(p, ox, oy, oz, 0.0f);
-    // W-scale must be 1.0, not 0 -- a zero W collapses the perspective divide so every
-    // vertex lands on the viewport origin (the "black dot at centre" bug).
-    p = xgu_set_viewport_scale(p, sx, sy, sz, 1.0f);
+    p = xgu_set_viewport_offset(p, 0.0f, 0.0f, 0.0f, 0.0f);
+    p = xgu_set_viewport_scale(p, 1.0f, 1.0f, 1.0f, 1.0f);
     pb_end(p);
     NXDK_RTRACE("rdr: viewport ok");
 }
@@ -419,12 +411,22 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
         if (!g.vtx) { g.vtx_caps = 0; return; }
     }
 
-    // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2].
+    // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
+    // the clip->screen transform on the CPU (perspective divide + pixel mapping), since
+    // the NV2A viewport is identity. NDC y is up; screen y is down -> flip.
     const bool textured = (uv0_off >= 0);
+    const float vpx = (float)g.vp_x, vpy = (float)g.vp_y;
+    const float vpw = (float)g.vp_w, vph = (float)g.vp_h;
     for (size_t v = 0; v < nverts; v++) {
         const float *src = buf_vbo + v * (size_t)stride;
         float *dst = g.vtx + v * NXDK_VTX_FLOATS;
-        dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3];
+        const float cw = src[3];
+        const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
+        const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
+        dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
+        dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
+        dst[2] = ndcz * (float)0xFFFFFF;                    // 24-bit depth
+        dst[3] = 1.0f;
         if (color_off >= 0) {
             const float *c = src + color_off;
             dst[4] = c[0]; dst[5] = c[1]; dst[6] = c[2];
@@ -863,52 +865,6 @@ static bool wm_start_frame(void) {
     pb_fill(0, 0, w, h, 0xFF0000FF);
     pb_erase_text_screen();
     while (pb_busy()) { }
-
-    // DIAGNOSTIC: a hardcoded triangle in clip space (w=1), depth off, bright colours,
-    // drawn with the same transform/viewport/combiner as fast3d. If THIS shows over the
-    // blue, the NV2A pipe (transform/viewport/combiner/vertex submit) works and the
-    // problem is fast3d's vertices/state; if not, the pipe itself is wrong. Remove once
-    // geometry renders.
-    {
-        static const float ident[16] = {
-            1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
-        };
-        static const float tri[3 * NXDK_VTX_FLOATS] = {
-            // x      y      z    w     r  g  b  a     u  v
-            -0.6f, -0.6f, 0.5f, 1.f,  1.f,0.f,0.f,1.f,  0.f,0.f,
-             0.6f, -0.6f, 0.5f, 1.f,  0.f,1.f,0.f,1.f,  0.f,0.f,
-             0.0f,  0.6f, 0.5f, 1.f,  1.f,1.f,1.f,1.f,  0.f,0.f,
-        };
-        // The GPU reads vertices from write-combined memory; copy the test data into a
-        // WC buffer once (a plain static array is cached -> GPU sees zeros).
-        static float *test_vtx = NULL;
-        if (!test_vtx) {
-            test_vtx = (float *)nxdk_gpu_alloc(sizeof(tri));
-            if (test_vtx) { memcpy(test_vtx, tri, sizeof(tri)); }
-        }
-        if (!test_vtx) { return true; }
-        nxdk_oneshot_state();
-        uint32_t *p = pb_begin();
-        p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
-        p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
-        p = xgu_set_lighting_enable(p, false);
-        p = xgu_set_cull_face_enable(p, false);
-        p = xgu_set_depth_test_enable(p, false);
-        p = xgu_set_model_view_matrix(p, 0, ident);
-        p = xgu_set_projection_matrix(p, ident);
-        p = xgu_set_composite_matrix(p, ident);
-        p = xgu_set_viewport_offset(p, (float)w * 0.5f, (float)h * 0.5f, 0.f, 0.f);
-        p = xgu_set_viewport_scale(p, (float)w * 0.5f, -(float)h * 0.5f, (float)0xFFFFFF, 1.f);
-        pb_end(p);
-        nxdk_setup_combiner();
-        const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-        xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, test_vtx);
-        xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, test_vtx + 4);
-        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
-        xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
-        xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
-        xgux_draw_arrays(XGU_TRIANGLES, 0, 3);
-    }
 
     // Phase 0 liveness marker: a frame counter drawn over the blue clear (raw
     // debugPrint, screen-only -- not the boot log, so it doesn't spam E:\pdboot.log
