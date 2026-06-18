@@ -529,17 +529,17 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: draw nv=%d stride=%d coff=%d uv=%d vlen=%d",
                 (int)nverts, stride, color_off, uv0_off, (int)buf_vbo_len);
 
-    // Allocate the arena once (fixed, large). Big frames hit ~546 draws * 6 verts; size
-    // for comfortably more so the per-frame bump allocator never wraps mid-frame.
+    // Allocate the arena once (fixed, large). In-game frames can be far busier than the
+    // ~546-draw boot screen, so size generously (256k verts * 10 floats * 4B = 10 MB).
     if (!g.vtx) {
-        g.vtx_caps = 64 * 1024; // vertices (64k * 10 floats * 4B = 2.5 MB)
+        g.vtx_caps = 256 * 1024;
         g.vtx = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         if (!g.vtx) { g.vtx_caps = 0; return; }
     }
-    // Bump-allocate this draw's own region from the arena so queued draws don't alias.
-    // If the frame somehow overflows the arena, wrap to the start (worst case a few
-    // dropped tris that frame) rather than scribble past the end.
-    if (g.vtx_off + nverts > g.vtx_caps) { g.vtx_off = 0; }
+    // Bump-allocate this draw's own region. On overflow DROP the draw (return) rather
+    // than wrap to 0 -- wrapping aliases earlier draws still queued for this frame and
+    // corrupts their geometry (flickering verts). Dropping just loses a few late tris.
+    if (g.vtx_off + nverts > g.vtx_caps) { return; }
     float *const base = g.vtx + g.vtx_off * NXDK_VTX_FLOATS;
 
     // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
@@ -580,6 +580,13 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             dst[8] = dst[9] = 0.0f;
         }
     }
+
+    // The arena is WRITE-COMBINED: the CPU stores above sit in the write-combine buffer
+    // and may not have reached RAM yet. pbkit can kick the push buffer mid-frame, so the
+    // NV2A could DMA-read this draw's vertices before the writes land -> individual verts
+    // snap to stale/garbage positions (flickering points on movement). Fence the WC
+    // writes so they're globally visible before the draw is queued.
+    __asm__ __volatile__("sfence" ::: "memory");
 
     NXDK_RTRACE("rdr: deinterleaved");
     nxdk_apply_texture(cc);
