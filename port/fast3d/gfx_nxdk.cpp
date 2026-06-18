@@ -389,6 +389,9 @@ static void nxdk_apply_texture(const struct CCFeatures *cc) {
     pb_end(p);
 }
 
+// Per-frame draw counter (reset + logged in nxdk_start_frame). Diagnostic only.
+int g_NxdkFrameDraws = 0;
+
 static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     (void)buf_vbo_len;
     if (!g.cur_shader) { return; }
@@ -399,6 +402,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
 
     const size_t nverts = buf_vbo_num_tris * 3;
     if (nverts == 0) { return; }
+    g_NxdkFrameDraws++;
 
     NXDK_RTRACE("rdr: draw nv=%d stride=%d coff=%d uv=%d vlen=%d",
                 (int)nverts, stride, color_off, uv0_off, (int)buf_vbo_len);
@@ -479,15 +483,17 @@ static void nxdk_init(void) {
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
 
-// One-time NV2A pipeline state, replicated from nxdk-sdl3's SDL_render_xgu device
-// init. The critical one we were missing is the SCISSOR rect -- without it the NV2A
-// scissors away every fragment (pure blue despite valid draws). Also disables texgen,
-// texture matrices, normalization, and sets all weight model-view + inverse matrices
-// to identity. Run once.
+// NV2A pipeline state, replicated from nxdk-sdl3's SDL_render_xgu device init. The
+// critical one is the SCISSOR rect -- without it the NV2A scissors away every fragment.
+// Also disables texgen, texture matrices, normalization, and sets all weight model-view
+// + inverse matrices to identity.
+//
+// This MUST run every frame, not once: pbkit's per-frame pb_target_back_buffer / pb_fill
+// / pb_erase_* helpers reprogram the NV2A surface clip + related state, clobbering what
+// we set. Running it once let frame 1 render and then every later frame drew with
+// pbkit's clobbered state -> black after the first frame. The cost (a few dozen register
+// writes per frame) is negligible.
 static void nxdk_oneshot_state(void) {
-    static bool done = false;
-    if (done) { return; }
-    done = true;
     static const float ident[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
     const int w = pb_back_buffer_width();
     const int h = pb_back_buffer_height();
@@ -592,6 +598,14 @@ static void nxdk_start_frame(void) {
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
     };
+    // Per-frame draw-count trace (first ~50 frames): disambiguates "geometry submitted
+    // every frame but black" (state/present bug) from "game stopped submitting" (logic).
+    {
+        extern int g_NxdkFrameDraws;
+        static unsigned s_fr = 0;
+        if (s_fr < 50) { xboxTracef("rdr: FRAME %u draws=%d", s_fr, g_NxdkFrameDraws); s_fr++; }
+        g_NxdkFrameDraws = 0;
+    }
     NXDK_RTRACE("rdr: start_frame");
     nxdk_oneshot_state();
     uint32_t *p = pb_begin();
