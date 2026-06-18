@@ -73,6 +73,7 @@ static struct {
 
     // --- Phase 1 geometry state ---
     int vp_x, vp_y, vp_w, vp_h;       // current viewport (from set_viewport)
+    int vp_proper;                    // NV2A viewport mode (-1 unset/0 identity 2D/1 clip-space 3D)
     bool depth_test, depth_mask;      // from set_depth_mode
     bool use_alpha;                   // from set_use_alpha (blend enable)
 
@@ -364,17 +365,34 @@ static void nxdk_set_depth_range(float znear, float zfar) {
     // Depth range is folded into the viewport Z scale/offset (see nxdk_set_viewport).
 }
 
+// Program the NV2A viewport. Two modes (cached, switched per-draw on depth state):
+//  - 2D (proper=false): IDENTITY -- draw_triangles feeds CPU pre-transformed screen
+//    pixels; the NV2A applies no transform. Proven path for menus/HUD.
+//  - 3D (proper=true): map NDC->screen so the NV2A does the perspective divide + Z map
+//    AFTER its own near/far + guard-band clipping. draw_triangles feeds raw clip-space
+//    (x,y,z,w); the NV2A clips first, so near/behind-camera verts are removed instead of
+//    blowing up to huge screen coords (the "every polygon stacked / magnified" bug).
+static void nxdk_set_nv2a_viewport(bool proper) {
+    if (g.vp_proper == (int)proper) { return; }
+    g.vp_proper = (int)proper;
+    uint32_t *p = pb_begin();
+    if (proper) {
+        const float cx = (float)g.vp_x + (float)g.vp_w * 0.5f;
+        const float cy = (float)g.vp_y + (float)g.vp_h * 0.5f;
+        // NDC [-1,1]x[-1,1] -> screen; NDC z [0,1] -> [0,0xFFFFFF]; y flipped (screen y down).
+        p = xgu_set_viewport_offset(p, cx, cy, 0.0f, 0.0f);
+        p = xgu_set_viewport_scale(p, (float)g.vp_w * 0.5f, -(float)g.vp_h * 0.5f, (float)0xFFFFFF, 1.0f);
+    } else {
+        p = xgu_set_viewport_offset(p, 0.0f, 0.0f, 0.0f, 0.0f);
+        p = xgu_set_viewport_scale(p, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+    pb_end(p);
+}
+
 static void nxdk_set_viewport(int x, int y, int width, int height) {
     g.vp_x = x; g.vp_y = y; g.vp_w = width; g.vp_h = height;
-    // Use an IDENTITY NV2A viewport (like nxdk-sdl3's SDL_render) and do the
-    // clip->screen transform on the CPU in draw_triangles (the perspective divide +
-    // pixel mapping). Wrestling the NV2A viewport scale/offset for clip-space input
-    // collapsed the geometry; pre-transforming to screen pixels is deterministic.
+    g.vp_proper = -1; // viewport dims changed -> force re-apply on the next draw
     NXDK_RTRACE("rdr: viewport %d %d %d %d", x, y, width, height);
-    uint32_t *p = pb_begin();
-    p = xgu_set_viewport_offset(p, 0.0f, 0.0f, 0.0f, 0.0f);
-    p = xgu_set_viewport_scale(p, 1.0f, 1.0f, 1.0f, 1.0f);
-    pb_end(p);
     NXDK_RTRACE("rdr: viewport ok");
 }
 
@@ -564,10 +582,15 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     if (g.vtx_off + nverts > g.vtx_caps) { return; }
     float *const base = g.vtx + g.vtx_off * NXDK_VTX_FLOATS;
 
-    // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
-    // the clip->screen transform on the CPU (perspective divide + pixel mapping), since
-    // the NV2A viewport is identity. NDC y is up; screen y is down -> flip.
+    // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2]. Two
+    // position modes (clip3d gated on depth, see nxdk_set_nv2a_viewport):
+    //  - 2D (clip3d=false): CPU perspective-divide + map to screen pixels; NV2A viewport
+    //    is identity. Proven for menus/HUD.
+    //  - 3D (clip3d=true): pass raw clip-space (x,y,z,w) straight through; the NV2A does
+    //    the divide AFTER near-plane clipping, so close/behind-camera verts are clipped
+    //    instead of exploding to huge coords (the magnified/stacked-polygon bug).
     const bool textured = (uv0_off >= 0);
+    const bool clip3d = g.depth_test;
     const float vpx = (float)g.vp_x, vpy = (float)g.vp_y;
     const float vpw = (float)g.vp_w, vph = (float)g.vp_h;
     // Swizzled textures live in a POT container; scale fast3d's normalised [0,1] UV by
@@ -582,13 +605,17 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     for (size_t v = 0; v < nverts; v++) {
         const float *src = buf_vbo + v * (size_t)stride;
         float *dst = base + v * NXDK_VTX_FLOATS;
-        const float cw = src[3];
-        const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
-        const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
-        dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
-        dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
-        dst[2] = ndcz * (float)0xFFFFFF;                    // 24-bit depth
-        dst[3] = 1.0f;
+        if (clip3d) {
+            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; // raw clip space
+        } else {
+            const float cw = src[3];
+            const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
+            const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
+            dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
+            dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
+            dst[2] = ndcz * (float)0xFFFFFF;                    // 24-bit depth
+            dst[3] = 1.0f;
+        }
         if (color_off >= 0) {
             const float *c = src + color_off;
             dst[4] = c[0]; dst[5] = c[1]; dst[6] = c[2];
@@ -614,13 +641,14 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     nxdk_apply_texture(cc);
     NXDK_RTRACE("rdr: applied tex");
 
+    // Switch the NV2A viewport to match the position data: clip-space (3D) wants the
+    // NDC->screen viewport + the GPU's own clip/divide; screen-pixel (2D) wants identity.
+    nxdk_set_nv2a_viewport(clip3d);
+
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-    // Position component count is RISK-GATED on depth: 2D/HUD draws (depth test off) keep
-    // the proven 2-component screen-space path (NV2A defaults z=0,w=1, no clip). 3D-world
-    // draws (depth test on) bind 3 components so the per-vertex screen-space Z (dst[2] =
-    // ndcz*0xFFFFFF) reaches the depth buffer and geometry sorts. If the 3-component path
-    // misbehaves it only affects depth-tested 3D -- menus/HUD stay on the known-good path.
-    const int poscomps = g.depth_test ? 3 : 2;
+    // 3D draws feed 4-component clip space (x,y,z,w) so the NV2A clips + perspective-
+    // divides; 2D draws feed 2-component CPU-transformed screen pixels (z=0,w=1 default).
+    const int poscomps = clip3d ? 4 : 2;
     xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, poscomps, bstride, base);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
     if (textured) {
@@ -652,6 +680,7 @@ static void nxdk_init(void) {
     if (g.target_fps == 0) { g.target_fps = 60; }
     g.next_framebuffer_id = 1;
     g.combiner_textured = -1; // unset -> first nxdk_combiner_mode() pushes the input combiner
+    g.vp_proper = -1;         // unset -> first nxdk_set_nv2a_viewport() pushes the viewport
 }
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
