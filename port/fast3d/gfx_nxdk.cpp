@@ -90,6 +90,7 @@ static struct {
     uint32_t tex_bound[2];            // bound texture id per tile (0 = none)
     int combiner_textured;            // current combiner mode (-1 unset / 0 unlit / 1 textured)
     uint32_t tex_applied;             // texture id last programmed into stage 0 (per-frame cache)
+    bool tex_is_fb;                   // tile 0 is bound to a framebuffer (effect) we don't have
 } g;
 
 #define NXDK_VTX_FLOATS 10 // x,y,z,w, r,g,b,a, u,v
@@ -271,6 +272,7 @@ static void nxdk_select_texture(int tile, uint32_t texture_id, bool linear_filte
     if (texture_id < NXDK_MAX_TEXTURES) {
         g_NxdkTex[texture_id].linear_filter = linear_filter;
     }
+    if (tile == 0) { g.tex_is_fb = false; } // a real texture replaced any framebuffer bind
 }
 
 static void nxdk_upload_texture(const uint8_t *rgba32_buf, uint32_t width, uint32_t height, bool gen_mipmaps) {
@@ -534,6 +536,10 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     const struct CCFeatures *cc = &g.cur_shader->cc;
     int stride, color_off, color_size, uv0_off;
     nxdk_vertex_layout(cc, &stride, &color_off, &color_size, &uv0_off);
+
+    // Skip draws that sample an (unimplemented) framebuffer-effect texture -- otherwise
+    // they'd stretch a stale font glyph across the screen. The effect is simply absent.
+    if (g.tex_is_fb && cc->used_textures[0]) { return; }
 
     const size_t nverts = buf_vbo_num_tris * 3;
     if (nverts == 0) { return; }
@@ -847,7 +853,12 @@ static void *nxdk_get_framebuffer_texture_id(int fb_id) {
 
 static void nxdk_select_texture_fb(int fb_id) {
     (void)fb_id;
-    // TODO(pbkit): bind fb_id's colour surface as the active texture.
+    // Render-to-texture framebuffer effects (blurred menu backdrop, in-game fullscreen
+    // effects) aren't implemented -- there's no colour surface to sample. Flag it so
+    // draw_triangles SKIPS the fullscreen quad instead of sampling whatever real texture
+    // was last bound (a font glyph), which otherwise stretches across the screen as a
+    // giant letter / "huge texture in the way".
+    g.tex_is_fb = true;
 }
 
 // ---------------------------------------------------------------------------------
