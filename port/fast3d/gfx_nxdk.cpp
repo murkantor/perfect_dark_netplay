@@ -359,7 +359,13 @@ static inline int nxdk_ulog2(uint32_t v) { int r = 0; while (v > 1) { v >>= 1; r
 // best-effort and will need correcting against the real headers. The untextured path
 // is independent, so colour-only geometry is unaffected if this is wrong.
 static void nxdk_apply_texture(const struct CCFeatures *cc) {
-    const bool use = cc->used_textures[0] && g.tex_bound[0] && g.tex_bound[0] < NXDK_MAX_TEXTURES
+    // TEXTURES TEMPORARILY DISABLED: the linear A8R8G8B8 setup below produced a GPU
+    // "object state invalid" error on the first textured draw (wrong format/pitch).
+    // Force the texture stage off so every draw is colour-only -- the geometry pipe
+    // works (untextured draws succeed), so this gets a complete, visible frame.
+    // Re-enable once the NV2A texture format (swizzled, or linear + control1 pitch) is
+    // correct. Set to 1 to test textures again.
+    const bool use = false && cc->used_textures[0] && g.tex_bound[0] && g.tex_bound[0] < NXDK_MAX_TEXTURES
                      && g_NxdkTex[g.tex_bound[0]].argb;
     uint32_t *p = pb_begin();
     if (use) {
