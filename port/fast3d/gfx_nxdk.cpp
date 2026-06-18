@@ -914,7 +914,16 @@ static bool wm_start_frame(void) {
     int w = pb_back_buffer_width();
     int h = pb_back_buffer_height();
     pb_erase_depth_stencil_buffer(0, 0, w, h);
-    pb_fill(0, 0, w, h, 0xFF000000); // ARGB black
+    // DIAGNOSTIC: cycle the clear colour red->green->blue every ~20 frames so we can
+    // tell present from draw. If the screen CYCLES, the present/flip path works and the
+    // geometry draws are the problem (invisible). If it stays on stale VRAM, the flip
+    // itself is broken. (Revert to 0xFF000000 once resolved.)
+    {
+        static unsigned s_fc = 0;
+        static const uint32_t cyc[3] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu };
+        pb_fill(0, 0, w, h, cyc[(s_fc / 20) % 3]);
+        s_fc++;
+    }
     pb_erase_text_screen();
     return true;
 }
