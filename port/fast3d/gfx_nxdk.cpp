@@ -453,7 +453,14 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: applied tex");
 
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, g.vtx);
+    // Bind position as 2 components (X,Y screen pixels) like SDL_render_xgu's float
+    // pos[2]. The NV2A then defaults z=0,w=1 and treats the vertex as screen-space, so
+    // it rasterises directly with NO homogeneous clip. Binding 4 components (x,y,z,w)
+    // instead pushed every vertex through the clip pipeline where z(0..0xFFFFFF) >> w(1)
+    // clipped ALL geometry away -- invisible even with the depth test off. (Trade-off:
+    // no hardware depth yet; 3D draws in submission order. Depth comes back once a
+    // clip-space Z + viewport Z-scale is worked out.)
+    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 2, bstride, g.vtx);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, g.vtx + 4);
     if (textured) {
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, g.vtx + 8);
