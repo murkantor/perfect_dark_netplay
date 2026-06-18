@@ -105,7 +105,12 @@ static struct NxdkTexture g_NxdkTex[NXDK_MAX_TEXTURES]; // [0] unused
 // vertex degenerate to the origin (invisible geometry). Matches nxdk-sdl3's
 // MmAllocateContiguousMemoryEx(..., PAGE_WRITECOMBINE | PAGE_READWRITE).
 static void *nxdk_gpu_alloc(size_t bytes) {
-    return MmAllocateContiguousMemoryEx((ULONG)bytes, 0, 0xFFFFFFFF, 0,
+    // Cap the highest acceptable physical address at 0x03FFFFFF (64 MB). xgux_set_attrib
+    // _pointer feeds the NV2A a physical address via ((uint32_t)ptr & 0x03ffffff) -- if
+    // the allocation lands above 64 MB that mask truncates to the WRONG address and the
+    // GPU reads garbage vertices/texels (invisible geometry + GPU fault). 64 MB covers
+    // the whole stock-console RAM, so this is always valid.
+    return MmAllocateContiguousMemoryEx((ULONG)bytes, 0, 0x03FFFFFF, 0,
                                         PAGE_WRITECOMBINE | PAGE_READWRITE);
 }
 
@@ -633,6 +638,35 @@ static void nxdk_start_frame(void) {
     p = xgu_set_composite_matrix(p, ident);
     pb_end(p);
     nxdk_setup_combiner();
+
+    // DIAGNOSTIC: a hardcoded bright-GREEN triangle at fixed screen pixels, drawn through
+    // the exact same xgux path the game uses. If GREEN shows over the red clear, the draw
+    // pipeline (combiner/attrib/state/present) works and the problem is the game's vertex
+    // DATA (transform/colour/address). If no green appears, the draw pipeline itself is
+    // broken. Layout matches NXDK_VTX_FLOATS: [x,y,z,w, r,g,b,a, u,v]; pos bound 2-comp.
+    {
+        static float *tri = NULL;
+        if (!tri) {
+            tri = (float *)nxdk_gpu_alloc(3 * NXDK_VTX_FLOATS * sizeof(float));
+            if (tri) {
+                static const float verts[3][NXDK_VTX_FLOATS] = {
+                    { 320.0f, 80.0f, 0,0,  0.0f, 1.0f, 0.0f, 1.0f,  0,0 },
+                    {  80.0f, 400.0f, 0,0, 0.0f, 1.0f, 0.0f, 1.0f,  0,0 },
+                    { 560.0f, 400.0f, 0,0, 0.0f, 1.0f, 0.0f, 1.0f,  0,0 },
+                };
+                memcpy(tri, verts, sizeof(verts));
+            }
+        }
+        if (tri) {
+            const uint32_t bs = NXDK_VTX_FLOATS * sizeof(float);
+            xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 2, bs, tri);
+            xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bs, tri + 4);
+            xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
+            xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
+            xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
+            xgux_draw_arrays(XGU_TRIANGLES, 0, 3);
+        }
+    }
     NXDK_RTRACE("rdr: start_frame ok");
 }
 
