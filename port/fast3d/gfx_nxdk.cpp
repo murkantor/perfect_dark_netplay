@@ -868,17 +868,48 @@ static void wm_handle_events(void) {
     // no-op if gfx_sdl is the real WM.
 }
 
+// Bind the back buffer as the NV2A render surface, replicating SDL_render_xgu's
+// XBOX_SetRenderTarget(NULL). pb_target_back_buffer() points the colour DMA at the
+// current back buffer but does NOT set the surface CLIP rectangle / format / pitch --
+// and with a zero surface clip the NV2A discards every fragment, so valid draws write
+// nothing to any framebuffer (black despite 68 draws/frame). Push the full surface
+// state each frame so the back buffer is a valid render target.
+static void nxdk_bind_back_surface(void) {
+    extern unsigned int pb_ColorFmt; // from pbkit.c (current colour format)
+    const uint32_t pitch  = (uint32_t)pb_back_buffer_pitch();
+    const uint32_t cw     = (uint32_t)pb_back_buffer_width();
+    const uint32_t ch     = (uint32_t)pb_back_buffer_height();
+    const uint32_t zpitch = cw * 4; // Z24S8 = 4 bytes/pixel
+    const uint32_t format =
+        XGU_MASK(NV097_SET_SURFACE_FORMAT_COLOR, pb_ColorFmt) |
+        XGU_MASK(NV097_SET_SURFACE_FORMAT_ZETA, NV097_SET_SURFACE_FORMAT_ZETA_Z24S8) |
+        XGU_MASK(NV097_SET_SURFACE_FORMAT_TYPE, NV097_SET_SURFACE_FORMAT_TYPE_PITCH);
+    uint32_t *p = pb_begin();
+    p = pb_push1(p, NV097_WAIT_FOR_IDLE, 0);
+    p = pb_push1(p, NV097_SET_CONTEXT_DMA_COLOR, DMA_CHANNEL_PIXEL_RENDERER);
+    p = pb_push1(p, NV097_SET_SURFACE_PITCH,
+                 XGU_MASK(NV097_SET_SURFACE_PITCH_COLOR, pitch) |
+                 XGU_MASK(NV097_SET_SURFACE_PITCH_ZETA, zpitch));
+    p = pb_push1(p, NV097_SET_SURFACE_COLOR_OFFSET, 0); // offset from the DMA address
+    p = pb_push1(p, NV097_SET_SURFACE_CLIP_HORIZONTAL,
+                 XGU_MASK(NV097_SET_SURFACE_CLIP_HORIZONTAL_X, 0) |
+                 XGU_MASK(NV097_SET_SURFACE_CLIP_HORIZONTAL_WIDTH, cw));
+    p = pb_push1(p, NV097_SET_SURFACE_CLIP_VERTICAL,
+                 XGU_MASK(NV097_SET_SURFACE_CLIP_VERTICAL_Y, 0) |
+                 XGU_MASK(NV097_SET_SURFACE_CLIP_VERTICAL_HEIGHT, ch));
+    p = pb_push1(p, NV097_SET_SURFACE_FORMAT, format);
+    pb_end(p);
+}
+
 static bool wm_start_frame(void) {
     // Canonical nxdk pbkit double-buffered loop: every frame, wait for vblank, reset the
-    // push buffer, and TARGET THE CURRENT BACK BUFFER -- this last call is essential, it
-    // points the NV2A render surface at the buffer that pb_finished() will flip to front
-    // next. Targeting once (at init) instead left every draw hitting the init buffer
-    // while the display rotated through the OTHER framebuffers -> black / held stale VRAM.
-    // Then clear depth, clear colour (the engine clear_framebuffer hook is a no-op here),
-    // and wipe the text overlay.
+    // push buffer, target the current back buffer, then explicitly bind it as the render
+    // surface (clip/format/pitch -- see nxdk_bind_back_surface). Then clear depth, clear
+    // colour (the engine clear_framebuffer hook is a no-op here), and wipe the overlay.
     pb_wait_for_vbl();
     pb_reset();
     pb_target_back_buffer();
+    nxdk_bind_back_surface();
     int w = pb_back_buffer_width();
     int h = pb_back_buffer_height();
     pb_erase_depth_stencil_buffer(0, 0, w, h);
