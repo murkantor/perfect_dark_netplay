@@ -488,12 +488,14 @@ static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
 // Also disables texgen, texture matrices, normalization, and sets all weight model-view
 // + inverse matrices to identity.
 //
-// This MUST run every frame, not once: pbkit's per-frame pb_target_back_buffer / pb_fill
-// / pb_erase_* helpers reprogram the NV2A surface clip + related state, clobbering what
-// we set. Running it once let frame 1 render and then every later frame drew with
-// pbkit's clobbered state -> black after the first frame. The cost (a few dozen register
-// writes per frame) is negligible.
+// Run ONCE (proven sufficient by both nxdk-sdl3's SDL_render_xgu and the canonical
+// pbkit demo loop -- pb_target_back_buffer / pb_fill / pb_erase_* do NOT clobber the
+// combiner/scissor/transform state). Running this every frame (×546 draws on the intro
+// frames) overflowed the push buffer and hung the GPU deterministically.
 static void nxdk_oneshot_state(void) {
+    static bool done = false;
+    if (done) { return; }
+    done = true;
     static const float ident[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
     const int w = pb_back_buffer_width();
     const int h = pb_back_buffer_height();
@@ -800,13 +802,6 @@ static void wm_init(const struct GfxWindowInitSettings *settings) {
     pb_show_front_screen();
     g.width = (uint32_t)pb_back_buffer_width();
     g.height = (uint32_t)pb_back_buffer_height();
-    // Target the back buffer ONCE here (not per frame) -- pbkit's pb_finished() handles
-    // the flip + re-target each present. Then prime the first frame: reset the push
-    // buffer and clear depth/stencil so the first wm_start_frame can draw straight away.
-    // (Matches SDL_render_xgu's init + present split.)
-    pb_target_back_buffer();
-    pb_reset();
-    pb_erase_depth_stencil_buffer(0, 0, pb_back_buffer_width(), pb_back_buffer_height());
     xboxTracef("PDBOOT: pb_init ok %dx%d", (int)g.width, (int)g.height);
 }
 
@@ -874,28 +869,28 @@ static void wm_handle_events(void) {
 }
 
 static bool wm_start_frame(void) {
-    // Frame structure mirrors nxdk-sdl3's SDL_render_xgu: the back buffer is targeted
-    // ONCE at init (wm_init), and the push buffer reset + depth clear happen at the END
-    // of the previous frame's present (wm_swap_buffers_end). So here we only clear the
-    // COLOUR buffer (the engine's clear_framebuffer hook is a no-op on this backend) and
-    // wipe pbkit's text overlay. Re-targeting the back buffer every frame -- as this did
-    // before -- landed draws in a buffer that wasn't the one being scanned out (black).
+    // Canonical nxdk pbkit double-buffered loop: every frame, wait for vblank, reset the
+    // push buffer, and TARGET THE CURRENT BACK BUFFER -- this last call is essential, it
+    // points the NV2A render surface at the buffer that pb_finished() will flip to front
+    // next. Targeting once (at init) instead left every draw hitting the init buffer
+    // while the display rotated through the OTHER framebuffers -> black / held stale VRAM.
+    // Then clear depth, clear colour (the engine clear_framebuffer hook is a no-op here),
+    // and wipe the text overlay.
+    pb_wait_for_vbl();
+    pb_reset();
+    pb_target_back_buffer();
     int w = pb_back_buffer_width();
     int h = pb_back_buffer_height();
+    pb_erase_depth_stencil_buffer(0, 0, w, h);
     pb_fill(0, 0, w, h, 0xFF000000); // ARGB black
     pb_erase_text_screen();
     return true;
 }
 static void wm_swap_buffers_begin(void) { /* present happens in swap_buffers_end */ }
 static void wm_swap_buffers_end(void) {
-    // Present + prep next frame, matching SDL_render_xgu's XBOX_RenderPresent: wait for
-    // the GPU to drain, flip the completed back buffer to the front (pb_finished), wait
-    // for vblank, then reset the push buffer and clear depth/stencil for the next frame.
+    // Drain the GPU and flip the completed back buffer to the front.
     while (pb_busy()) { }
     while (pb_finished()) { }
-    pb_wait_for_vbl();
-    pb_reset();
-    pb_erase_depth_stencil_buffer(0, 0, pb_back_buffer_width(), pb_back_buffer_height());
 }
 static double wm_get_time(void) { return nxdk_now() - g.time0; }
 static int32_t wm_get_target_fps(void) { return g.target_fps; }
