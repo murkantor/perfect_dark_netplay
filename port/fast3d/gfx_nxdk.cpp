@@ -466,6 +466,54 @@ static void nxdk_init(void) {
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
 
+// One-time NV2A pipeline state, replicated from nxdk-sdl3's SDL_render_xgu device
+// init. The critical one we were missing is the SCISSOR rect -- without it the NV2A
+// scissors away every fragment (pure blue despite valid draws). Also disables texgen,
+// texture matrices, normalization, and sets all weight model-view + inverse matrices
+// to identity. Run once.
+static void nxdk_oneshot_state(void) {
+    static bool done = false;
+    if (done) { return; }
+    done = true;
+    static const float ident[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    const int w = pb_back_buffer_width();
+    const int h = pb_back_buffer_height();
+
+    uint32_t *p = pb_begin();
+    p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
+    p = xgu_set_normalization_enable(p, false);
+    p = xgu_set_lighting_enable(p, false);
+    p = xgu_set_cull_face_enable(p, false);
+    p = xgu_set_clear_rect_vertical(p, 0, h);
+    p = xgu_set_clear_rect_horizontal(p, 0, w);
+    pb_end(p);
+
+    for (int i = 0; i < XGU_TEXTURE_COUNT; i++) {
+        p = pb_begin();
+        p = xgu_set_texgen_s(p, i, XGU_TEXGEN_DISABLE);
+        p = xgu_set_texgen_t(p, i, XGU_TEXGEN_DISABLE);
+        p = xgu_set_texgen_r(p, i, XGU_TEXGEN_DISABLE);
+        p = xgu_set_texgen_q(p, i, XGU_TEXGEN_DISABLE);
+        p = xgu_set_texture_matrix_enable(p, i, false);
+        p = xgu_set_texture_matrix(p, i, ident);
+        pb_end(p);
+    }
+
+    for (int i = 0; i < XGU_WEIGHT_COUNT; i++) {
+        p = pb_begin();
+        p = xgu_set_model_view_matrix(p, i, ident);
+        p = xgu_set_inverse_model_view_matrix(p, i, ident);
+        pb_end(p);
+    }
+
+    p = pb_begin();
+    p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
+    p = xgu_set_projection_matrix(p, ident);
+    p = xgu_set_composite_matrix(p, ident);
+    p = xgu_set_scissor_rect(p, false, 0, 0, w, h);
+    pb_end(p);
+}
+
 // Colour-only register combiner: all texture stages off, output = the vertex diffuse
 // colour (combiner source 0x4). Adapted verbatim from nxdk-sdl3's SDL_render_xgu.c
 // (unlit path) -- without this, pbkit's default combiner writes nothing, so geometry
@@ -532,6 +580,7 @@ static void nxdk_start_frame(void) {
         0.0f, 0.0f, 0.0f, 1.0f,
     };
     NXDK_RTRACE("rdr: start_frame");
+    nxdk_oneshot_state();
     uint32_t *p = pb_begin();
     p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
     p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
@@ -819,6 +868,7 @@ static bool wm_start_frame(void) {
              0.6f, -0.6f, 0.5f, 1.f,  0.f,1.f,0.f,1.f,  0.f,0.f,
              0.0f,  0.6f, 0.5f, 1.f,  1.f,1.f,1.f,1.f,  0.f,0.f,
         };
+        nxdk_oneshot_state();
         uint32_t *p = pb_begin();
         p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
         p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
