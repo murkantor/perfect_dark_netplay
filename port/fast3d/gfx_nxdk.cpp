@@ -799,6 +799,10 @@ static void wm_init(const struct GfxWindowInitSettings *settings) {
         xboxTracef("PDBOOT: pb_init FAILED %d", err);
         return;
     }
+    // pbkit can leave video output disabled after pb_init; re-enable it (matches
+    // SDL_render_xgu). If this was off, the scanout would hold stale VRAM and never
+    // show our rendered frames -- the exact "held previous framebuffer" symptom.
+    XVideoSetVideoEnable(true);
     pb_show_front_screen();
     g.width = (uint32_t)pb_back_buffer_width();
     g.height = (uint32_t)pb_back_buffer_height();
