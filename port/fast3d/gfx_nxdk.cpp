@@ -76,16 +76,17 @@ static struct {
     bool depth_test, depth_mask;      // from set_depth_mode
     bool use_alpha;                   // from set_use_alpha (blend enable)
 
-    // GPU-visible (physically contiguous) vertex ARENA. xgux_draw_arrays QUEUES a draw
-    // referencing this buffer's physical address; the GPU executes it later (at present).
-    // So every draw in a frame must occupy its OWN region -- a single shared buffer gets
-    // overwritten by later draws before the GPU reads the earlier ones (all draws then
-    // read the LAST draw's data -> garbage -> invisible). Bump-allocate per draw; reset
-    // the offset each frame (the present drains the GPU, so one frame's arena is safe to
-    // reuse next frame). Layout [x,y,z,w, r,g,b,a, u,v] = NXDK_VTX_FLOATS/vertex.
-    float *vtx;
-    size_t vtx_caps;                  // arena capacity in vertices
+    // GPU-visible (physically contiguous) vertex ARENA, DOUBLE-BUFFERED. xgux_draw_arrays
+    // QUEUES a draw referencing this buffer's physical address; the GPU executes it later.
+    // Within a frame, each draw bump-allocates its own region so later draws don't clobber
+    // earlier queued ones. Across frames we ALTERNATE buffers: the GPU may still be reading
+    // frame N's vertices when the CPU starts writing frame N+1, so frame N+1 must use the
+    // OTHER buffer (single-buffered, that race showed as flickering/corrupt verts even with
+    // the sfence). Layout [x,y,z,w, r,g,b,a, u,v] = NXDK_VTX_FLOATS/vertex.
+    float *vtx[2];
+    size_t vtx_caps;                  // per-buffer capacity in vertices
     size_t vtx_off;                   // current bump offset in vertices (reset per frame)
+    int vtx_frame;                    // which buffer this frame writes to (0/1, toggled per frame)
 
     uint32_t tex_bound[2];            // bound texture id per tile (0 = none)
     int combiner_textured;            // current combiner mode (-1 unset / 0 unlit / 1 textured)
@@ -548,21 +549,19 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: draw nv=%d stride=%d coff=%d uv=%d vlen=%d",
                 (int)nverts, stride, color_off, uv0_off, (int)buf_vbo_len);
 
-    // Allocate the arena once. Keep it modest: a 10 MB block can't be allocated
-    // contiguously in the low 64 MB after the 33 MB ROM + engine pools (it failed,
-    // g.vtx=NULL, and every draw bailed -> blank screen). 64k verts (2.5 MB) allocates
-    // reliably and was enough for in-game frames; the sfence (not a bigger arena) is what
-    // fixes the flicker. Trace a failure so a future OOM is obvious instead of silent.
-    if (!g.vtx) {
-        g.vtx_caps = 64 * 1024; // 64k * 10 floats * 4B = 2.5 MB
-        g.vtx = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
-        if (!g.vtx) { g.vtx_caps = 0; xboxTracef("rdr: VERTEX ARENA ALLOC FAILED"); return; }
+    // Allocate the two arena buffers once. Each is modest (2 MB / ~52k verts) -- a single
+    // big block can't be allocated contiguously in the low 64 MB after the 33 MB ROM, but
+    // two smaller blocks fit. Trace a failure so an OOM is obvious instead of silent.
+    if (!g.vtx[0]) {
+        g.vtx_caps = 52 * 1024; // per buffer; 52k * 10 floats * 4B ~= 2 MB
+        g.vtx[0] = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
+        g.vtx[1] = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
+        if (!g.vtx[0] || !g.vtx[1]) { g.vtx_caps = 0; g.vtx[0] = NULL; xboxTracef("rdr: VERTEX ARENA ALLOC FAILED"); return; }
     }
-    // Bump-allocate this draw's own region. On overflow DROP the draw (return) rather
-    // than wrap to 0 -- wrapping aliases earlier draws still queued for this frame and
-    // corrupts their geometry (flickering verts). Dropping just loses a few late tris.
+    // Bump-allocate this draw's own region in THIS frame's buffer. On overflow DROP the
+    // draw (return) rather than wrap (which would alias earlier queued draws this frame).
     if (g.vtx_off + nverts > g.vtx_caps) { return; }
-    float *const base = g.vtx + g.vtx_off * NXDK_VTX_FLOATS;
+    float *const base = g.vtx[g.vtx_frame] + g.vtx_off * NXDK_VTX_FLOATS;
 
     // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
     // the clip->screen transform on the CPU (perspective divide + pixel mapping), since
@@ -781,6 +780,7 @@ static void nxdk_start_frame(void) {
         g_NxdkFrameDraws = 0;
     }
     NXDK_RTRACE("rdr: start_frame");
+    g.vtx_frame ^= 1;   // alternate vertex buffers so the GPU isn't still reading the one we overwrite
     g.vtx_off = 0;      // reset the per-frame vertex arena bump allocator
     g.tex_applied = 0;  // reset the per-frame texture-bind cache
     nxdk_oneshot_state();
