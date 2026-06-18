@@ -862,15 +862,18 @@ static bool wm_start_frame(void) {
     int w = pb_back_buffer_width();
     int h = pb_back_buffer_height();
     pb_erase_depth_stencil_buffer(0, 0, w, h);
-    pb_fill(0, 0, w, h, 0xFF0000FF);
+    // Clear to BLACK (was blue). Black is the game's natural backdrop, so an
+    // empty-render frame is far less jarring than a blue strobe -- and this doubles
+    // as a flicker diagnostic: with a black clear, "title vs black" = empty render
+    // frames (downstream of the lang-bank NULLs), whereas still seeing the pre-launch
+    // dashboard / stale VRAM = a genuine pbkit present/buffer-rotation bug. ARGB.
+    pb_fill(0, 0, w, h, 0xFF000000);
+    // Clear pbkit's text overlay once per frame so lingering boot-trace text doesn't
+    // composite over the 3D scene. (No per-frame debugPrint -- the rdr: traces in
+    // E:\pdboot.log already prove the loop is live, and a per-frame text-screen write
+    // fights the 3D present.)
     pb_erase_text_screen();
     while (pb_busy()) { }
-
-    // Phase 0 liveness marker: a frame counter drawn over the blue clear (raw
-    // debugPrint, screen-only -- not the boot log, so it doesn't spam E:\pdboot.log
-    // per frame). A ticking number on a blue field confirms the loop + present work.
-    static unsigned s_nxdk_frame = 0;
-    debugPrint("PDBOOT: frame %u\n", s_nxdk_frame++);
     return true;
 }
 static void wm_swap_buffers_begin(void) { /* present happens in swap_buffers_end */ }

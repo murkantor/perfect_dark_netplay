@@ -423,6 +423,19 @@ static inline void romdataInitFiles(void)
 		}
 	}
 
+#ifdef NXDK
+	// Boot bring-up: the file-offset-table parse is bounded by romDataSegSize (line
+	// ~400 guard). If the decompressed data seg is short, high file ids (e.g. the lang
+	// banks at ~1511) silently keep a NULL .data and every load of them returns NULL.
+	// Log the parsed count, the seg size, the byte offset the fid-1511 guard needs,
+	// and slot 1511's resulting data ptr so a short seg shows up immediately.
+	xboxTracef("PDBOOT: romdataInitFiles count=%d segsz=0x%x need1511=0x%x f1511=%p sz=%u",
+		(int)i, (unsigned)romDataSegSize,
+		(unsigned)((const u8 *)(offsets + 1511 + 1) - romDataSeg),
+		(void *)fileSlots[MOD_NORMAL][1511].data,
+		(unsigned)fileSlots[MOD_NORMAL][1511].size);
+#endif
+
 	// last offset is to the name table
 	const u32 *nameOffsets = (u32 *)(g_RomFile + PD_BE32(offsets[i - 1]));
 	for (i = 1; nameOffsets[i]; ++i) {
