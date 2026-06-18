@@ -75,11 +75,16 @@ static struct {
     bool depth_test, depth_mask;      // from set_depth_mode
     bool use_alpha;                   // from set_use_alpha (blend enable)
 
-    // GPU-visible (physically contiguous) vertex scratch. fast3d hands us a CPU
-    // buffer each draw; the NV2A reads vertices via DMA, so we copy into this.
-    // De-interleaved to a fixed [x,y,z,w, r,g,b,a, u,v] layout (10 floats/vertex).
+    // GPU-visible (physically contiguous) vertex ARENA. xgux_draw_arrays QUEUES a draw
+    // referencing this buffer's physical address; the GPU executes it later (at present).
+    // So every draw in a frame must occupy its OWN region -- a single shared buffer gets
+    // overwritten by later draws before the GPU reads the earlier ones (all draws then
+    // read the LAST draw's data -> garbage -> invisible). Bump-allocate per draw; reset
+    // the offset each frame (the present drains the GPU, so one frame's arena is safe to
+    // reuse next frame). Layout [x,y,z,w, r,g,b,a, u,v] = NXDK_VTX_FLOATS/vertex.
     float *vtx;
-    size_t vtx_caps;                  // capacity in vertices
+    size_t vtx_caps;                  // arena capacity in vertices
+    size_t vtx_off;                   // current bump offset in vertices (reset per frame)
 
     uint32_t tex_bound[2];            // bound texture id per tile (0 = none)
 } g;
@@ -415,13 +420,18 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: draw nv=%d stride=%d coff=%d uv=%d vlen=%d",
                 (int)nverts, stride, color_off, uv0_off, (int)buf_vbo_len);
 
-    // Grow the GPU-visible scratch if needed.
-    if (nverts > g.vtx_caps) {
-        if (g.vtx) { MmFreeContiguousMemory(g.vtx); }
-        g.vtx_caps = nverts + 256;
+    // Allocate the arena once (fixed, large). Big frames hit ~546 draws * 6 verts; size
+    // for comfortably more so the per-frame bump allocator never wraps mid-frame.
+    if (!g.vtx) {
+        g.vtx_caps = 64 * 1024; // vertices (64k * 10 floats * 4B = 2.5 MB)
         g.vtx = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         if (!g.vtx) { g.vtx_caps = 0; return; }
     }
+    // Bump-allocate this draw's own region from the arena so queued draws don't alias.
+    // If the frame somehow overflows the arena, wrap to the start (worst case a few
+    // dropped tris that frame) rather than scribble past the end.
+    if (g.vtx_off + nverts > g.vtx_caps) { g.vtx_off = 0; }
+    float *const base = g.vtx + g.vtx_off * NXDK_VTX_FLOATS;
 
     // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
     // the clip->screen transform on the CPU (perspective divide + pixel mapping), since
@@ -431,7 +441,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     const float vpw = (float)g.vp_w, vph = (float)g.vp_h;
     for (size_t v = 0; v < nverts; v++) {
         const float *src = buf_vbo + v * (size_t)stride;
-        float *dst = g.vtx + v * NXDK_VTX_FLOATS;
+        float *dst = base + v * NXDK_VTX_FLOATS;
         const float cw = src[3];
         const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
         const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
@@ -454,31 +464,19 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     }
 
     NXDK_RTRACE("rdr: deinterleaved");
-    // DIAGNOSTIC: dump vertex 0's clip input, screen output, and colour (x1000, int) so
-    // we can see why the game geometry is invisible while a fixed test triangle renders.
-    // clip=(x,y,z,w)*1000; screen=(px,py); col=(r,g,b,a)*1000.
-    {
-        const float *s0 = buf_vbo;
-        NXDK_RTRACE("rdr: v0 clip=%d,%d,%d,%d scr=%d,%d col=%d,%d,%d,%d",
-            (int)(s0[0]*1000), (int)(s0[1]*1000), (int)(s0[2]*1000), (int)(s0[3]*1000),
-            (int)g.vtx[0], (int)g.vtx[1],
-            (int)(g.vtx[4]*1000), (int)(g.vtx[5]*1000), (int)(g.vtx[6]*1000), (int)(g.vtx[7]*1000));
-    }
     nxdk_apply_texture(cc);
     NXDK_RTRACE("rdr: applied tex");
 
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-    // Bind position as 2 components (X,Y screen pixels) like SDL_render_xgu's float
-    // pos[2]. The NV2A then defaults z=0,w=1 and treats the vertex as screen-space, so
-    // it rasterises directly with NO homogeneous clip. Binding 4 components (x,y,z,w)
-    // instead pushed every vertex through the clip pipeline where z(0..0xFFFFFF) >> w(1)
-    // clipped ALL geometry away -- invisible even with the depth test off. (Trade-off:
-    // no hardware depth yet; 3D draws in submission order. Depth comes back once a
-    // clip-space Z + viewport Z-scale is worked out.)
-    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 2, bstride, g.vtx);
-    xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, g.vtx + 4);
+    // Bind THIS draw's arena region (base), not the arena start -- each queued draw must
+    // point at its own vertices. Position as 2 components (X,Y screen pixels) like
+    // SDL_render_xgu's float pos[2]: the NV2A defaults z=0,w=1 and rasterises in screen
+    // space with no homogeneous clip. (Binding 4 components ran every vertex through the
+    // clip pipeline where z>>w clipped all geometry away.)
+    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 2, bstride, base);
+    xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
     if (textured) {
-        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, g.vtx + 8);
+        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, base + 8);
     } else {
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
     }
@@ -488,6 +486,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: bound arrays");
 
     xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)nverts);
+    g.vtx_off += nverts; // advance the bump allocator past this draw's region
     NXDK_RTRACE("rdr: drawn");
 }
 
@@ -634,6 +633,7 @@ static void nxdk_start_frame(void) {
         g_NxdkFrameDraws = 0;
     }
     NXDK_RTRACE("rdr: start_frame");
+    g.vtx_off = 0; // reset the per-frame vertex arena bump allocator
     nxdk_oneshot_state();
     uint32_t *p = pb_begin();
     p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
