@@ -300,7 +300,9 @@ static void nxdk_set_viewport(int x, int y, int width, int height) {
     NXDK_RTRACE("rdr: viewport %d %d %d %d", x, y, width, height);
     uint32_t *p = pb_begin();
     p = xgu_set_viewport_offset(p, ox, oy, oz, 0.0f);
-    p = xgu_set_viewport_scale(p, sx, sy, sz, 0.0f);
+    // W-scale must be 1.0, not 0 -- a zero W collapses the perspective divide so every
+    // vertex lands on the viewport origin (the "black dot at centre" bug).
+    p = xgu_set_viewport_scale(p, sx, sy, sz, 1.0f);
     pb_end(p);
     NXDK_RTRACE("rdr: viewport ok");
 }
@@ -896,7 +898,7 @@ static bool wm_start_frame(void) {
         p = xgu_set_projection_matrix(p, ident);
         p = xgu_set_composite_matrix(p, ident);
         p = xgu_set_viewport_offset(p, (float)w * 0.5f, (float)h * 0.5f, 0.f, 0.f);
-        p = xgu_set_viewport_scale(p, (float)w * 0.5f, -(float)h * 0.5f, (float)0xFFFFFF, 0.f);
+        p = xgu_set_viewport_scale(p, (float)w * 0.5f, -(float)h * 0.5f, (float)0xFFFFFF, 1.f);
         pb_end(p);
         nxdk_setup_combiner();
         const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
