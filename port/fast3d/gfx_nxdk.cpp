@@ -538,6 +538,27 @@ static void nxdk_apply_texture(const struct CCFeatures *cc) {
 // Per-frame draw counter (reset + logged in nxdk_start_frame). Diagnostic only.
 int g_NxdkFrameDraws = 0;
 
+// A clip-space vertex normalised to our fixed attribute set, used for CPU near-plane
+// clipping (nxdk_draw_triangles). fast3d's z is D3D-style (z_is_from_0_to_1): the near
+// plane is z == 0, far is z == w. We clip triangles against z >= 0 so no surviving vertex
+// has w <= 0 -- such a vertex sign-flips through the perspective divide and stretches
+// across the screen (the "geometry moving faster than the camera" artifact).
+struct NxdkClipV { float x, y, z, w, r, g, b, a, s, t; };
+
+static inline void nxdkClipLerp(struct NxdkClipV *o, const struct NxdkClipV *a,
+                                const struct NxdkClipV *b, float f) {
+    o->x = a->x + (b->x - a->x) * f;
+    o->y = a->y + (b->y - a->y) * f;
+    o->z = a->z + (b->z - a->z) * f;
+    o->w = a->w + (b->w - a->w) * f;
+    o->r = a->r + (b->r - a->r) * f;
+    o->g = a->g + (b->g - a->g) * f;
+    o->b = a->b + (b->b - a->b) * f;
+    o->a = a->a + (b->a - a->a) * f;
+    o->s = a->s + (b->s - a->s) * f;
+    o->t = a->t + (b->t - a->t) * f;
+}
+
 static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     (void)buf_vbo_len;
     if (!g.cur_shader) { return; }
@@ -568,7 +589,9 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     }
     // Bump-allocate this draw's own region in THIS frame's buffer. On overflow DROP the
     // draw (return) rather than wrap (which would alias earlier queued draws this frame).
-    if (g.vtx_off + nverts > g.vtx_caps) { return; }
+    // Near-plane clipping can split each triangle into two (4-vertex polygon), so reserve
+    // up to 2x the source vertex count.
+    if (g.vtx_off + nverts * 2 > g.vtx_caps) { return; }
     float *const base = g.vtx[g.vtx_frame] + g.vtx_off * NXDK_VTX_FLOATS;
 
     // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
@@ -586,34 +609,75 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             us = g_NxdkTex[tid].us; vs = g_NxdkTex[tid].vs;
         }
     }
-    for (size_t v = 0; v < nverts; v++) {
-        const float *src = buf_vbo + v * (size_t)stride;
-        float *dst = base + v * NXDK_VTX_FLOATS;
-        const float cw = src[3];
-        const float iw = (cw != 0.0f) ? 1.0f / cw : 0.0f;
-        const float ndcx = src[0] * iw, ndcy = src[1] * iw, ndcz = src[2] * iw;
-        dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
-        dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
-        // NDC depth in [0,1] (0 = near). The viewport Z-scale (nxdk_set_viewport) maps it
-        // to the Z24 range [0, 0xFFFFFF]. The earlier 3-comp attempt pre-scaled to ~16M in
-        // the vertex while the clip range stayed at pbkit's default, so the NV2A clamped
-        // every fragment to one depth -> no sorting. Keep z in [0,1] and let the viewport
-        // do the scale.
-        dst[2] = ndcz;
-        dst[3] = 1.0f;
-        if (color_off >= 0) {
-            const float *c = src + color_off;
-            dst[4] = c[0]; dst[5] = c[1]; dst[6] = c[2];
-            dst[7] = (color_size == 4) ? c[3] : 1.0f;
-        } else {
-            dst[4] = dst[5] = dst[6] = dst[7] = 1.0f;
+    // fast3d hands CLIP-space verts and expects the GPU to do BOTH the perspective divide
+    // and the near-plane clip. We divide on the CPU (the NV2A rasterises pretransformed
+    // screen pixels with no homogeneous clip), so we must clip the near plane ourselves: a
+    // vertex at/behind the eye (clip w <= 0) sign-flips through the divide and stretches
+    // across the screen as the camera moves. fast3d's z is D3D-style (near plane at z == 0),
+    // so we Sutherland-Hodgman each 3D triangle against z >= 0 -- the front part is kept and
+    // re-split at the near plane (no explosion AND no holes, unlike a whole-triangle cull).
+    // Depth-off 2D/HUD (w == 1) is passed through unclipped to keep the proven menu path
+    // byte-identical (doclip == false -> every vertex counts as inside).
+    const bool doclip = g.depth_test;
+    size_t out = 0;
+    for (size_t t = 0; t + 3 <= nverts; t += 3) {
+        struct NxdkClipV in[3];
+        for (int k = 0; k < 3; k++) {
+            const float *src = buf_vbo + (t + (size_t)k) * (size_t)stride;
+            struct NxdkClipV *v = &in[k];
+            v->x = src[0]; v->y = src[1]; v->z = src[2]; v->w = src[3];
+            if (color_off >= 0) {
+                const float *c = src + color_off;
+                v->r = c[0]; v->g = c[1]; v->b = c[2];
+                v->a = (color_size == 4) ? c[3] : 1.0f;
+            } else {
+                v->r = v->g = v->b = v->a = 1.0f;
+            }
+            if (textured) { v->s = src[uv0_off] * us; v->t = src[uv0_off + 1] * vs; }
+            else { v->s = v->t = 0.0f; }
         }
-        if (textured) {
-            dst[8] = src[uv0_off] * us; dst[9] = src[uv0_off + 1] * vs;
-        } else {
-            dst[8] = dst[9] = 0.0f;
+
+        // Clip against the near plane z >= 0 -> a polygon of up to 4 vertices.
+        struct NxdkClipV poly[4];
+        int np = 0;
+        for (int i = 0; i < 3; i++) {
+            const struct NxdkClipV *A = &in[i];
+            const struct NxdkClipV *B = &in[(i + 1) % 3];
+            const bool Ain = !doclip || A->z >= 0.0f;
+            const bool Bin = !doclip || B->z >= 0.0f;
+            if (Ain) { poly[np++] = *A; }
+            if (Ain != Bin) {
+                const float denom = B->z - A->z;
+                const float f = (denom != 0.0f) ? (-A->z / denom) : 0.0f;
+                nxdkClipLerp(&poly[np++], A, B, f);
+            }
+        }
+        if (np < 3) { continue; } // wholly behind the near plane
+
+        // Emit the polygon as a triangle fan (np is 3 or 4).
+        for (int fi = 2; fi < np; fi++) {
+            const int idx[3] = { 0, fi - 1, fi };
+            for (int j = 0; j < 3; j++) {
+                const struct NxdkClipV *v = &poly[idx[j]];
+                float *dst = base + (out + (size_t)j) * NXDK_VTX_FLOATS;
+                const float iw = (v->w != 0.0f) ? 1.0f / v->w : 0.0f;
+                const float ndcx = v->x * iw, ndcy = v->y * iw;
+                float ndcz = v->z * iw;
+                // Clamp NDC depth to [0,1]; the viewport Z-scale (nxdk_set_viewport) maps it
+                // into the Z24 range. Clamping keeps far-plane overshoot from firing the
+                // NV2A's Z clip on these pretransformed verts (which would mangle their XY).
+                ndcz = ndcz < 0.0f ? 0.0f : (ndcz > 1.0f ? 1.0f : ndcz);
+                dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
+                dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
+                dst[2] = ndcz;                                      // NDC depth [0,1]
+                dst[3] = 1.0f;
+                dst[4] = v->r; dst[5] = v->g; dst[6] = v->b; dst[7] = v->a;
+                dst[8] = v->s; dst[9] = v->t;
+            }
+            out += 3;
         }
     }
+    if (out == 0) { return; } // every triangle clipped away -- nothing to draw
 
     // The arena is WRITE-COMBINED: the CPU stores above sit in the write-combine buffer
     // and may not have reached RAM yet. pbkit can kick the push buffer mid-frame, so the
@@ -647,13 +711,14 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
     NXDK_RTRACE("rdr: bound arrays");
 
-    xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)nverts);
-    // Advance the bump allocator, ROUNDED UP to a multiple of 4 vertices. Each vertex is
-    // 40 bytes (NXDK_VTX_FLOATS*4), and 4 verts = 160 bytes = a multiple of 32, so every
-    // draw's base stays 32-byte aligned -- the NV2A vertex DMA requires 32-byte alignment
+    xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)out);
+    // Advance the bump allocator by the EMITTED vertex count (out, after near-plane
+    // clipping), ROUNDED UP to a multiple of 4 vertices. Each vertex is 40 bytes
+    // (NXDK_VTX_FLOATS*4), and 4 verts = 160 bytes = a multiple of 32, so every draw's base
+    // stays 32-byte aligned -- the NV2A vertex DMA requires 32-byte alignment
     // (SDL_render_xgu's SDL_XGU_VERTEX_ALIGNMENT). Unaligned bases made the GPU misread
     // vertices -> the flickering streaks/lines (alignment shifted frame to frame).
-    g.vtx_off = (g.vtx_off + nverts + 3u) & ~(size_t)3u;
+    g.vtx_off = (g.vtx_off + out + 3u) & ~(size_t)3u;
     NXDK_RTRACE("rdr: drawn");
 }
 
