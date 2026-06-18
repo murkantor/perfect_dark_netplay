@@ -475,6 +475,16 @@ static void nxdk_combiner_mode(bool textured) {
     pb_end(p);
 }
 
+// Map fast3d's N64 clamp mode to an NV2A texture address mode. cms/cmt are bit flags:
+// G_TX_CLAMP=2, G_TX_MIRROR=1, plain repeat=0. CLAMP wins (fonts/UI need it -- without
+// it glyph quads whose UVs touch the atlas edge wrap to a different glyph -> fragmented
+// text), then MIRROR, else WRAP/repeat.
+static XguTextureAddress nxdk_cm_to_xgu(uint32_t cm) {
+    if (cm & 2) { return XGU_CLAMP_TO_EDGE; } // G_TX_CLAMP
+    if (cm & 1) { return XGU_MIRROR; }        // G_TX_MIRROR
+    return XGU_WRAP;
+}
+
 // Program NV2A texture stage 0 from the bound swizzled texture (A8R8G8B8) and switch the
 // combiner to the textured path, or disable both. Matches SDL_render_xgu's bind.
 static void nxdk_apply_texture(const struct CCFeatures *cc) {
@@ -498,8 +508,11 @@ static void nxdk_apply_texture(const struct CCFeatures *cc) {
         p = xgu_set_texture_control1(p, 0, t->pitch);
         p = xgu_set_texture_image_rect(p, 0, t->w, t->h);
         p = xgu_set_texture_filter(p, 0, 0, XGU_TEXTURE_CONVOLUTION_GAUSSIAN, filt, filt, false, false, false, false);
-        // Default to WRAP (most game textures tile); refine cms/cmt -> CLAMP later.
-        p = xgu_set_texture_address(p, 0, XGU_WRAP, true, XGU_WRAP, true, XGU_CLAMP_TO_EDGE, false, false);
+        // Address mode per the N64 tile clamp flags (fonts/UI use CLAMP; tiled world
+        // textures use WRAP). The bool after each mode is "wrap enable" (true == WRAP).
+        const XguTextureAddress au = nxdk_cm_to_xgu(t->cms);
+        const XguTextureAddress av = nxdk_cm_to_xgu(t->cmt);
+        p = xgu_set_texture_address(p, 0, au, (au == XGU_WRAP), av, (av == XGU_WRAP), XGU_CLAMP_TO_EDGE, false, false);
         pb_end(p);
     } else {
         // Texture stage off for colour-only draws. Clear the cache so the next textured
