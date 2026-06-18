@@ -409,8 +409,26 @@ static void nxdk_set_viewport(int x, int y, int width, int height) {
 }
 
 static void nxdk_set_scissor(int x, int y, int width, int height) {
-    (void)x; (void)y; (void)width; (void)height;
-    // TODO(nv2a): NV2A clip-rectangle (NV097_SET_SURFACE_CLIP_*). Not gating Phase 1.
+    // PD's portal renderer scissors each room/draw-slot to the screen rect where it can be
+    // seen (a door/window opening). Without this the adjacent room's geometry spills across
+    // the whole screen and paints over the near walls ("rooms rendered through walls").
+    // fast3d hands the rect in GL bottom-left window coords (like the SDL_GPU backend); the
+    // NV2A scissor is top-left, so flip Y. Clamp to the surface so the rect stays valid.
+    const int fbw = (int)pb_back_buffer_width();
+    const int fbh = (int)pb_back_buffer_height();
+    int rx = x;
+    int ry = fbh - y - height; // bottom-left -> top-left
+    int rw = width;
+    int rh = height;
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > fbw) { rw = fbw - rx; }
+    if (ry + rh > fbh) { rh = fbh - ry; }
+    if (rw < 0) { rw = 0; }
+    if (rh < 0) { rh = 0; }
+    uint32_t *p = pb_begin();
+    p = xgu_set_scissor_rect(p, false, (uint32_t)rx, (uint32_t)ry, (uint32_t)rw, (uint32_t)rh);
+    pb_end(p);
 }
 
 static void nxdk_set_use_alpha(bool use_alpha, bool modulate) {
@@ -552,6 +570,11 @@ static void nxdk_apply_texture(const struct CCFeatures *cc) {
 
 // Per-frame draw counter (reset + logged in nxdk_start_frame). Diagnostic only.
 int g_NxdkFrameDraws = 0;
+// Per-frame NDC-z span across depth-tested draws (x1000, ints for the broken-%f log).
+// Diagnoses the "objects only against sky" symptom: if the span is crammed near 1000 the
+// depth precision is collapsed; if it spans ~0..1000 the values are fine and the cause is
+// elsewhere. Reset + logged in nxdk_start_frame.
+int g_NxdkZMin = 100000, g_NxdkZMax = -100000;
 
 // A clip-space vertex normalised to our fixed attribute set, used for CPU near-plane
 // clipping (nxdk_draw_triangles). fast3d's z is D3D-style (z_is_from_0_to_1): the near
@@ -682,6 +705,11 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 // into the Z24 range. Clamping keeps far-plane overshoot from firing the
                 // NV2A's Z clip on these pretransformed verts (which would mangle their XY).
                 ndcz = ndcz < 0.0f ? 0.0f : (ndcz > 1.0f ? 1.0f : ndcz);
+                if (doclip) { // depth-tested draws only -- track the NDC-z span (x1000)
+                    const int zi = (int)(ndcz * 1000.0f);
+                    if (zi < g_NxdkZMin) { g_NxdkZMin = zi; }
+                    if (zi > g_NxdkZMax) { g_NxdkZMax = zi; }
+                }
                 dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
                 dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
                 dst[2] = ndcz;                                      // NDC depth [0,1]
@@ -876,9 +904,15 @@ static void nxdk_start_frame(void) {
     // every frame but black" (state/present bug) from "game stopped submitting" (logic).
     {
         extern int g_NxdkFrameDraws;
+        extern int g_NxdkZMin, g_NxdkZMax;
         static unsigned s_fr = 0;
-        if (s_fr < 50) { xboxTracef("rdr: FRAME %u draws=%d", s_fr, g_NxdkFrameDraws); s_fr++; }
+        if (s_fr < 50) {
+            xboxTracef("rdr: FRAME %u draws=%d zmin=%d zmax=%d (x1000)",
+                       s_fr, g_NxdkFrameDraws, g_NxdkZMin, g_NxdkZMax);
+            s_fr++;
+        }
         g_NxdkFrameDraws = 0;
+        g_NxdkZMin = 100000; g_NxdkZMax = -100000;
     }
     NXDK_RTRACE("rdr: start_frame");
     g.vtx_frame ^= 1;   // alternate vertex buffers so the GPU isn't still reading the one we overwrite
