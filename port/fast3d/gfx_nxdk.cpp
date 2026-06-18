@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h> // malloc/free for the texture swizzle staging buffer
 #include <string.h>
 #include <time.h>
 
@@ -87,6 +88,8 @@ static struct {
     size_t vtx_off;                   // current bump offset in vertices (reset per frame)
 
     uint32_t tex_bound[2];            // bound texture id per tile (0 = none)
+    int combiner_textured;            // current combiner mode (-1 unset / 0 unlit / 1 textured)
+    uint32_t tex_applied;             // texture id last programmed into stage 0 (per-frame cache)
 } g;
 
 #define NXDK_VTX_FLOATS 10 // x,y,z,w, r,g,b,a, u,v
@@ -96,8 +99,11 @@ static struct {
 // (0xAARRGGBB) in a GPU-visible contiguous buffer per texture, keyed by 1-based id.
 // ---------------------------------------------------------------------------------
 struct NxdkTexture {
-    uint8_t *argb;        // contiguous A8R8G8B8, NULL = unallocated
-    uint32_t w, h;
+    uint8_t *argb;        // swizzled A8R8G8B8 (POT container), NULL = unallocated
+    uint32_t w, h;        // actual texel dimensions
+    uint32_t dw, dh;      // POT container dimensions (swizzle needs power-of-two)
+    uint32_t pitch;       // dw * 4
+    float us, vs;         // UV scale = w/dw, h/dh (maps fast3d's [0,1] into the POT content)
     bool linear_filter;
     uint32_t cms, cmt;    // wrap modes (G_TX_*); mapped to NV2A in nxdk_apply_texture
 };
@@ -117,6 +123,47 @@ static void *nxdk_gpu_alloc(size_t bytes) {
     // the whole stock-console RAM, so this is always valid.
     return MmAllocateContiguousMemoryEx((ULONG)bytes, 0, 0x03FFFFFF, 0,
                                         PAGE_WRITECOMBINE | PAGE_READWRITE);
+}
+
+// Smallest power of two >= num (>=1).
+static uint32_t nxdk_npot2pot(uint32_t num) {
+    uint32_t p = 1;
+    while (p < num) { p <<= 1; }
+    return p;
+}
+
+// log2 of a power-of-two value.
+static uint32_t nxdk_ulog2(uint32_t v) {
+    uint32_t r = 0;
+    while (v > 1) { v >>= 1; r++; }
+    return r;
+}
+
+// NV2A swizzle (Z-order). Width/height must be powers of two. Adapted from the QEMU/
+// Nouveau routine carried in nxdk-sdl3 (swizzle.c, LGPL) -- inlined for bpp=4 (A8R8G8B8)
+// so the texture upload doesn't pull in another translation unit. src is linear (row
+// pitch = width*4), dst is the swizzled GPU buffer.
+static void nxdk_swizzle_rgba8(const uint8_t *src, uint32_t width, uint32_t height, uint8_t *dst) {
+    uint32_t mask_x = 0, mask_y = 0, bit = 1, mask_bit = 1;
+    bool done;
+    do {
+        done = true;
+        if (bit < width)  { mask_x |= mask_bit; mask_bit <<= 1; done = false; }
+        if (bit < height) { mask_y |= mask_bit; mask_bit <<= 1; done = false; }
+        bit <<= 1;
+    } while (!done);
+
+    const uint32_t row_pitch = width * 4;
+    uint32_t off_y = 0;
+    for (uint32_t y = 0; y < height; y++) {
+        const uint8_t *src_row = src + y * row_pitch;
+        uint32_t off_x = 0;
+        for (uint32_t x = 0; x < width; x++) {
+            *((uint32_t *)(dst + (off_y + off_x) * 4)) = *((const uint32_t *)(src_row + x * 4));
+            off_x = (off_x - mask_x) & mask_x;
+        }
+        off_y = (off_y - mask_y) & mask_y;
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -234,20 +281,36 @@ static void nxdk_upload_texture(const uint8_t *rgba32_buf, uint32_t width, uint3
     struct NxdkTexture *t = &g_NxdkTex[id];
 
     if (t->argb) { MmFreeContiguousMemory(t->argb); t->argb = NULL; }
-    const size_t bytes = (size_t)width * height * 4;
-    if (!bytes) { return; }
-    t->argb = (uint8_t *)nxdk_gpu_alloc(bytes);
-    if (!t->argb) { return; }
-    t->w = width;
-    t->h = height;
+    if (!width || !height) { return; }
 
-    // RGBA8 (R,G,B,A bytes) -> A8R8G8B8 (u32 0xAARRGGBB, little-endian byte order B,G,R,A).
-    const uint8_t *s = rgba32_buf;
-    uint32_t *d = (uint32_t *)t->argb;
-    const size_t n = (size_t)width * height;
-    for (size_t i = 0; i < n; i++, s += 4) {
-        d[i] = ((uint32_t)s[3] << 24) | ((uint32_t)s[0] << 16) | ((uint32_t)s[1] << 8) | (uint32_t)s[2];
+    // Swizzled textures need a power-of-two container; the actual texels live in the
+    // top-left and us/vs map fast3d's [0,1] UV into that region. (POT textures -- most of
+    // them -- have dw==w so us==1 and wrap tiles correctly.)
+    t->w = width;  t->h = height;
+    t->dw = nxdk_npot2pot(width);
+    t->dh = nxdk_npot2pot(height);
+    t->pitch = t->dw * 4;
+    t->us = (float)width / (float)t->dw;
+    t->vs = (float)height / (float)t->dh;
+
+    const size_t containerpx = (size_t)t->dw * t->dh;
+    t->argb = (uint8_t *)nxdk_gpu_alloc(containerpx * 4); // swizzled (GPU-visible)
+    if (!t->argb) { return; }
+
+    // Build a LINEAR POT staging buffer: convert RGBA8 (R,G,B,A) -> A8R8G8B8 into the
+    // top-left, zero-pad the rest, then swizzle into the GPU buffer.
+    uint32_t *lin = (uint32_t *)malloc(containerpx * 4);
+    if (!lin) { MmFreeContiguousMemory(t->argb); t->argb = NULL; return; }
+    memset(lin, 0, containerpx * 4);
+    for (uint32_t y = 0; y < height; y++) {
+        const uint8_t *s = rgba32_buf + (size_t)y * width * 4;
+        uint32_t *d = lin + (size_t)y * t->dw;
+        for (uint32_t x = 0; x < width; x++, s += 4) {
+            d[x] = ((uint32_t)s[3] << 24) | ((uint32_t)s[0] << 16) | ((uint32_t)s[1] << 8) | (uint32_t)s[2];
+        }
     }
+    nxdk_swizzle_rgba8((const uint8_t *)lin, t->dw, t->dh, t->argb);
+    free(lin);
 }
 
 static void nxdk_set_sampler_parameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
@@ -369,38 +432,83 @@ static void nxdk_vertex_layout(const struct CCFeatures *cc, int *stride,
     *stride = total;
 }
 
-static inline int nxdk_ulog2(uint32_t v) { int r = 0; while (v > 1) { v >>= 1; r++; } return r; }
-
-// Program NV2A texture stage 0 from the bound texture (linear A8R8G8B8), or disable
-// it. PHASE 2, WRITTEN BLIND -- the XGU texture-register signatures/enums below are
-// best-effort and will need correcting against the real headers. The untextured path
-// is independent, so colour-only geometry is unaffected if this is wrong.
-static void nxdk_apply_texture(const struct CCFeatures *cc) {
-    // TEXTURES TEMPORARILY DISABLED: the linear A8R8G8B8 setup below produced a GPU
-    // "object state invalid" error on the first textured draw (wrong format/pitch).
-    // Force the texture stage off so every draw is colour-only -- the geometry pipe
-    // works (untextured draws succeed), so this gets a complete, visible frame.
-    // Re-enable once the NV2A texture format (swizzled, or linear + control1 pitch) is
-    // correct. Set to 1 to test textures again.
-    const bool use = false && cc->used_textures[0] && g.tex_bound[0] && g.tex_bound[0] < NXDK_MAX_TEXTURES
-                     && g_NxdkTex[g.tex_bound[0]].argb;
+// Switch the register combiner between unlit (output = vertex diffuse) and textured
+// (output = tex0 * diffuse). Only the shader-stage program + the colour/alpha input
+// combiner words change; the OCW/control/fog set by nxdk_setup_combiner stay. Tracked so
+// a run of same-mode draws doesn't re-push it. ICW masks match SDL_render_xgu's
+// unlit_combiner_apply / texture_combiner_apply.
+static void nxdk_combiner_mode(bool textured) {
+    if (g.combiner_textured == (int)textured) { return; }
+    g.combiner_textured = (int)textured;
     uint32_t *p = pb_begin();
-    if (use) {
-        struct NxdkTexture *t = &g_NxdkTex[g.tex_bound[0]];
-        const uint32_t phys = (uint32_t)(uintptr_t)t->argb & 0x03ffffff;
-        p = xgu_set_texture_offset(p, 0, (const void *)(uintptr_t)phys);
-        p = xgu_set_texture_format(p, 0, 2, false, XGU_SOURCE_COLOR,
-                                   2, XGU_TEXTURE_FORMAT_A8R8G8B8,
-                                   1, nxdk_ulog2(t->w), nxdk_ulog2(t->h), 0);
-        p = xgu_set_texture_control0(p, 0, true, 0, 0);
-        p = xgu_set_texture_image_rect(p, 0, t->w, t->h);
-        // TODO(nv2a): wrap (xgu_set_texture_address) + filter (xgu_set_texture_filter)
-        // -- their XguTexWrap/XguTexConvolution enum names need confirming against the
-        // real xgu.h; using NV2A defaults for now so textures at least sample.
+    p = pb_push1(p, NV097_SET_SHADER_OTHER_STAGE_INPUT, 0);
+    if (textured) {
+        p = pb_push1(p, NV097_SET_SHADER_STAGE_PROGRAM,
+            XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE0, NV097_SET_SHADER_STAGE_PROGRAM_STAGE0_2D_PROJECTIVE));
+        p = pb_push1(p, NV097_SET_COMBINER_COLOR_ICW + 0 * 4,
+            XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_SOURCE, 0x8) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_SOURCE, 0x4) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_MAP, 0x0)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_MAP, 0x0));
+        p = pb_push1(p, NV097_SET_COMBINER_ALPHA_ICW + 0 * 4,
+            XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_SOURCE, 0x8) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_SOURCE, 0x4) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_MAP, 0x0)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_MAP, 0x0));
     } else {
-        p = xgu_set_texture_control0(p, 0, false, 0, 0);
+        p = pb_push1(p, NV097_SET_SHADER_STAGE_PROGRAM,
+            XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE0, NV097_SET_SHADER_STAGE_PROGRAM_STAGE0_PROGRAM_NONE)
+            | XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE1, NV097_SET_SHADER_STAGE_PROGRAM_STAGE1_PROGRAM_NONE)
+            | XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE2, NV097_SET_SHADER_STAGE_PROGRAM_STAGE2_PROGRAM_NONE)
+            | XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE3, NV097_SET_SHADER_STAGE_PROGRAM_STAGE3_PROGRAM_NONE));
+        p = pb_push1(p, NV097_SET_COMBINER_COLOR_ICW + 0 * 4,
+            XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_SOURCE, 0x4) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_MAP, 0x1)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_MAP, 0x0)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_MAP, 0x0));
+        p = pb_push1(p, NV097_SET_COMBINER_ALPHA_ICW + 0 * 4,
+            XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_SOURCE, 0x4) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_MAP, 0x1)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_MAP, 0x0)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_MAP, 0x0));
     }
     pb_end(p);
+}
+
+// Program NV2A texture stage 0 from the bound swizzled texture (A8R8G8B8) and switch the
+// combiner to the textured path, or disable both. Matches SDL_render_xgu's bind.
+static void nxdk_apply_texture(const struct CCFeatures *cc) {
+    const bool use = cc->used_textures[0] && g.tex_bound[0] && g.tex_bound[0] < NXDK_MAX_TEXTURES
+                     && g_NxdkTex[g.tex_bound[0]].argb;
+    nxdk_combiner_mode(use);
+    if (use) {
+        // Skip re-pushing the texture registers for a run of same-texture draws (fast3d
+        // batches by texture) -- 546 re-binds/frame would flood the push buffer.
+        if (g.tex_bound[0] == g.tex_applied) { return; }
+        g.tex_applied = g.tex_bound[0];
+        struct NxdkTexture *t = &g_NxdkTex[g.tex_bound[0]];
+        const uint32_t phys = (uint32_t)(uintptr_t)t->argb & 0x03ffffff;
+        const XguTexFilter filt = t->linear_filter ? XGU_TEXTURE_FILTER_LINEAR : XGU_TEXTURE_FILTER_NEAREST;
+        uint32_t *p = pb_begin();
+        p = xgu_set_texture_offset(p, 0, (const void *)(uintptr_t)phys);
+        p = xgu_set_texture_format(p, 0, 2, false, XGU_SOURCE_COLOR, 2,
+                                   XGU_TEXTURE_FORMAT_A8R8G8B8_SWIZZLED, 1,
+                                   nxdk_ulog2(t->dw), nxdk_ulog2(t->dh), 0);
+        p = xgu_set_texture_control0(p, 0, true, 0, 0);
+        p = xgu_set_texture_control1(p, 0, t->pitch);
+        p = xgu_set_texture_image_rect(p, 0, t->w, t->h);
+        p = xgu_set_texture_filter(p, 0, 0, XGU_TEXTURE_CONVOLUTION_GAUSSIAN, filt, filt, false, false, false, false);
+        // Default to WRAP (most game textures tile); refine cms/cmt -> CLAMP later.
+        p = xgu_set_texture_address(p, 0, XGU_WRAP, true, XGU_WRAP, true, XGU_CLAMP_TO_EDGE, false, false);
+        pb_end(p);
+    } else {
+        // Texture stage off for colour-only draws. Clear the cache so the next textured
+        // draw re-binds (the stage we just disabled must be re-enabled + re-pointed).
+        g.tex_applied = 0;
+        uint32_t *p = pb_begin();
+        p = xgu_set_texture_control0(p, 0, false, 0, 0);
+        pb_end(p);
+    }
 }
 
 // Per-frame draw counter (reset + logged in nxdk_start_frame). Diagnostic only.
@@ -440,6 +548,15 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     const bool textured = (uv0_off >= 0);
     const float vpx = (float)g.vp_x, vpy = (float)g.vp_y;
     const float vpw = (float)g.vp_w, vph = (float)g.vp_h;
+    // Swizzled textures live in a POT container; scale fast3d's normalised [0,1] UV by
+    // us/vs = texw/dw so it maps into the real texel region (==1 for POT textures).
+    float us = 1.0f, vs = 1.0f;
+    if (textured) {
+        const uint32_t tid = g.tex_bound[0];
+        if (tid && tid < NXDK_MAX_TEXTURES && g_NxdkTex[tid].argb) {
+            us = g_NxdkTex[tid].us; vs = g_NxdkTex[tid].vs;
+        }
+    }
     for (size_t v = 0; v < nverts; v++) {
         const float *src = buf_vbo + v * (size_t)stride;
         float *dst = base + v * NXDK_VTX_FLOATS;
@@ -458,7 +575,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             dst[4] = dst[5] = dst[6] = dst[7] = 1.0f;
         }
         if (textured) {
-            dst[8] = src[uv0_off]; dst[9] = src[uv0_off + 1];
+            dst[8] = src[uv0_off] * us; dst[9] = src[uv0_off + 1] * vs;
         } else {
             dst[8] = dst[9] = 0.0f;
         }
@@ -504,6 +621,7 @@ static void nxdk_init(void) {
     g.tex_filter = FILTER_LINEAR;
     if (g.target_fps == 0) { g.target_fps = 60; }
     g.next_framebuffer_id = 1;
+    g.combiner_textured = -1; // unset -> first nxdk_combiner_mode() pushes the input combiner
 }
 
 static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
@@ -634,7 +752,8 @@ static void nxdk_start_frame(void) {
         g_NxdkFrameDraws = 0;
     }
     NXDK_RTRACE("rdr: start_frame");
-    g.vtx_off = 0; // reset the per-frame vertex arena bump allocator
+    g.vtx_off = 0;      // reset the per-frame vertex arena bump allocator
+    g.tex_applied = 0;  // reset the per-frame texture-bind cache
     nxdk_oneshot_state();
     uint32_t *p = pb_begin();
     p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
@@ -649,6 +768,7 @@ static void nxdk_start_frame(void) {
     p = xgu_set_composite_matrix(p, ident);
     pb_end(p);
     nxdk_setup_combiner();
+    g.combiner_textured = 0; // setup_combiner programmed the unlit input combiner
     NXDK_RTRACE("rdr: start_frame ok");
 }
 
