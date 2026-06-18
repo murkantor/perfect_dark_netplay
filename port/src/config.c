@@ -180,6 +180,21 @@ static f32 configParseFloat(const char *s)
 	}
 	return sign * val;
 }
+
+// NXDK's printf has no working %f (it writes garbage like "5" for 85.0), so the saved
+// pd.ini got corrupt float values that reset FOV/stick-sensitivity every boot. Format
+// floats by hand with integer printf only: [sign]int.frac6.
+static void configFormatFloat(char *out, size_t n, f32 v)
+{
+	if (v != v) { strncpy(out, "0.000000", n); out[n - 1] = '\0'; return; } // NaN
+	s32 neg = (v < 0.0f);
+	if (neg) { v = -v; }
+	if (v > 1.0e9f) { v = 1.0e9f; } // clamp absurd/inf so the int cast is safe
+	s32 ip = (s32)v;
+	s32 fp = (s32)((v - (f32)ip) * 1000000.0f + 0.5f);
+	if (fp >= 1000000) { fp -= 1000000; ip += 1; }
+	snprintf(out, n, "%s%d.%06d", neg ? "-" : "", ip, fp);
+}
 #endif
 
 static void configSetFromString(const char *key, const char *val)
@@ -189,7 +204,8 @@ static void configSetFromString(const char *key, const char *val)
 
 	s32 tmp_s32;
 	f32 tmp_f32;
-	u32 tmp_u32;	switch (cfg->type) {
+	u32 tmp_u32;
+	switch (cfg->type) {
 		case CFG_S32:
 			tmp_s32 = strtol(val, NULL, 0);
 			if (cfg->min_s32 < cfg->max_s32) {
@@ -237,14 +253,17 @@ static void configSaveEntry(struct configentry *cfg, FILE *f)
 				*(f32 *)cfg->ptr = configClampFloat(*(f32 *)cfg->ptr, cfg->min_f32, cfg->max_f32);
 			}
 #ifdef NXDK
-			// Never persist NaN/Inf (an uninitialised float) -- it would write "nan"/"inf"
-			// and NXDK's strtof aborts boot on the reload. Coerce to 0.
+			// NXDK's %f is broken (writes garbage), which is what corrupted FOV/stick
+			// sensitivity in the saved pd.ini. Format the float by hand with integer
+			// printf instead. (Also handles NaN -> 0.)
 			{
-				const f32 _v = *(f32 *)cfg->ptr;
-				if (_v != _v || _v > 3.0e38f || _v < -3.0e38f) { *(f32 *)cfg->ptr = 0.0f; }
+				char fbuf[32];
+				configFormatFloat(fbuf, sizeof(fbuf), *(f32 *)cfg->ptr);
+				fprintf(f, "%s=%s\n", cfg->key + cfg->seclen + 1, fbuf);
 			}
-#endif
+#else
 			fprintf(f, "%s=%f\n", cfg->key + cfg->seclen + 1, *(f32 *)cfg->ptr);
+#endif
 			break;
 		case CFG_U32:
 			if (cfg->min_u32 < cfg->max_u32) {
