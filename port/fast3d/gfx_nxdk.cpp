@@ -875,7 +875,7 @@ static void wm_handle_events(void) {
 // nothing to any framebuffer (black despite 68 draws/frame). Push the full surface
 // state each frame so the back buffer is a valid render target.
 static void nxdk_bind_back_surface(void) {
-    extern unsigned int pb_ColorFmt; // from pbkit.c (current colour format)
+    extern "C" unsigned int pb_ColorFmt; // from pbkit.c (C symbol -- avoid C++ mangling)
     const uint32_t pitch  = (uint32_t)pb_back_buffer_pitch();
     const uint32_t cw     = (uint32_t)pb_back_buffer_width();
     const uint32_t ch     = (uint32_t)pb_back_buffer_height();
