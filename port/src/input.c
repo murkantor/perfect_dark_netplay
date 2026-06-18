@@ -106,12 +106,13 @@ static s32 useHIDAPI = 1;
 static s32 useRawInput = 0;
 
 #ifdef NXDK
-// Opt-in for the native-Xbox SDL gamepad path (Input.XboxGamepad in pd.ini). Default
-// OFF: the SDL gamepad init crashed/hung during early bring-up, so it's gated so a
-// failure can't re-break the now-working boot. Flip to 1 to test controller input;
-// if boot then hangs at "input: SDL_InitSubSystem"/"AllControllers" in pdboot.log,
-// nxdk-sdl3's gamepad backend isn't usable here -> the native USB (XID) fallback.
-static s32 xboxGamepadEnable = 0;
+// Native-Xbox SDL gamepad path (Input.XboxGamepad in pd.ini). Default ON now that the
+// renderer works and the game reaches the controller-required menu: without input the
+// game sits forever on the N64 "connect a controller" screen (which looked like a hang).
+// The init below forces hidapi/rawinput OFF and inits GAMEPAD only, with per-step
+// NXDK_INPUT_TRACE markers -- if boot hangs at "input: SDL_InitSubSystem"/"AllControllers"
+// in pdboot.log, set Input.XboxGamepad=0 to fall back to no input.
+static s32 xboxGamepadEnable = 1;
 #endif
 
 // Input.GamepadLED: tint RGB-LED pads (DualShock4/DualSense lightbar) with a

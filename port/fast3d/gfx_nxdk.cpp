@@ -284,10 +284,11 @@ static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_c
     g.depth_test = depth_test;
     g.depth_mask = depth_update;
     uint32_t *p = pb_begin();
-    // DIAGNOSTIC: force depth test OFF regardless of what the game requests. If geometry
-    // becomes visible over the cycling clear, the depth test was rejecting every fragment
-    // (clear value / Z-format / range mismatch with our CPU z*0xFFFFFF). Revert once known.
-    p = xgu_set_depth_test_enable(p, false);
+    // Depth currently has no effect: the 2-component screen-space position defaults z=0
+    // for every vertex (geometry draws in submission order). Honour the game's request
+    // anyway so the state is correct for when hardware depth is restored (3-component
+    // clip-space Z + viewport Z-scale).
+    p = xgu_set_depth_test_enable(p, depth_test);
     p = xgu_set_depth_mask(p, depth_update);
     p = xgu_set_depth_func(p, XGU_FUNC_LESS_OR_EQUAL);
     pb_end(p);
@@ -648,35 +649,6 @@ static void nxdk_start_frame(void) {
     p = xgu_set_composite_matrix(p, ident);
     pb_end(p);
     nxdk_setup_combiner();
-
-    // DIAGNOSTIC: a hardcoded bright-GREEN triangle at fixed screen pixels, drawn through
-    // the exact same xgux path the game uses. If GREEN shows over the red clear, the draw
-    // pipeline (combiner/attrib/state/present) works and the problem is the game's vertex
-    // DATA (transform/colour/address). If no green appears, the draw pipeline itself is
-    // broken. Layout matches NXDK_VTX_FLOATS: [x,y,z,w, r,g,b,a, u,v]; pos bound 2-comp.
-    {
-        static float *tri = NULL;
-        if (!tri) {
-            tri = (float *)nxdk_gpu_alloc(3 * NXDK_VTX_FLOATS * sizeof(float));
-            if (tri) {
-                static const float verts[3][NXDK_VTX_FLOATS] = {
-                    { 320.0f, 80.0f, 0,0,  0.0f, 1.0f, 0.0f, 1.0f,  0,0 },
-                    {  80.0f, 400.0f, 0,0, 0.0f, 1.0f, 0.0f, 1.0f,  0,0 },
-                    { 560.0f, 400.0f, 0,0, 0.0f, 1.0f, 0.0f, 1.0f,  0,0 },
-                };
-                memcpy(tri, verts, sizeof(verts));
-            }
-        }
-        if (tri) {
-            const uint32_t bs = NXDK_VTX_FLOATS * sizeof(float);
-            xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 2, bs, tri);
-            xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bs, tri + 4);
-            xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
-            xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
-            xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
-            xgux_draw_arrays(XGU_TRIANGLES, 0, 3);
-        }
-    }
     NXDK_RTRACE("rdr: start_frame ok");
 }
 
@@ -972,16 +944,7 @@ static bool wm_start_frame(void) {
     int w = pb_back_buffer_width();
     int h = pb_back_buffer_height();
     pb_erase_depth_stencil_buffer(0, 0, w, h);
-    // DIAGNOSTIC: cycle the clear colour red->green->blue every ~20 frames so we can
-    // tell present from draw. If the screen CYCLES, the present/flip path works and the
-    // geometry draws are the problem (invisible). If it stays on stale VRAM, the flip
-    // itself is broken. (Revert to 0xFF000000 once resolved.)
-    {
-        static unsigned s_fc = 0;
-        static const uint32_t cyc[3] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu };
-        pb_fill(0, 0, w, h, cyc[(s_fc / 20) % 3]);
-        s_fc++;
-    }
+    pb_fill(0, 0, w, h, 0xFF000000); // ARGB black
     pb_erase_text_screen();
     return true;
 }
