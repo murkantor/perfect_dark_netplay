@@ -274,7 +274,10 @@ static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_c
     g.depth_test = depth_test;
     g.depth_mask = depth_update;
     uint32_t *p = pb_begin();
-    p = xgu_set_depth_test_enable(p, depth_test);
+    // DIAGNOSTIC: force depth test OFF regardless of what the game requests. If geometry
+    // becomes visible over the cycling clear, the depth test was rejecting every fragment
+    // (clear value / Z-format / range mismatch with our CPU z*0xFFFFFF). Revert once known.
+    p = xgu_set_depth_test_enable(p, false);
     p = xgu_set_depth_mask(p, depth_update);
     p = xgu_set_depth_func(p, XGU_FUNC_LESS_OR_EQUAL);
     pb_end(p);
