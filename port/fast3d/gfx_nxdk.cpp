@@ -100,6 +100,15 @@ struct NxdkTexture {
 #define NXDK_MAX_TEXTURES 8192
 static struct NxdkTexture g_NxdkTex[NXDK_MAX_TEXTURES]; // [0] unused
 
+// GPU-visible memory must be WRITE-COMBINED (uncached) or the NV2A reads stale/zero
+// data through the CPU cache -- plain MmAllocateContiguousMemory (cached) made every
+// vertex degenerate to the origin (invisible geometry). Matches nxdk-sdl3's
+// MmAllocateContiguousMemoryEx(..., PAGE_WRITECOMBINE | PAGE_READWRITE).
+static void *nxdk_gpu_alloc(size_t bytes) {
+    return MmAllocateContiguousMemoryEx((ULONG)bytes, 0, 0xFFFFFFFF, 0,
+                                        PAGE_WRITECOMBINE | PAGE_READWRITE);
+}
+
 // ---------------------------------------------------------------------------------
 // Identification / capabilities
 // ---------------------------------------------------------------------------------
@@ -217,7 +226,7 @@ static void nxdk_upload_texture(const uint8_t *rgba32_buf, uint32_t width, uint3
     if (t->argb) { MmFreeContiguousMemory(t->argb); t->argb = NULL; }
     const size_t bytes = (size_t)width * height * 4;
     if (!bytes) { return; }
-    t->argb = (uint8_t *)MmAllocateContiguousMemory(bytes);
+    t->argb = (uint8_t *)nxdk_gpu_alloc(bytes);
     if (!t->argb) { return; }
     t->w = width;
     t->h = height;
@@ -404,7 +413,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     if (nverts > g.vtx_caps) {
         if (g.vtx) { MmFreeContiguousMemory(g.vtx); }
         g.vtx_caps = nverts + 256;
-        g.vtx = (float *)MmAllocateContiguousMemory(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
+        g.vtx = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         if (!g.vtx) { g.vtx_caps = 0; return; }
     }
 
@@ -862,12 +871,20 @@ static bool wm_start_frame(void) {
         static const float ident[16] = {
             1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,
         };
-        static float tri[3 * NXDK_VTX_FLOATS] = {
+        static const float tri[3 * NXDK_VTX_FLOATS] = {
             // x      y      z    w     r  g  b  a     u  v
             -0.6f, -0.6f, 0.5f, 1.f,  1.f,0.f,0.f,1.f,  0.f,0.f,
              0.6f, -0.6f, 0.5f, 1.f,  0.f,1.f,0.f,1.f,  0.f,0.f,
              0.0f,  0.6f, 0.5f, 1.f,  1.f,1.f,1.f,1.f,  0.f,0.f,
         };
+        // The GPU reads vertices from write-combined memory; copy the test data into a
+        // WC buffer once (a plain static array is cached -> GPU sees zeros).
+        static float *test_vtx = NULL;
+        if (!test_vtx) {
+            test_vtx = (float *)nxdk_gpu_alloc(sizeof(tri));
+            if (test_vtx) { memcpy(test_vtx, tri, sizeof(tri)); }
+        }
+        if (!test_vtx) { return true; }
         nxdk_oneshot_state();
         uint32_t *p = pb_begin();
         p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
@@ -883,8 +900,8 @@ static bool wm_start_frame(void) {
         pb_end(p);
         nxdk_setup_combiner();
         const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-        xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, tri);
-        xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, tri + 4);
+        xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, test_vtx);
+        xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, test_vtx + 4);
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
         xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
         xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
