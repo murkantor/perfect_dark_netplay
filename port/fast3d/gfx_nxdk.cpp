@@ -359,16 +359,15 @@ static void nxdk_apply_texture(const struct CCFeatures *cc) {
     if (use) {
         struct NxdkTexture *t = &g_NxdkTex[g.tex_bound[0]];
         const uint32_t phys = (uint32_t)(uintptr_t)t->argb & 0x03ffffff;
-        const unsigned filt = t->linear_filter ? XGU_TEXTURE_FILTER_LINEAR : XGU_TEXTURE_FILTER_NEAREST;
         p = xgu_set_texture_offset(p, 0, (const void *)(uintptr_t)phys);
         p = xgu_set_texture_format(p, 0, 2, false, XGU_SOURCE_COLOR,
                                    2, XGU_TEXTURE_FORMAT_A8R8G8B8,
                                    1, nxdk_ulog2(t->w), nxdk_ulog2(t->h), 0);
-        p = xgu_set_texture_address(p, 0, XGU_WRAP_REPEAT, false, XGU_WRAP_REPEAT, false,
-                                    XGU_WRAP_CLAMP_TO_EDGE, false, false);
         p = xgu_set_texture_control0(p, 0, true, 0, 0);
-        p = xgu_set_texture_filter(p, 0, 0, filt, filt, false, false, false, false);
         p = xgu_set_texture_image_rect(p, 0, t->w, t->h);
+        // TODO(nv2a): wrap (xgu_set_texture_address) + filter (xgu_set_texture_filter)
+        // -- their XguTexWrap/XguTexConvolution enum names need confirming against the
+        // real xgu.h; using NV2A defaults for now so textures at least sample.
     } else {
         p = xgu_set_texture_control0(p, 0, false, 0, 0);
     }
