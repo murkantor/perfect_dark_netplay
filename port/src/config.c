@@ -149,6 +149,39 @@ void configRegisterString(const char *key, char *var, u32 maxstr)
 	}
 }
 
+#ifdef NXDK
+// NXDK's strtof asserts (aborts boot) on inputs glibc tolerates -- empty strings,
+// "nan"/"inf", or a value an uninitialised float config wrote on a previous run. A bad
+// config value must never brick boot, so parse floats manually here: standard
+// [sign]int[.frac][e[sign]exp], returning 0 for anything unparseable (never asserts).
+static f32 configParseFloat(const char *s)
+{
+	if (!s) return 0.0f;
+	while (*s == ' ' || *s == '\t') s++;
+	f32 sign = 1.0f;
+	if (*s == '-') { sign = -1.0f; s++; } else if (*s == '+') { s++; }
+	if (!((*s >= '0' && *s <= '9') || *s == '.')) return 0.0f; // reject nan/inf/empty
+	f32 val = 0.0f;
+	while (*s >= '0' && *s <= '9') { val = val * 10.0f + (f32)(*s - '0'); s++; }
+	if (*s == '.') {
+		s++;
+		f32 frac = 0.1f;
+		while (*s >= '0' && *s <= '9') { val += (f32)(*s - '0') * frac; frac *= 0.1f; s++; }
+	}
+	if (*s == 'e' || *s == 'E') {
+		s++;
+		s32 esign = 1;
+		if (*s == '-') { esign = -1; s++; } else if (*s == '+') { s++; }
+		s32 exp = 0;
+		while (*s >= '0' && *s <= '9') { exp = exp * 10 + (*s - '0'); s++; }
+		f32 m = 1.0f;
+		for (s32 i = 0; i < exp; i++) m *= 10.0f;
+		val = (esign < 0) ? (val / m) : (val * m);
+	}
+	return sign * val;
+}
+#endif
+
 static void configSetFromString(const char *key, const char *val)
 {
 	struct configentry *cfg = configFindEntry(key);
@@ -156,8 +189,7 @@ static void configSetFromString(const char *key, const char *val)
 
 	s32 tmp_s32;
 	f32 tmp_f32;
-	u32 tmp_u32;
-	switch (cfg->type) {
+	u32 tmp_u32;	switch (cfg->type) {
 		case CFG_S32:
 			tmp_s32 = strtol(val, NULL, 0);
 			if (cfg->min_s32 < cfg->max_s32) {
@@ -166,7 +198,11 @@ static void configSetFromString(const char *key, const char *val)
 			*(s32 *)cfg->ptr = tmp_s32;
 			break;
 		case CFG_F32:
+#ifdef NXDK
+			tmp_f32 = configParseFloat(val); // NXDK strtof asserts on nan/inf/empty
+#else
 			tmp_f32 = strtof(val, NULL);
+#endif
 			if (cfg->min_f32 < cfg->max_f32) {
 				tmp_f32 = configClampFloat(tmp_f32, cfg->min_f32, cfg->max_f32);
 			}
@@ -200,6 +236,14 @@ static void configSaveEntry(struct configentry *cfg, FILE *f)
 			if (cfg->min_f32 < cfg->max_f32) {
 				*(f32 *)cfg->ptr = configClampFloat(*(f32 *)cfg->ptr, cfg->min_f32, cfg->max_f32);
 			}
+#ifdef NXDK
+			// Never persist NaN/Inf (an uninitialised float) -- it would write "nan"/"inf"
+			// and NXDK's strtof aborts boot on the reload. Coerce to 0.
+			{
+				const f32 _v = *(f32 *)cfg->ptr;
+				if (_v != _v || _v > 3.0e38f || _v < -3.0e38f) { *(f32 *)cfg->ptr = 0.0f; }
+			}
+#endif
 			fprintf(f, "%s=%f\n", cfg->key + cfg->seclen + 1, *(f32 *)cfg->ptr);
 			break;
 		case CFG_U32:
