@@ -874,8 +874,9 @@ static void wm_handle_events(void) {
 // and with a zero surface clip the NV2A discards every fragment, so valid draws write
 // nothing to any framebuffer (black despite 68 draws/frame). Push the full surface
 // state each frame so the back buffer is a valid render target.
+extern "C" unsigned int pb_ColorFmt; // from pbkit.c (C symbol -- file scope, no C++ mangling)
+
 static void nxdk_bind_back_surface(void) {
-    extern "C" unsigned int pb_ColorFmt; // from pbkit.c (C symbol -- avoid C++ mangling)
     const uint32_t pitch  = (uint32_t)pb_back_buffer_pitch();
     const uint32_t cw     = (uint32_t)pb_back_buffer_width();
     const uint32_t ch     = (uint32_t)pb_back_buffer_height();
