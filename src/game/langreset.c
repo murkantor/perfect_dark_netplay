@@ -102,7 +102,9 @@ void langReset(s32 stagenum)
 	g_LangBanks[LANGBANK_MISC] = fileLoadToNew(langGetFileId(LANGBANK_MISC), FILELOADMETHOD_DEFAULT, LOADTYPE_LANG);
 
 #ifdef NXDK
-	xboxTracef("PDBOOT: langReset(ntsc) done");
+	xboxTracef("PDBOOT: langReset(ntsc) done GUN=%p OPT=%p MISC=%p",
+		(void *)g_LangBanks[LANGBANK_GUN], (void *)g_LangBanks[LANGBANK_OPTIONS],
+		(void *)g_LangBanks[LANGBANK_MISC]);
 #endif
 	if (stagenum == STAGE_CREDITS) {
 		g_LoadType = LOADTYPE_LANG;
