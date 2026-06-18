@@ -614,12 +614,12 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: applied tex");
 
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
-    // Position: 2 components (X,Y screen pixels) for depth-off 2D (NV2A defaults z=0,w=1,
-    // no clip -- proven for menus/HUD). For depth-tested 3D, bind 3 components so the
-    // per-vertex screen-space Z (dst[2] = ndcz*0xFFFFFF) reaches the Z24 buffer and the
-    // model/world geometry sorts front-to-back instead of drawing in submission order.
-    // Gated, so if the 3-component Z misbehaves it only touches depth-tested draws.
-    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, g.depth_test ? 3 : 2, bstride, base);
+    // Bind THIS draw's arena region (base), not the arena start -- each queued draw must
+    // point at its own vertices. Position as 2 components (X,Y screen pixels) like
+    // SDL_render_xgu's float pos[2]: the NV2A defaults z=0,w=1 and rasterises in screen
+    // space with no homogeneous clip. (Binding 4 components ran every vertex through the
+    // clip pipeline where z>>w clipped all geometry away.)
+    xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 2, bstride, base);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
     if (textured) {
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, base + 8);
