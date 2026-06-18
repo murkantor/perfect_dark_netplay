@@ -105,6 +105,15 @@ static void inputRefreshJoyList(void)
 static s32 useHIDAPI = 1;
 static s32 useRawInput = 0;
 
+#ifdef NXDK
+// Opt-in for the native-Xbox SDL gamepad path (Input.XboxGamepad in pd.ini). Default
+// OFF: the SDL gamepad init crashed/hung during early bring-up, so it's gated so a
+// failure can't re-break the now-working boot. Flip to 1 to test controller input;
+// if boot then hangs at "input: SDL_InitSubSystem"/"AllControllers" in pdboot.log,
+// nxdk-sdl3's gamepad backend isn't usable here -> the native USB (XID) fallback.
+static s32 xboxGamepadEnable = 0;
+#endif
+
 // Input.GamepadLED: tint RGB-LED pads (DualShock4/DualSense lightbar) with a
 // per-player colour and flash red on low health (SDL3 SDL_SetGamepadLED)
 static s32 padLEDEnabled = 1;
@@ -822,13 +831,15 @@ s32 inputInit(void)
 	}
 
 #ifdef NXDK
-	// TODO(xbox): native Xbox controller input. nxdk-sdl3's SDL gamepad path
-	// crashes/hangs here (USB hidapi enumeration / SDL not initialised the way its
-	// Xbox entry expects). Skip the whole SDL input bring-up for now so boot reaches
-	// the render loop; input is dead until native XInput is wired. inputUpdate /
-	// inputReadController already no-op when no controllers are open.
-	NXDK_INPUT_TRACE("input: skipped on xbox (TODO native input)");
-	return 0;
+	// The native-Xbox SDL gamepad init below is gated behind Input.XboxGamepad (default
+	// off) so a hang can't re-break boot. When enabled, it runs the GAMEPAD-only path
+	// (hidapi/rawinput forced off) further down. inputUpdate / inputReadController
+	// already no-op when no controllers are open.
+	if (!xboxGamepadEnable) {
+		NXDK_INPUT_TRACE("input: skipped on xbox (Input.XboxGamepad=0)");
+		return 0;
+	}
+	NXDK_INPUT_TRACE("input: xbox gamepad ENABLED, trying SDL");
 #endif
 
 	// Set SDL hints before initializing the controller subsystem.
@@ -1984,6 +1995,9 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 	configRegisterInt("Input.FirstGamepadNum", &firstController, 0, 3);
 	configRegisterInt("Input.UseHIDAPI", &useHIDAPI, 0, 1);
 	configRegisterInt("Input.UseRawInput", &useRawInput, 0, 1);
+#ifdef NXDK
+	configRegisterInt("Input.XboxGamepad", &xboxGamepadEnable, 0, 1);
+#endif
 	configRegisterInt("Input.GamepadLED", &padLEDEnabled, 0, 1);
 	configRegisterInt("Input.GyroAim", &gyroAimEnabled, 0, 1);
 	configRegisterFloat("Input.GyroSpeedX", &gyroSensX, -30.f, 30.f);

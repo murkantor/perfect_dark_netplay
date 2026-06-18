@@ -192,6 +192,45 @@ the renderer is solid.
   stubbed — mirror/security-cam won't work yet). Boot trace is gated behind
   `xboxTraceSetEnabled()` (`port/src/xboxtrace.c`), default on during bring-up.
 
+## Input (controllers) — plan
+
+**Root cause of the early input/audio crashes:** `SDL_Init` is only called by the SDL
+window manager (`gfx_sdl.cpp`), which the NXDK build replaces with `gfx_nxdk` (pbkit).
+So `SDL_InitSubSystem(SDL_INIT_GAMEPAD)` / `(SDL_INIT_AUDIO)` ran without a healthy SDL
+video/event base — that's why both were skipped. (SDL3's `SDL_InitSubSystem` does
+auto-init the base, so the real failure is more likely nxdk-sdl3's USB **hidapi**
+enumeration hanging — which the NXDK path already disables.)
+
+**The code already exists.** `inputInit` has an `#ifdef NXDK` block that forces
+`SDL_HINT_JOYSTICK_HIDAPI`/`RAWINPUT` off and inits `SDL_INIT_GAMEPAD` alone; the rest
+of input.c (`inputReadController` = `SDL_GetGamepadAxis` + the keybind system,
+`inputUpdate` = `SDL_UpdateGamepads`, the hotplug event watcher) is platform-agnostic.
+It was just gated off by an early `return 0`.
+
+**Approach A (preferred — reuse SDL, almost no new code).** Now behind
+**`Input.XboxGamepad`** (pd.ini, default 0). Set it to 1:
+- Boot reaches `inputInit` → runs the GAMEPAD-only SDL init. `pdboot.log` traces
+  (`input: SDL_InitSubSystem` → `subsys ok` → `AllControllers` → `eventwatch`) pinpoint
+  any hang.
+- If it enumerates the pad: `inputReadController` fills `OSContPad` from the SDL gamepad
+  via the existing default joy binds (SDL maps the Duke/S pad to the standard layout, so
+  the desktop binds apply — L-stick = move, R-stick = look, triggers = fire/aim, etc.).
+  Likely revives **audio** too (same `SDL_INIT_AUDIO` root cause).
+- If it hangs at `SDL_InitSubSystem`/`AllControllers`: nxdk-sdl3's gamepad backend isn't
+  usable from this setup → Approach B.
+
+**Approach B (fallback — native nxdk USB / XID).** Read the Xbox gamepad directly through
+nxdk's USB host stack (the XID gamepad driver nxdk-sdl3 itself wraps), bypassing SDL.
+Implement an `#ifdef NXDK` native read in `inputReadController` that maps the XID report
+→ `OSContPad.button` (N64 `CONT_*` bits) + `stick_x/y`/`rstick_x/y`, and poll it in
+`inputUpdate`. More code, and needs the nxdk gamepad API confirmed, but avoids SDL
+entirely. The button map mirrors the SDL default binds (A/B/X/Y, LB/RB, triggers→Z/R,
+Start, D-pad, L-stick→N64 stick, R-stick→C-buttons or analog look).
+
+**Hook points:** `inputInit` (init), `inputReadController` (the `OSContPad` boundary the
+game reads every frame), `inputUpdate` (per-frame poll), `inputControllerConnected`/
+`inputControllerMask` (connection state).
+
 ## Milestone 4 — HD video output (480p / 720p / 1080i)
 
 Design + an **inert `PLATFORM_NXDK` mode table** (`port/src/video.c`, see
