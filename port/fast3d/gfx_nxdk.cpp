@@ -529,12 +529,15 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: draw nv=%d stride=%d coff=%d uv=%d vlen=%d",
                 (int)nverts, stride, color_off, uv0_off, (int)buf_vbo_len);
 
-    // Allocate the arena once (fixed, large). In-game frames can be far busier than the
-    // ~546-draw boot screen, so size generously (256k verts * 10 floats * 4B = 10 MB).
+    // Allocate the arena once. Keep it modest: a 10 MB block can't be allocated
+    // contiguously in the low 64 MB after the 33 MB ROM + engine pools (it failed,
+    // g.vtx=NULL, and every draw bailed -> blank screen). 64k verts (2.5 MB) allocates
+    // reliably and was enough for in-game frames; the sfence (not a bigger arena) is what
+    // fixes the flicker. Trace a failure so a future OOM is obvious instead of silent.
     if (!g.vtx) {
-        g.vtx_caps = 256 * 1024;
+        g.vtx_caps = 64 * 1024; // 64k * 10 floats * 4B = 2.5 MB
         g.vtx = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
-        if (!g.vtx) { g.vtx_caps = 0; return; }
+        if (!g.vtx) { g.vtx_caps = 0; xboxTracef("rdr: VERTEX ARENA ALLOC FAILED"); return; }
     }
     // Bump-allocate this draw's own region. On overflow DROP the draw (return) rather
     // than wrap to 0 -- wrapping aliases earlier draws still queued for this frame and
