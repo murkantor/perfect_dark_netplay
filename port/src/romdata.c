@@ -267,10 +267,26 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 	}
 
 	u8 scratch[5 * 1024];
-	if (rzipInflate(zipped, dataSeg, scratch) < 0) {
+	// rzipInflate returns the inflated byte count (0 on failure), so the old "< 0"
+	// check never fired -- a truncated/failed inflate slipped through and left the
+	// file-offset table zero-filled. Verify the full declared length came out.
+	const s32 inflated = rzipInflate(zipped, dataSeg, scratch);
+#ifdef NXDK
+	xboxTracef("PDBOOT: data seg inflate=%d declared=0x%x", (int)inflated, (unsigned)dataSegLen);
+#endif
+	if (inflated <= 0) {
 		sysMemFree(dataSeg); // matches sysMemAlloc (may be a kernel contiguous alloc on NXDK)
 		sysFatalError("Could not inflate data segment.");
 	}
+#ifdef NXDK
+	// The Xbox truncation bug (short inflate -> zero-filled file table) is silent
+	// otherwise; make it loud here. Desktop keeps the original no-length-check path
+	// in case a stream legitimately yields slightly under the declared size.
+	if ((u32)inflated < dataSegLen) {
+		sysMemFree(dataSeg);
+		sysFatalError("Data segment truncated: got %d of %u bytes.", inflated, (unsigned)dataSegLen);
+	}
+#endif
 
 	*outRom = rom;
 	*outSize = romSize;

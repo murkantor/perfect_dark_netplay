@@ -1,6 +1,7 @@
 // see https://github.com/n64decomp/007/blob/master/tools/mktex/src/libpdtex/reader.c
 // and https://github.com/doomhack/perfect_dark/blob/master/src/lib/rzip.c
 
+#include <stdint.h>
 #include <zlib.h>
 
 #include "lib/rzip.h"
@@ -38,12 +39,29 @@ static inline s32 rzipInflate1172(z_stream *strm, u8 *src, void *dst)
 
 static inline s32 rzipInflate1173(z_stream *strm, u8 *src, void *dst, u32 dstLen)
 {
-	strm->avail_in = -1; // compressed size unknown
 	strm->next_in = src;
 	strm->avail_out = dstLen;
 	strm->next_out = dst;
 
-	if (inflate(strm, Z_SYNC_FLUSH) == Z_STREAM_ERROR) {
+	// "compressed size unknown": the original passed (uInt)-1 (0xFFFFFFFF) and inflated
+	// in a SINGLE Z_SYNC_FLUSH call. On 64-bit desktop that fills the whole buffer in
+	// one shot, but on a 32-bit target (Original Xbox / NV2A) the single-call /
+	// "infinite avail_in" assumption stops early -- inflate returns with avail_out > 0
+	// and the rest of dst stays zero (this truncated the ROM data segment so the file
+	// offset table at +0x28080 read as zeros and EVERY file load returned NULL).
+	//
+	// Fix: bound avail_in to the headroom between src and the top of the address space
+	// (so the count can't wrap a 32-bit pointer), then LOOP inflate until the output
+	// buffer is full or the stream ends. Desktop is unaffected -- the loop runs once.
+	const uintptr_t headroom = (uintptr_t)-1 - (uintptr_t)src;
+	strm->avail_in = (headroom > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uInt)headroom;
+
+	int rc;
+	do {
+		rc = inflate(strm, Z_SYNC_FLUSH);
+	} while (rc == Z_OK && strm->avail_out != 0 && strm->avail_in != 0);
+
+	if (rc == Z_STREAM_ERROR) {
 		rmonPrintf("rzipInflate1173: Z_STREAM_ERROR\n");
 		return 0;
 	}
