@@ -36,6 +36,10 @@
 #include "gfx_cc.h"
 #include "gfx_nxdk.h"
 
+// Capped render-path trace (-> E:\pdboot.log) to localise a first-frame crash. Remove
+// once the renderer is solid.
+#define NXDK_RTRACE(...) do { static int _n = 0; if (_n < 16) { _n++; xboxTracef(__VA_ARGS__); } } while (0)
+
 // Each backend defines its own file-local ShaderProgram (same pattern as
 // gfx_opengl.cpp / gfx_sdlgpu.cpp). For NV2A this carries the decoded N64 combiner,
 // which a filled-in load_shader/draw_triangles maps to NV2A register combiners.
@@ -284,10 +288,12 @@ static void nxdk_set_viewport(int x, int y, int width, int height) {
     // 24-bit depth buffer: NDC z [0,1] -> [0, 0xFFFFFF]. (Tune if depth is wrong.)
     const float oz = 0.0f;
     const float sz = (float)0xFFFFFF;
+    NXDK_RTRACE("rdr: viewport %d %d %d %d", x, y, width, height);
     uint32_t *p = pb_begin();
     p = xgu_set_viewport_offset(p, ox, oy, oz, 0.0f);
     p = xgu_set_viewport_scale(p, sx, sy, sz, 0.0f);
     pb_end(p);
+    NXDK_RTRACE("rdr: viewport ok");
 }
 
 static void nxdk_set_scissor(int x, int y, int width, int height) {
@@ -385,6 +391,9 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     const size_t nverts = buf_vbo_num_tris * 3;
     if (nverts == 0) { return; }
 
+    NXDK_RTRACE("rdr: draw nv=%d stride=%d coff=%d uv=%d vlen=%d",
+                (int)nverts, stride, color_off, uv0_off, (int)buf_vbo_len);
+
     // Grow the GPU-visible scratch if needed.
     if (nverts > g.vtx_caps) {
         if (g.vtx) { MmFreeContiguousMemory(g.vtx); }
@@ -413,7 +422,9 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
         }
     }
 
+    NXDK_RTRACE("rdr: deinterleaved");
     nxdk_apply_texture(cc);
+    NXDK_RTRACE("rdr: applied tex");
 
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
     xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, 4, bstride, g.vtx);
@@ -426,8 +437,10 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     // Disable arrays we never supply so a previous draw's binding can't dangle.
     xgux_set_attrib_pointer(XGU_TEXCOORD1_ARRAY, XGU_FLOAT, 0, 0, NULL);
     xgux_set_attrib_pointer(XGU_NORMAL_ARRAY,    XGU_FLOAT, 0, 0, NULL);
+    NXDK_RTRACE("rdr: bound arrays");
 
     xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)nverts);
+    NXDK_RTRACE("rdr: drawn");
 }
 
 // ---------------------------------------------------------------------------------
@@ -458,6 +471,7 @@ static void nxdk_start_frame(void) {
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
     };
+    NXDK_RTRACE("rdr: start_frame");
     uint32_t *p = pb_begin();
     p = xgu_set_transform_execution_mode(p, XGU_FIXED, XGU_RANGE_MODE_PRIVATE);
     p = xgu_set_skin_mode(p, XGU_SKIN_MODE_OFF);
@@ -465,6 +479,7 @@ static void nxdk_start_frame(void) {
     p = xgu_set_cull_face_enable(p, false);
     p = xgu_set_composite_matrix(p, ident);
     pb_end(p);
+    NXDK_RTRACE("rdr: start_frame ok");
 }
 
 static void nxdk_end_frame(void) { /* push buffer is flushed by the WM swap */ }
