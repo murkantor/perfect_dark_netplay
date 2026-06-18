@@ -454,6 +454,16 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     }
 
     NXDK_RTRACE("rdr: deinterleaved");
+    // DIAGNOSTIC: dump vertex 0's clip input, screen output, and colour (x1000, int) so
+    // we can see why the game geometry is invisible while a fixed test triangle renders.
+    // clip=(x,y,z,w)*1000; screen=(px,py); col=(r,g,b,a)*1000.
+    {
+        const float *s0 = buf_vbo;
+        NXDK_RTRACE("rdr: v0 clip=%d,%d,%d,%d scr=%d,%d col=%d,%d,%d,%d",
+            (int)(s0[0]*1000), (int)(s0[1]*1000), (int)(s0[2]*1000), (int)(s0[3]*1000),
+            (int)g.vtx[0], (int)g.vtx[1],
+            (int)(g.vtx[4]*1000), (int)(g.vtx[5]*1000), (int)(g.vtx[6]*1000), (int)(g.vtx[7]*1000));
+    }
     nxdk_apply_texture(cc);
     NXDK_RTRACE("rdr: applied tex");
 
