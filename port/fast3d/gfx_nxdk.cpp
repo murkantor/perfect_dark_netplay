@@ -82,7 +82,7 @@ static struct {
     // earlier queued ones. Across frames we ALTERNATE buffers: the GPU may still be reading
     // frame N's vertices when the CPU starts writing frame N+1, so frame N+1 must use the
     // OTHER buffer (single-buffered, that race showed as flickering/corrupt verts even with
-    // the sfence). Layout [x,y,z,w, r,g,b,a, s,t,q, pad] = NXDK_VTX_FLOATS/vertex.
+    // the sfence). Layout [x,y,z,w, r,g,b,a, u,v] = NXDK_VTX_FLOATS/vertex.
     float *vtx[2];
     size_t vtx_caps;                  // per-buffer capacity in vertices
     size_t vtx_off;                   // current bump offset in vertices (reset per frame)
@@ -94,11 +94,7 @@ static struct {
     bool tex_is_fb;                   // tile 0 is bound to a framebuffer (effect) we don't have
 } g;
 
-// x,y,z,w, r,g,b,a, s,t,q, pad. The texcoord carries a projective q = 1/w (perspective-
-// correct texturing via the 2D_PROJECTIVE texture stage). 12 floats = 48 bytes/vertex; 4
-// verts = 192 bytes = a multiple of 32, so the 4-vertex arena round-up keeps every draw's
-// base 32-byte aligned (the NV2A vertex DMA's alignment requirement).
-#define NXDK_VTX_FLOATS 12
+#define NXDK_VTX_FLOATS 10 // x,y,z,w, r,g,b,a, u,v
 
 // ---------------------------------------------------------------------------------
 // Texture pool. fast3d hands RGBA8 (R,G,B,A bytes); we convert to NV2A A8R8G8B8
@@ -348,6 +344,25 @@ static int nxdk_get_max_anisotropy_level(void) { return 1; /* TODO(nv2a): NV2A s
 // Render state
 // ---------------------------------------------------------------------------------
 
+// Actual NV2A blend enable = (game asked for alpha) AND (this draw does NOT write depth).
+// The N64 sets the alpha-blend blender bits for anti-aliased OPAQUE surfaces too (it blends
+// edge pixels by coverage), and fast3d forwards that as use_alpha. Our combiner's
+// alpha = tex_alpha * shade_alpha is < 1 for many opaque textures, so blending them turned
+// every wall translucent (see-through everything). Opaque geometry writes depth (Z_UPD);
+// translucent geometry (glass/smoke/effects) does not -- so gating blend on !depth_mask
+// keeps opaque surfaces solid while still blending true translucents and the 2D/HUD (which
+// is depth-off, so it blends as before).
+static void nxdk_update_blend(void) {
+    const bool blend = g.use_alpha && !g.depth_mask;
+    uint32_t *p = pb_begin();
+    p = xgu_set_blend_enable(p, blend);
+    if (blend) {
+        p = xgu_set_blend_func_sfactor(p, XGU_FACTOR_SRC_ALPHA);
+        p = xgu_set_blend_func_dfactor(p, XGU_FACTOR_ONE_MINUS_SRC_ALPHA);
+    }
+    pb_end(p);
+}
+
 static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare,
                                 bool depth_source_prim, uint16_t zmode) {
     (void)depth_compare; (void)depth_source_prim; (void)zmode;
@@ -361,6 +376,8 @@ static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_c
     p = xgu_set_depth_mask(p, depth_update);
     p = xgu_set_depth_func(p, XGU_FUNC_LESS_OR_EQUAL);
     pb_end(p);
+    // depth_mask feeds the blend gate (opaque depth-writers must not blend).
+    nxdk_update_blend();
 }
 
 static void nxdk_set_depth_range(float znear, float zfar) {
@@ -399,13 +416,7 @@ static void nxdk_set_scissor(int x, int y, int width, int height) {
 static void nxdk_set_use_alpha(bool use_alpha, bool modulate) {
     (void)modulate;
     g.use_alpha = use_alpha;
-    uint32_t *p = pb_begin();
-    p = xgu_set_blend_enable(p, use_alpha);
-    if (use_alpha) {
-        p = xgu_set_blend_func_sfactor(p, XGU_FACTOR_SRC_ALPHA);
-        p = xgu_set_blend_func_dfactor(p, XGU_FACTOR_ONE_MINUS_SRC_ALPHA);
-    }
-    pb_end(p);
+    nxdk_update_blend(); // gated on !depth_mask -- see nxdk_update_blend
 }
 
 // ---------------------------------------------------------------------------------
@@ -586,7 +597,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     // big block can't be allocated contiguously in the low 64 MB after the 33 MB ROM, but
     // two smaller blocks fit. Trace a failure so an OOM is obvious instead of silent.
     if (!g.vtx[0]) {
-        g.vtx_caps = 43 * 1024; // per buffer; 43k * 12 floats * 4B ~= 2 MB (kept near the proven size)
+        g.vtx_caps = 52 * 1024; // per buffer; 52k * 10 floats * 4B ~= 2 MB
         g.vtx[0] = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         g.vtx[1] = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         if (!g.vtx[0] || !g.vtx[1]) { g.vtx_caps = 0; g.vtx[0] = NULL; xboxTracef("rdr: VERTEX ARENA ALLOC FAILED"); return; }
@@ -676,12 +687,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 dst[2] = ndcz;                                      // NDC depth [0,1]
                 dst[3] = 1.0f;
                 dst[4] = v->r; dst[5] = v->g; dst[6] = v->b; dst[7] = v->a;
-                // Projective texcoord (s/w, t/w, 1/w): the 2D_PROJECTIVE texture stage
-                // divides s/q, t/q per fragment, reconstructing perspective-correct UVs from
-                // screen-linear interpolation (fixes the affine "texture swim"/warping). For
-                // 2D/HUD (w == 1) this is identity (q == 1).
-                dst[8] = v->s * iw; dst[9] = v->t * iw; dst[10] = iw;
-                dst[11] = 0.0f; // pad to NXDK_VTX_FLOATS
+                dst[8] = v->s; dst[9] = v->t;
             }
             out += 3;
         }
@@ -711,9 +717,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, g.depth_test ? 3 : 2, bstride, base);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
     if (textured) {
-        // 3 components (s, t, q): the 2D_PROJECTIVE texture stage divides s/q, t/q per
-        // fragment for perspective-correct UVs (q = 1/w, written in the emit loop).
-        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 3, bstride, base + 8);
+        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, base + 8);
     } else {
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
     }
@@ -724,8 +728,8 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
 
     xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)out);
     // Advance the bump allocator by the EMITTED vertex count (out, after near-plane
-    // clipping), ROUNDED UP to a multiple of 4 vertices. Each vertex is 48 bytes
-    // (NXDK_VTX_FLOATS*4), and 4 verts = 192 bytes = a multiple of 32, so every draw's base
+    // clipping), ROUNDED UP to a multiple of 4 vertices. Each vertex is 40 bytes
+    // (NXDK_VTX_FLOATS*4), and 4 verts = 160 bytes = a multiple of 32, so every draw's base
     // stays 32-byte aligned -- the NV2A vertex DMA requires 32-byte alignment
     // (SDL_render_xgu's SDL_XGU_VERTEX_ALIGNMENT). Unaligned bases made the GPU misread
     // vertices -> the flickering streaks/lines (alignment shifted frame to frame).
