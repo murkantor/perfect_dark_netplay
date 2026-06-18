@@ -632,7 +632,12 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     NXDK_RTRACE("rdr: bound arrays");
 
     xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)nverts);
-    g.vtx_off += nverts; // advance the bump allocator past this draw's region
+    // Advance the bump allocator, ROUNDED UP to a multiple of 4 vertices. Each vertex is
+    // 40 bytes (NXDK_VTX_FLOATS*4), and 4 verts = 160 bytes = a multiple of 32, so every
+    // draw's base stays 32-byte aligned -- the NV2A vertex DMA requires 32-byte alignment
+    // (SDL_render_xgu's SDL_XGU_VERTEX_ALIGNMENT). Unaligned bases made the GPU misread
+    // vertices -> the flickering streaks/lines (alignment shifted frame to frame).
+    g.vtx_off = (g.vtx_off + nverts + 3u) & ~(size_t)3u;
     NXDK_RTRACE("rdr: drawn");
 }
 
