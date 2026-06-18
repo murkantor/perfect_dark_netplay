@@ -82,7 +82,7 @@ static struct {
     // earlier queued ones. Across frames we ALTERNATE buffers: the GPU may still be reading
     // frame N's vertices when the CPU starts writing frame N+1, so frame N+1 must use the
     // OTHER buffer (single-buffered, that race showed as flickering/corrupt verts even with
-    // the sfence). Layout [x,y,z,w, r,g,b,a, u,v] = NXDK_VTX_FLOATS/vertex.
+    // the sfence). Layout [x,y,z,w, r,g,b,a, s,t,q, pad] = NXDK_VTX_FLOATS/vertex.
     float *vtx[2];
     size_t vtx_caps;                  // per-buffer capacity in vertices
     size_t vtx_off;                   // current bump offset in vertices (reset per frame)
@@ -94,7 +94,11 @@ static struct {
     bool tex_is_fb;                   // tile 0 is bound to a framebuffer (effect) we don't have
 } g;
 
-#define NXDK_VTX_FLOATS 10 // x,y,z,w, r,g,b,a, u,v
+// x,y,z,w, r,g,b,a, s,t,q, pad. The texcoord carries a projective q = 1/w (perspective-
+// correct texturing via the 2D_PROJECTIVE texture stage). 12 floats = 48 bytes/vertex; 4
+// verts = 192 bytes = a multiple of 32, so the 4-vertex arena round-up keeps every draw's
+// base 32-byte aligned (the NV2A vertex DMA's alignment requirement).
+#define NXDK_VTX_FLOATS 12
 
 // ---------------------------------------------------------------------------------
 // Texture pool. fast3d hands RGBA8 (R,G,B,A bytes); we convert to NV2A A8R8G8B8
@@ -582,7 +586,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     // big block can't be allocated contiguously in the low 64 MB after the 33 MB ROM, but
     // two smaller blocks fit. Trace a failure so an OOM is obvious instead of silent.
     if (!g.vtx[0]) {
-        g.vtx_caps = 52 * 1024; // per buffer; 52k * 10 floats * 4B ~= 2 MB
+        g.vtx_caps = 43 * 1024; // per buffer; 43k * 12 floats * 4B ~= 2 MB (kept near the proven size)
         g.vtx[0] = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         g.vtx[1] = (float *)nxdk_gpu_alloc(g.vtx_caps * NXDK_VTX_FLOATS * sizeof(float));
         if (!g.vtx[0] || !g.vtx[1]) { g.vtx_caps = 0; g.vtx[0] = NULL; xboxTracef("rdr: VERTEX ARENA ALLOC FAILED"); return; }
@@ -672,7 +676,12 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 dst[2] = ndcz;                                      // NDC depth [0,1]
                 dst[3] = 1.0f;
                 dst[4] = v->r; dst[5] = v->g; dst[6] = v->b; dst[7] = v->a;
-                dst[8] = v->s; dst[9] = v->t;
+                // Projective texcoord (s/w, t/w, 1/w): the 2D_PROJECTIVE texture stage
+                // divides s/q, t/q per fragment, reconstructing perspective-correct UVs from
+                // screen-linear interpolation (fixes the affine "texture swim"/warping). For
+                // 2D/HUD (w == 1) this is identity (q == 1).
+                dst[8] = v->s * iw; dst[9] = v->t * iw; dst[10] = iw;
+                dst[11] = 0.0f; // pad to NXDK_VTX_FLOATS
             }
             out += 3;
         }
@@ -702,7 +711,9 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, g.depth_test ? 3 : 2, bstride, base);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
     if (textured) {
-        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 2, bstride, base + 8);
+        // 3 components (s, t, q): the 2D_PROJECTIVE texture stage divides s/q, t/q per
+        // fragment for perspective-correct UVs (q = 1/w, written in the emit loop).
+        xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 3, bstride, base + 8);
     } else {
         xgux_set_attrib_pointer(XGU_TEXCOORD0_ARRAY, XGU_FLOAT, 0, 0, NULL);
     }
@@ -713,8 +724,8 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
 
     xgux_draw_arrays(XGU_TRIANGLES, 0, (uint32_t)out);
     // Advance the bump allocator by the EMITTED vertex count (out, after near-plane
-    // clipping), ROUNDED UP to a multiple of 4 vertices. Each vertex is 40 bytes
-    // (NXDK_VTX_FLOATS*4), and 4 verts = 160 bytes = a multiple of 32, so every draw's base
+    // clipping), ROUNDED UP to a multiple of 4 vertices. Each vertex is 48 bytes
+    // (NXDK_VTX_FLOATS*4), and 4 verts = 192 bytes = a multiple of 32, so every draw's base
     // stays 32-byte aligned -- the NV2A vertex DMA requires 32-byte alignment
     // (SDL_render_xgu's SDL_XGU_VERTEX_ALIGNMENT). Unaligned bases made the GPU misread
     // vertices -> the flickering streaks/lines (alignment shifted frame to frame).
