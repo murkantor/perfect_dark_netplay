@@ -274,18 +274,16 @@ static void romdataLoadRomFile(const char *name, u8 **outRom, u32 *outSize, u8 *
 #ifdef NXDK
 	xboxTracef("PDBOOT: data seg inflate=%d declared=0x%x", (int)inflated, (unsigned)dataSegLen);
 #endif
+#ifndef NXDK
 	if (inflated <= 0) {
-		sysMemFree(dataSeg); // matches sysMemAlloc (may be a kernel contiguous alloc on NXDK)
+		sysMemFree(dataSeg);
 		sysFatalError("Could not inflate data segment.");
 	}
-#ifdef NXDK
-	// The Xbox truncation bug (short inflate -> zero-filled file table) is silent
-	// otherwise; make it loud here. Desktop keeps the original no-length-check path
-	// in case a stream legitimately yields slightly under the declared size.
-	if ((u32)inflated < dataSegLen) {
-		sysMemFree(dataSeg);
-		sysFatalError("Data segment truncated: got %d of %u bytes.", inflated, (unsigned)dataSegLen);
-	}
+#else
+	// During Xbox bring-up the data-seg inflate is failing (inflate=0); keep booting
+	// (limps with an empty file table) so the rzip1173/init traces above and the rest
+	// of the boot are observable instead of dead-ending at a black screen.
+	(void)inflated;
 #endif
 
 	*outRom = rom;

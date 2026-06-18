@@ -6,6 +6,14 @@
 
 #include "lib/rzip.h"
 
+#ifdef NXDK
+#include "xboxtrace.h" // boot bring-up tracing (port/src/xboxtrace.c)
+// Capped per-call-site trace so the per-file decompress path doesn't spam the log.
+#define RZIP_RTRACE(...) do { static int _n = 0; if (_n < 12) { _n++; xboxTracef(__VA_ARGS__); } } while (0)
+#else
+#define RZIP_RTRACE(...) do {} while (0)
+#endif
+
 void *var80091558; // g_RzipUnused
 
 bool rzipIs1172(void *buffer)
@@ -57,9 +65,15 @@ static inline s32 rzipInflate1173(z_stream *strm, u8 *src, void *dst, u32 dstLen
 	strm->avail_in = (headroom > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uInt)headroom;
 
 	int rc;
+	int iters = 0;
 	do {
 		rc = inflate(strm, Z_SYNC_FLUSH);
+		iters++;
 	} while (rc == Z_OK && strm->avail_out != 0 && strm->avail_in != 0);
+
+	RZIP_RTRACE("PDBOOT: rzip1173 rc=%d iters=%d out=%lu ai=%lu ao=%lu dst=0x%x",
+		rc, iters, (unsigned long)strm->total_out,
+		(unsigned long)strm->avail_in, (unsigned long)strm->avail_out, (unsigned)dstLen);
 
 	if (rc == Z_STREAM_ERROR) {
 		rmonPrintf("rzipInflate1173: Z_STREAM_ERROR\n");
@@ -77,9 +91,13 @@ s32 rzipInflate(void *srcp, void *dst, void *scratch)
 
 	ret = inflateInit2(&strm, -15);
 	if (ret != Z_OK) {
+		RZIP_RTRACE("PDBOOT: rzip inflateInit2 FAILED ret=%d hdr=%s lib=%s sz=%u",
+			ret, ZLIB_VERSION, zlibVersion(), (unsigned)sizeof(z_stream));
 		rmonPrintf("rzipInflate: inflateInit2 failed: %d\n", ret);
 		return 0;
 	}
+	RZIP_RTRACE("PDBOOT: rzip init ok ver=%s is1173=%d is1172=%d b0=%02x b1=%02x",
+		zlibVersion(), (int)rzipIs1173(src), (int)rzipIs1172(src), src[0], src[1]);
 
 	if (rzipIs1173(src)) {
 		// 1173, we know the uncompressed length
