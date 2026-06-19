@@ -5,6 +5,13 @@ Experimental OG Xbox port on branch **`port-net-xbox`** (branched from
 **NXDK** (https://github.com/XboxDev/nxdk) + **SDL3 for NXDK**
 (https://github.com/Ryzee119/nxdk-sdl3).
 
+> **⚠️ The renderer status in this banner is STALE.** The NV2A backend now renders
+> textured 3D gameplay with hardware depth, near-plane clipping, portal scissor, and
+> blend gating. The current renderer truth + handoff lives in
+> **[`port/fast3d/CLAUDE.md`](../port/fast3d/CLAUDE.md)** — read that first for any
+> `gfx_nxdk.cpp` work. The rest of this doc is still accurate for build scaffolding /
+> boot bring-up (M0–M2).
+
 > **Status: BOOTS END-TO-END; NV2A present (Phase 0) verified (2026-06-17).** The
 > engine boots all the way through init + ROM load + `lvReset` (stage load) into the
 > native `gfx_nxdk` render loop, which clears the back buffer and presents every frame
