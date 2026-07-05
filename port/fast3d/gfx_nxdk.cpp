@@ -299,7 +299,13 @@ static void nxdk_upload_texture(const uint8_t *rgba32_buf, uint32_t width, uint3
 
     const size_t containerpx = (size_t)t->dw * t->dh;
     t->argb = (uint8_t *)nxdk_gpu_alloc(containerpx * 4); // swizzled (GPU-visible)
-    if (!t->argb) { return; }
+    if (!t->argb) {
+        // Contiguous low-64MB pool exhausted (watch for this at 1080i, whose
+        // framebuffers eat ~25 MB of it). Capped trace so an OOM isn't silent.
+        static int oomlogs = 0;
+        if (oomlogs < 8) { oomlogs++; xboxTracef("rdr: TEX ALLOC FAILED %ux%u", width, height); }
+        return;
+    }
 
     // Build a LINEAR POT staging buffer: convert RGBA8 (R,G,B,A) -> A8R8G8B8 into the
     // top-left, zero-pad the rest, then swizzle into the GPU buffer.
@@ -315,6 +321,10 @@ static void nxdk_upload_texture(const uint8_t *rgba32_buf, uint32_t width, uint3
     }
     nxdk_swizzle_rgba8((const uint8_t *)lin, t->dw, t->dh, t->argb);
     free(lin);
+    // The swizzled destination is WRITE-COMBINED (nxdk_gpu_alloc): fence the stores
+    // before any draw can queue a read of this texture -- same lesson as the vertex
+    // arena, where missing sfences showed as stale/garbage data on first use.
+    __asm__ __volatile__("sfence" ::: "memory");
 }
 
 static void nxdk_set_sampler_parameters(int sampler, bool linear_filter, uint32_t cms, uint32_t cmt, bool mipmaps) {
@@ -655,6 +665,11 @@ int g_NxdkFrameDraws = 0;
 // depth precision is collapsed; if it spans ~0..1000 the values are fine and the cause is
 // elsewhere. Reset + logged in nxdk_start_frame.
 int g_NxdkZMin = 100000, g_NxdkZMax = -100000;
+// Arena telemetry (trap T2): draws dropped by overflow this frame + the all-time
+// vertex high-water mark. The HUD/text draw LAST, so silent overflow eats the UI on
+// heavy frames -- the drop trace makes that diagnosable instead of "text flickers".
+int g_NxdkVtxDrops = 0;
+int g_NxdkVtxHighWater = 0;
 
 // A clip-space vertex normalised to our fixed attribute set, used for CPU near-plane
 // clipping (nxdk_draw_triangles). fast3d's z is D3D-style (z_is_from_0_to_1): the near
@@ -708,8 +723,9 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     // Bump-allocate this draw's own region in THIS frame's buffer. On overflow DROP the
     // draw (return) rather than wrap (which would alias earlier queued draws this frame).
     // Near-plane clipping can split each triangle into two (4-vertex polygon), so reserve
-    // up to 2x the source vertex count.
-    if (g.vtx_off + nverts * 2 > g.vtx_caps) { return; }
+    // up to 2x the source vertex count. Dropped draws are counted (g_NxdkVtxDrops) and
+    // reported from nxdk_start_frame -- HUD/text draw last, so overflow eats the UI.
+    if (g.vtx_off + nverts * 2 > g.vtx_caps) { g_NxdkVtxDrops++; return; }
     float *const base = g.vtx[g.vtx_frame] + g.vtx_off * NXDK_VTX_FLOATS;
 
     // De-interleave fast3d's variable layout into a fixed [pos4, colour4, uv2], doing
@@ -869,6 +885,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     // (SDL_render_xgu's SDL_XGU_VERTEX_ALIGNMENT). Unaligned bases made the GPU misread
     // vertices -> the flickering streaks/lines (alignment shifted frame to frame).
     g.vtx_off = (g.vtx_off + out + 3u) & ~(size_t)3u;
+    if ((int)g.vtx_off > g_NxdkVtxHighWater) { g_NxdkVtxHighWater = (int)g.vtx_off; }
     NXDK_RTRACE("rdr: drawn");
 }
 
@@ -899,10 +916,11 @@ static void nxdk_on_resize(void) { /* Xbox modes are fixed; nothing to do */ }
 // pbkit demo loop -- pb_target_back_buffer / pb_fill / pb_erase_* do NOT clobber the
 // combiner/scissor/transform state). Running this every frame (×546 draws on the intro
 // frames) overflowed the push buffer and hung the GPU deterministically.
+static bool g_NxdkOneshotDone; // reset by the runtime video-mode switch (wm_start_frame)
+
 static void nxdk_oneshot_state(void) {
-    static bool done = false;
-    if (done) { return; }
-    done = true;
+    if (g_NxdkOneshotDone) { return; }
+    g_NxdkOneshotDone = true;
     static const float ident[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
     const int w = pb_back_buffer_width();
     const int h = pb_back_buffer_height();
@@ -1012,11 +1030,22 @@ static void nxdk_start_frame(void) {
     {
         extern int g_NxdkFrameDraws;
         extern int g_NxdkZMin, g_NxdkZMax;
+        extern int g_NxdkVtxDrops, g_NxdkVtxHighWater;
         static unsigned s_fr = 0;
         if (s_fr < 50) {
             xboxTracef("rdr: FRAME %u draws=%d zmin=%d zmax=%d (x1000)",
                        s_fr, g_NxdkFrameDraws, g_NxdkZMin, g_NxdkZMax);
             s_fr++;
+        }
+        // Arena-overflow report (trap T2), rate-limited to ~1/s: without it, dropped
+        // draws (the HUD draws last!) look like random UI flicker on heavy frames.
+        if (g_NxdkVtxDrops) {
+            static unsigned s_dropwarn = 0;
+            if ((s_dropwarn++ % 60) == 0) {
+                xboxTracef("rdr: ARENA OVERFLOW dropped=%d hiwater=%d/%d verts",
+                           g_NxdkVtxDrops, g_NxdkVtxHighWater, (int)g.vtx_caps);
+            }
+            g_NxdkVtxDrops = 0;
         }
         g_NxdkFrameDraws = 0;
         g_NxdkZMin = 100000; g_NxdkZMax = -100000;
@@ -1203,23 +1232,98 @@ struct GfxRenderingAPI gfx_nxdk_api = {
 // =================================================================================
 
 static double nxdk_now(void) {
-    // TODO(nv2a): replace with KeQueryPerformanceCounter/Frequency for precision.
-    // clock() (pdclib) is enough to get the frame loop / fps + CPU% HUD running.
-    return (double)clock() / (double)CLOCKS_PER_SEC;
+    // KeQueryPerformanceCounter (ACPI timer, ~3.375 MHz) -- pdclib's clock() was
+    // too coarse for frame pacing and useless for the GPU-wait telemetry below.
+    static double inv;
+    if (inv == 0.0) {
+        inv = 1.0 / (double)(int64_t)KeQueryPerformanceFrequency();
+    }
+    return (double)(int64_t)KeQueryPerformanceCounter() * inv;
 }
 
-static void wm_init(const struct GfxWindowInitSettings *settings) {
-    g.width = settings ? settings->width : 640;
-    g.height = settings ? settings->height : 480;
-    g.time0 = nxdk_now();
-    // Phase 0: bring up the NV2A display via pbkit (the native renderer owns the
-    // device; there's no SDL GL window). main() already set a video mode for the
-    // boot trace; pb_init wants to own it, so set it again at our dimensions.
-    XVideoSetMode((int)g.width, (int)g.height, 32, REFRESH_DEFAULT);
+// ---------------------------------------------------------------------------------
+// HD video modes (Milestone 4). The real availability gate is XVideoListModes --
+// nxdk's encoder/AV-pack enumeration (NXDK has no XGetVideoFlags dashboard query;
+// the inert XC_VIDEO_FLAGS scaffold in port/src/video.c is superseded by this).
+// 640x480 is always offered as the guaranteed floor; 1080i can additionally be
+// pinned behind a RAM gate (NXDK_1080I_MIN_MIB, 0 = attempt on a stock 64 MB box --
+// its framebuffers + Z eat ~25 MB of the low-64 MB contiguous pool, so if hardware
+// testing shows texture-alloc failures at 1080i, raise this to ~96 to demand a
+// 128 MB console). Boot default stays 640x480; HD engages only when the user picks
+// it (Extended > Video resolution list / Video.DefaultWidth/Height in pd.ini).
+// ---------------------------------------------------------------------------------
+
+#define NXDK_1080I_MIN_MIB 0
+
+static const struct { int w, h; } nxdk_mode_ladder[] = {
+    { 1920, 1080 }, // 1080i (encoder interlaces on scanout)
+    { 1280,  720 }, // 720p
+    {  640,  480 }, // 480i/480p floor -- always available
+};
+#define NXDK_NUM_LADDER (int)(sizeof(nxdk_mode_ladder) / sizeof(nxdk_mode_ladder[0]))
+
+static int nxdk_avail_modes[NXDK_NUM_LADDER][2];
+static int nxdk_num_avail;
+static int nxdk_pending_w, nxdk_pending_h; // latched mode switch, applied at frame start
+
+static uint32_t nxdk_total_ram_mib(void) {
+    MM_STATISTICS ms;
+    ms.Length = sizeof(ms);
+    if (NT_SUCCESS(MmQueryStatistics(&ms))) {
+        return (uint32_t)(((uint64_t)ms.TotalPhysicalPages * 4096ull) >> 20);
+    }
+    return 64;
+}
+
+// True iff the video encoder + AV pack + dashboard settings can output w x h at
+// 32 bpp (a composite-cable box lists no HD modes, so HD is filtered out there).
+static bool nxdk_encoder_allows(int w, int h) {
+    VIDEO_MODE vm;
+    void *iter = NULL;
+    while (XVideoListModes(&vm, 32, 0, &iter)) {
+        if (vm.width == w && vm.height == h) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void nxdk_build_mode_list(void) {
+    nxdk_num_avail = 0;
+    for (int i = 0; i < NXDK_NUM_LADDER; i++) {
+        const int w = nxdk_mode_ladder[i].w, h = nxdk_mode_ladder[i].h;
+        if (w == 1920 && NXDK_1080I_MIN_MIB && nxdk_total_ram_mib() < NXDK_1080I_MIN_MIB) {
+            continue; // 1080i pinned behind a RAM gate (see above)
+        }
+        if (w != 640 && !nxdk_encoder_allows(w, h)) {
+            continue; // 640x480 is the unconditional floor
+        }
+        nxdk_avail_modes[nxdk_num_avail][0] = w;
+        nxdk_avail_modes[nxdk_num_avail][1] = h;
+        nxdk_num_avail++;
+    }
+    xboxTracef("PDBOOT: video modes available: %d (ram %u MiB)", nxdk_num_avail, nxdk_total_ram_mib());
+}
+
+// Exact-match snap to an available mode; anything unknown falls to 640x480.
+static void nxdk_snap_mode(int w, int h, int *out_w, int *out_h) {
+    for (int i = 0; i < nxdk_num_avail; i++) {
+        if (nxdk_avail_modes[i][0] == w && nxdk_avail_modes[i][1] == h) {
+            *out_w = w; *out_h = h;
+            return;
+        }
+    }
+    *out_w = 640; *out_h = 480;
+}
+
+// Set the encoder mode + bring pbkit up on it. Returns false if pb_init fails
+// (e.g. its framebuffer allocation OOMs at 1080i) -- callers step down the ladder.
+static bool nxdk_video_mode_up(int w, int h) {
+    XVideoSetMode(w, h, 32, REFRESH_DEFAULT);
     int err = pb_init();
     if (err) {
-        xboxTracef("PDBOOT: pb_init FAILED %d", err);
-        return;
+        xboxTracef("PDBOOT: pb_init FAILED %d at %dx%d", err, w, h);
+        return false;
     }
     // pbkit can leave video output disabled after pb_init; re-enable it (matches
     // SDL_render_xgu). If this was off, the scanout would hold stale VRAM and never
@@ -1229,18 +1333,37 @@ static void wm_init(const struct GfxWindowInitSettings *settings) {
     g.width = (uint32_t)pb_back_buffer_width();
     g.height = (uint32_t)pb_back_buffer_height();
     xboxTracef("PDBOOT: pb_init ok %dx%d", (int)g.width, (int)g.height);
+    return true;
+}
+
+static void wm_init(const struct GfxWindowInitSettings *settings) {
+    g.time0 = nxdk_now();
+    nxdk_build_mode_list();
+    // Requested mode = Video.DefaultWidth/Height via video.c (640x480 by default);
+    // snap to an available mode, then walk DOWN the ladder on pb_init failure so an
+    // over-ambitious config can't black-screen the console.
+    int w = 640, h = 480;
+    nxdk_snap_mode(settings ? (int)settings->width : 640,
+                   settings ? (int)settings->height : 480, &w, &h);
+    while (!nxdk_video_mode_up(w, h)) {
+        if (w == 640) {
+            return; // even 480 failed -- boot trace has the pb_init error
+        }
+        pb_kill(); // release the partial init before retrying (best effort)
+        w = (w == 1920) ? 1280 : 640;
+        h = (w == 1280) ? 720 : 480;
+    }
 }
 
 static void wm_close(void) { pb_kill(); }
 
 static int wm_get_display_mode(int modenum, int *out_w, int *out_h) {
-    // TODO(M4): enumerate the Xbox-allowed modes (480i/480p/720p/1080i) filtered by
-    // xboxVideoModeAvailable (video.c). Until wired, advertise just the current mode.
-    if (modenum != 0) {
+    // The filtered HD list, high -> low (videoInitDisplayModes expects that order).
+    if (modenum < 0 || modenum >= nxdk_num_avail) {
         return 0;
     }
-    if (out_w) *out_w = (int)g.width;
-    if (out_h) *out_h = (int)g.height;
+    if (out_w) *out_w = nxdk_avail_modes[modenum][0];
+    if (out_h) *out_h = nxdk_avail_modes[modenum][1];
     return 1;
 }
 
@@ -1250,7 +1373,7 @@ static int wm_get_current_display_mode(int *out_w, int *out_h) {
     return 1;
 }
 
-static int wm_get_num_display_modes(void) { return 1; /* TODO(M4): the filtered HD list */ }
+static int wm_get_num_display_modes(void) { return nxdk_num_avail; }
 
 static int32_t wm_get_fullscreen_state(void) { return 1; /* Xbox is always fullscreen */ }
 static void wm_set_fullscreen_changed_callback(void (*cb)(bool)) { (void)cb; }
@@ -1264,10 +1387,19 @@ static void wm_get_active_window_refresh_rate(uint32_t *rr) { if (rr) *rr = 60; 
 static void wm_set_cursor_visibility(bool visible) { (void)visible; /* no cursor */ }
 
 static void wm_set_closest_resolution(int32_t width, int32_t height, bool should_center) {
+    // In-game resolution pick (videoSetDisplayMode -- the Xbox always reports
+    // fullscreen, so this is the path the menu takes). Snap to an available mode
+    // and LATCH it; the actual pbkit teardown/re-init happens at the top of the
+    // next wm_start_frame, when the previous frame is fully presented and the GPU
+    // drained -- pb_kill mid-frame would strand queued draws. vidWidth/Height are
+    // persisted by video.c, so the choice also sticks for the next boot.
     (void)should_center;
-    g.width = (uint32_t)width;
-    g.height = (uint32_t)height;
-    // TODO(pbkit): switch the NV2A video mode to the closest allowed mode.
+    int w = 640, h = 480;
+    nxdk_snap_mode((int)width, (int)height, &w, &h);
+    if ((uint32_t)w != g.width || (uint32_t)h != g.height) {
+        nxdk_pending_w = w;
+        nxdk_pending_h = h;
+    }
 }
 
 static void wm_set_dimensions(uint32_t width, uint32_t height, int32_t posX, int32_t posY) {
@@ -1328,27 +1460,87 @@ static void nxdk_bind_back_surface(void) {
     pb_end(p);
 }
 
+// CLEAR_SURFACE register + bits, guarded in case an older nv2a_regs.h lacks them.
+#ifndef NV097_SET_ZSTENCIL_CLEAR_VALUE
+#define NV097_SET_ZSTENCIL_CLEAR_VALUE 0x00001D8C
+#endif
+#ifndef NV097_SET_COLOR_CLEAR_VALUE
+#define NV097_SET_COLOR_CLEAR_VALUE 0x00001D90
+#endif
+#ifndef NV097_CLEAR_SURFACE
+#define NV097_CLEAR_SURFACE 0x00001D94
+#endif
+#ifndef NV097_CLEAR_SURFACE_Z
+#define NV097_CLEAR_SURFACE_Z       0x00000001
+#define NV097_CLEAR_SURFACE_STENCIL 0x00000002
+#define NV097_CLEAR_SURFACE_R       0x00000010
+#define NV097_CLEAR_SURFACE_G       0x00000020
+#define NV097_CLEAR_SURFACE_B       0x00000040
+#define NV097_CLEAR_SURFACE_A       0x00000080
+#endif
+#define NXDK_CLEAR_ALL (NV097_CLEAR_SURFACE_Z | NV097_CLEAR_SURFACE_STENCIL \
+    | NV097_CLEAR_SURFACE_R | NV097_CLEAR_SURFACE_G | NV097_CLEAR_SURFACE_B | NV097_CLEAR_SURFACE_A)
+
 static bool wm_start_frame(void) {
+    // Apply a latched video-mode switch here: the previous frame is fully presented
+    // and the GPU drained (wm_swap_buffers_end), so this is the one clean boundary
+    // for a pbkit teardown/re-init. Our own GPU allocations (textures, vertex
+    // arenas) are untouched by pb_kill; the oneshot state (clear rect, texgen,
+    // matrices, scissor) is re-pushed via the reset flag, and nxdk_start_frame
+    // re-establishes the per-frame state as always.
+    if (nxdk_pending_w) {
+        const int nw = nxdk_pending_w, nh = nxdk_pending_h;
+        nxdk_pending_w = 0;
+        xboxTracef("rdr: video mode switch %dx%d -> %dx%d", (int)g.width, (int)g.height, nw, nh);
+        pb_kill();
+        if (!nxdk_video_mode_up(nw, nh)) {
+            pb_kill();
+            nxdk_video_mode_up(640, 480); // ladder floor -- never leave the console dark
+        }
+        g_NxdkOneshotDone = false;
+    }
+
     // Canonical nxdk pbkit double-buffered loop: every frame, wait for vblank, reset the
     // push buffer, target the current back buffer, then explicitly bind it as the render
-    // surface (clip/format/pitch -- see nxdk_bind_back_surface). Then clear depth, clear
-    // colour (the engine clear_framebuffer hook is a no-op here), and wipe the overlay.
+    // surface (clip/format/pitch -- see nxdk_bind_back_surface).
     pb_wait_for_vbl();
     pb_reset();
     pb_target_back_buffer();
     nxdk_bind_back_surface();
-    int w = pb_back_buffer_width();
-    int h = pb_back_buffer_height();
-    pb_erase_depth_stencil_buffer(0, 0, w, h);
-    pb_fill(0, 0, w, h, 0xFF000000); // ARGB black
+    const int w = pb_back_buffer_width();
+    const int h = pb_back_buffer_height();
+    // ONE combined colour+Z+stencil CLEAR_SURFACE instead of pbkit's separate
+    // pb_erase_depth_stencil_buffer + pb_fill (each is its own full-screen clear
+    // pass; the saved pass is real memory bandwidth at 720p/1080i). The clear rect
+    // is pushed per frame -- not in the oneshot -- so a runtime mode switch resizes
+    // it. Values: Z24S8 packs (z << 8) | stencil, so far+0 = 0xFFFFFF00; colour is
+    // opaque black, same as the old pb_fill.
+    uint32_t *p = pb_begin();
+    p = xgu_set_clear_rect_horizontal(p, 0, w);
+    p = xgu_set_clear_rect_vertical(p, 0, h);
+    p = pb_push1(p, NV097_SET_ZSTENCIL_CLEAR_VALUE, 0xFFFFFF00);
+    p = pb_push1(p, NV097_SET_COLOR_CLEAR_VALUE, 0xFF000000);
+    p = pb_push1(p, NV097_CLEAR_SURFACE, NXDK_CLEAR_ALL);
+    pb_end(p);
     pb_erase_text_screen();
     return true;
 }
 static void wm_swap_buffers_begin(void) { /* present happens in swap_buffers_end */ }
+
+// Perf-HUD GPU slot (video.c; <0 = n/a). What we can measure without GPU timestamps
+// is the CPU-side wait for the GPU to drain at present: ~0 when CPU-bound, grows when
+// GPU-bound. Not true GPU frame time, but it is the number that says "the NV2A is the
+// bottleneck" -- exactly what HD-resolution testing needs. Smoothed like cpuFrameMs.
+extern "C" { extern double g_VideoGpuFrameMs; }
+
 static void wm_swap_buffers_end(void) {
     // Drain the GPU and flip the completed back buffer to the front.
+    const double t0 = nxdk_now();
     while (pb_busy()) { }
     while (pb_finished()) { }
+    const double waitms = (nxdk_now() - t0) * 1000.0;
+    g_VideoGpuFrameMs = (g_VideoGpuFrameMs < 0.0) ? waitms
+                                                  : g_VideoGpuFrameMs * 0.9 + waitms * 0.1;
 }
 static double wm_get_time(void) { return nxdk_now() - g.time0; }
 static int32_t wm_get_target_fps(void) { return g.target_fps; }

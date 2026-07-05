@@ -443,9 +443,10 @@ void videoGetMemoryUsage(u32 *used, u32 *total)
 
 #if defined(PLATFORM_NXDK)
 // --- OG Xbox HD video modes (Milestone 4; see docs/PORT_XBOX_NXDK.md) -----------
-// INERT SCAFFOLD: the table + availability gate are ready to feed the display-mode
-// list once a native Xbox window-manager (or nxdk-sdl3's video layer) exists and the
-// renderer draws (M2). Nothing calls these yet.
+// INERT SCAFFOLD, SUPERSEDED: the live implementation is in the native WM
+// (port/fast3d/gfx_nxdk.cpp — mode list via XVideoListModes, the encoder/AV-pack
+// gate NXDK actually exposes, plus the pb_init fallback ladder). Kept only for the
+// XGetVideoFlags documentation trail; still nothing calls these.
 //
 // NXDK has no XGetVideoFlags()/XC_VIDEO_FLAGS_HDTV_* API in any header (the OG-XDK
 // dashboard video-flags surface isn't exposed), so provide local fallbacks: the

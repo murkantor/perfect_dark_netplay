@@ -221,9 +221,9 @@ these as separate commits, not bundled with an unconfirmed fix.
 - **T2 — Silent vertex-arena overflow eats the HUD.** On `vtx_off + nverts*2 >
   vtx_caps` the draw is DROPPED with no trace; HUD/text draw LAST, so a heavy 3D frame
   (8-player MP, explosions) makes the UI flicker out — looks exactly like a text
-  regression. **Fix:** count drops per frame and add `dropped=N` to the `rdr: FRAME`
-  trace (cheap, diagnostic); real fix is growing to 2×~4 MB buffers or a high-water
-  trace to size it honestly.
+  regression. **TELEMETRY SHIPPED:** drops are counted (`g_NxdkVtxDrops`) and reported
+  ~1/s with the all-time high-water mark (`rdr: ARENA OVERFLOW dropped=… hiwater=…`).
+  The real fix (bigger buffers) waits on real high-water numbers from hardware.
 - **T3 — Sticky `tex_is_fb` skips real draws after a framebuffer effect.**
   `nxdk_select_texture_fb` sets the flag; only a real `select_texture(0, …)` clears it
   — but gfx_pc calls `select_texture` only when its `rendering_state.textures[0]`
@@ -248,10 +248,9 @@ these as separate commits, not bundled with an unconfirmed fix.
   point at wrong/freed data. Slow-burn heisenbug. **Fix:** proper free-list (reuse ids
   released by `delete_texture` instead of a monotonically increasing counter); ids
   then never exceed the live-texture count.
-- **T6 — No `sfence` after texture upload.** `t->argb` is write-combined (same as the
-  vertex arena that caused the flicker saga) but `nxdk_upload_texture` never fences;
-  a texture drawn in the same frame it's uploaded can sample stale RAM. **Fix:** one
-  `__asm__ __volatile__("sfence" ::: "memory")` after `nxdk_swizzle_rgba8`.
+- **T6 — No `sfence` after texture upload. FIXED** (fence after `nxdk_swizzle_rgba8`;
+  same WC-store lesson as the vertex arena). Also: texture-alloc OOM now traces
+  (`rdr: TEX ALLOC FAILED WxH`, capped) — watch for it at 1080i.
 - **T7 — WRAP-tiling NPOT textures break in the POT container.** UVs are scaled by
   `us = w/dw`, so `u > 1` wraps over the CONTAINER (incl. the zero padding), not the
   texel region — GL wraps over the real texture. Any non-POT world texture that tiles
@@ -288,9 +287,52 @@ these as separate commits, not bundled with an unconfirmed fix.
   per-vertex UV against the bound on the CPU in `nxdk_draw_triangles` (exact for
   screen-aligned rects, close enough for 3D); the bound floats sit right after each
   UV pair in the layout (`cc->clamp[i][j]`), so the offsets are already computed.
-- **T11 — `nxdk_now()` uses pdclib `clock()`.** Coarse tick resolution → frame-pacing
-  jitter once the renderer is otherwise smooth. **Fix:**
-  `KeQueryPerformanceCounter/Frequency` (already flagged in the code comment).
+- **T11 — `nxdk_now()` uses pdclib `clock()`. FIXED** (`KeQueryPerformanceCounter/
+  Frequency`, ~3.375 MHz ACPI timer) — also feeds the new GPU-wait telemetry.
+
+## HD output (720p / 1080i) + perf work (2026-07-05, NEEDS HARDWARE CONFIRM)
+
+**Video modes (Milestone 4, now live in the WM):** the mode list is
+`{1080i, 720p, 480}` filtered by **`XVideoListModes`** (the encoder/AV-pack/dashboard
+gate — a composite-cable box only lists SD, so HD is filtered out there; this
+supersedes the inert `XGetVideoFlags` scaffold in `port/src/video.c`, which NXDK
+can't implement). 640×480 is the unconditional floor and the **boot default —
+nothing changes unless the user opts in** via Extended > Video (or
+`Video.DefaultWidth/Height` in pd.ini, persisted by video.c).
+
+- **Boot:** requested mode is snapped to the available list; `pb_init` failure walks
+  DOWN the ladder (1080i → 720p → 480) so an over-ambitious config can't
+  black-screen the console.
+- **Runtime switch:** `wm_set_closest_resolution` (the in-game resolution picker)
+  LATCHES the mode; it's applied at the top of the next `wm_start_frame` — the one
+  boundary where the previous frame is presented and the GPU drained — via
+  `pb_kill` → `XVideoSetMode` → `pb_init`, then the oneshot state re-pushes
+  (`g_NxdkOneshotDone` reset). Our own GPU allocations (textures, vertex arenas)
+  survive `pb_kill` untouched. **The runtime switch is the riskiest unproven piece**
+  — it only runs on user action, and a failure falls back to 640×480.
+- **Design note:** this renders **native-res**, diverging from
+  `docs/PORT_XBOX_NXDK.md` M4's "render low, upscale-blit to HD scanout" plan —
+  native is ~zero new code and the CPU vertex path is resolution-independent. If
+  hardware shows 720p/1080i GPU-bound (watch the new GPU-wait number), the doc's
+  lo-res+upscale architecture is the fallback (needs `nxdk_copy_framebuffer`).
+- **1080i risk is MEMORY, not just fillrate:** its framebuffers + Z eat ~25 MB of
+  the low-64 MB contiguous pool that also feeds textures/arenas. Watch for
+  `rdr: TEX ALLOC FAILED` at 1080i; if it OOMs on a stock box, raise
+  `NXDK_1080I_MIN_MIB` (gfx_nxdk.cpp) to ~96 to pin 1080i behind 128 MB consoles.
+  A 16-bpp colour mode (pbkit supports it; `pb_ColorFmt` is already plumbed) is the
+  next lever if 32-bpp 1080i doesn't fit.
+
+**Perf changes shipped alongside:**
+- **Single combined CLEAR_SURFACE** (colour+Z+stencil in one pass) replaces pbkit's
+  separate `pb_erase_depth_stencil_buffer` + `pb_fill` — one full-screen memory pass
+  saved per frame, which is real bandwidth at HD. Clear rect is pushed per frame so
+  mode switches resize it.
+- **GPU-wait telemetry:** `wm_swap_buffers_end` times the present drain into
+  `g_VideoGpuFrameMs` (the perf-HUD GPU%% slot). It's the CPU-side wait for the GPU,
+  not true GPU frame time: ~0 = CPU-bound, growing = GPU-bound. This is THE number
+  to read when judging 720p/1080i viability.
+- **T2 telemetry** (arena drops + high-water), **T6 fix** (texture-upload sfence),
+  **T11 fix** (`KeQueryPerformanceCounter` timing) — see Known traps.
 
 ## Next steps (priority order)
 
@@ -318,7 +360,10 @@ these as separate commits, not bundled with an unconfirmed fix.
 glyph/outline combiner for PD text — see OPEN #3) · `nxdk_apply_texture` ·
 `nxdk_draw_triangles` (**the hot path**: de-interleave + near-clip + divide + bind) ·
 `nxdk_setup_combiner` (register-combiner output, adapted from `SDL_render_xgu`) ·
-`nxdk_start_frame` / `wm_start_frame` / `nxdk_bind_back_surface` (surface clip/format/pitch).
+`nxdk_start_frame` / `wm_start_frame` (mode-switch apply + combined clear) ·
+`nxdk_bind_back_surface` (surface clip/format/pitch) · `nxdk_build_mode_list` /
+`nxdk_snap_mode` / `nxdk_video_mode_up` (HD modes, `XVideoListModes` gate + fallback
+ladder) · `wm_swap_buffers_end` (present drain + GPU-wait telemetry).
 
 ## Other Xbox-touched files (outside fast3d)
 
