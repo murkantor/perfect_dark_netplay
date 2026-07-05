@@ -165,7 +165,11 @@ is visible; (2) walking around a prop keeps it correctly occluded/visible; (3) m
 HUD unchanged; (4) decals (bullet marks, blood) may be patchy — known follow-up
 (ZMODE_DEC needs a polygon-offset equivalent), don't chase it as a regression;
 (5) text: HUD ammo digits + hudmsgs now visible (dark core, coloured glow) — see
-OPEN #3 below for the text-combiner fix shipped in the same build.
+OPEN #3 below for the text-combiner fix shipped in the same build; (6) fences/grates/
+foliage may now show SOLID where they should be see-through — that's trap **T1**
+(missing alpha test), an expected reveal, NOT a depth regression; (7) if HUD/text
+flickers out only in heavy scenes, suspect trap **T2** (silent arena overflow), not
+the text fix.
 
 OPEN / BROKEN:
 1. **Depth fix above unconfirmed on hardware** (everything else depends on it).
@@ -196,6 +200,97 @@ OPEN / BROKEN:
 4. **No sound** (audio subsystem not wired).
 5. **Decals z-fight** (ZMODE_DEC has no polygon offset yet — cosmetic).
 6. **Portal scissor untested** on hardware.
+
+## Known traps (code audit 2026-07-05 — latent, unfixed; each with its fix direction)
+
+Found while root-causing the depth + text bugs. **T1–T2 will surface the moment the
+depth fix lands** — read them before blaming that build. One variable per boot: ship
+these as separate commits, not bundled with an unconfirmed fix.
+
+- **T1 — No alpha test: cutout textures render (and now occlude) solid.** Fences,
+  grates, foliage, railings, chr details use `CVG_X_ALPHA`/threshold cutouts; gfx_pc
+  forwards `texture_edge → use_alpha=true`, but those draws write depth (`Z_UPD`) so
+  the blend gate (`use_alpha && !depth_mask`) disables blending, and no
+  `NV097_SET_ALPHA_TEST_*` is ever programmed — alpha≈0 texels draw solid AND write Z.
+  Dead depth used to let later draws bury the garbage; working depth makes it persist.
+  **Fix:** in `nxdk_set_use_alpha`/`nxdk_update_blend`, when the current shader has
+  `opt_texture_edge || opt_alpha_threshold`, push `xgu_set_alpha_test_enable(true)` +
+  `ALPHA_FUNC = GEQUAL`, `ALPHA_REF ≈ 0x4C` (GL discards at 0.3); disable otherwise.
+  Needs the current CCFeatures at state-set time — cache a pointer in `g` from
+  `load_shader`. *Do this first after the depth confirm.*
+- **T2 — Silent vertex-arena overflow eats the HUD.** On `vtx_off + nverts*2 >
+  vtx_caps` the draw is DROPPED with no trace; HUD/text draw LAST, so a heavy 3D frame
+  (8-player MP, explosions) makes the UI flicker out — looks exactly like a text
+  regression. **Fix:** count drops per frame and add `dropped=N` to the `rdr: FRAME`
+  trace (cheap, diagnostic); real fix is growing to 2×~4 MB buffers or a high-water
+  trace to size it honestly.
+- **T3 — Sticky `tex_is_fb` skips real draws after a framebuffer effect.**
+  `nxdk_select_texture_fb` sets the flag; only a real `select_texture(0, …)` clears it
+  — but gfx_pc calls `select_texture` only when its `rendering_state.textures[0]`
+  cache CHANGES, so after a menu-blur quad the next draws that reuse the previously
+  bound texture are silently skipped until some other texture binds. **Fix:** clear
+  `g.tex_is_fb` in `nxdk_draw_triangles` after a skipped fb draw is flushed — better:
+  clear it in `nxdk_load_shader`/`gfx_flush` boundary equivalents; simplest robust
+  form is clearing it at the END of the skip branch's draw call run, i.e. treat the
+  flag as one-shot per fb bind (set in select_texture_fb, cleared after the first
+  skipped draw batch).
+- **T4 — Texture frees race the queued push buffer.** `nxdk_delete_texture`,
+  `nxdk_new_texture`'s reuse path and `nxdk_upload_texture`'s realloc call
+  `MmFreeContiguousMemory` immediately, but draws referencing that memory can still
+  sit unexecuted in the push buffer (gfx_pc evicts cache entries mid-frame). GL
+  refcounts; here the GPU can DMA freed memory → one-frame garbage on texture-churn
+  spikes. **Fix:** defer frees — push freed pointers onto a per-frame list, drain it
+  in `wm_swap_buffers_end` after `pb_finished()` (two frames of latency to be safe
+  with the double-buffered arena pattern).
+- **T5 — Texture id pool wraps at 8192 into LIVE ids.** `nxdk_new_texture` wraps to 1
+  and frees whatever is there, while gfx_pc's cache still maps old content → old id:
+  after enough churn (long sessions, repeated level loads) random textures/glyphs
+  point at wrong/freed data. Slow-burn heisenbug. **Fix:** proper free-list (reuse ids
+  released by `delete_texture` instead of a monotonically increasing counter); ids
+  then never exceed the live-texture count.
+- **T6 — No `sfence` after texture upload.** `t->argb` is write-combined (same as the
+  vertex arena that caused the flicker saga) but `nxdk_upload_texture` never fences;
+  a texture drawn in the same frame it's uploaded can sample stale RAM. **Fix:** one
+  `__asm__ __volatile__("sfence" ::: "memory")` after `nxdk_swizzle_rgba8`.
+- **T7 — WRAP-tiling NPOT textures break in the POT container.** UVs are scaled by
+  `us = w/dw`, so `u > 1` wraps over the CONTAINER (incl. the zero padding), not the
+  texel region — GL wraps over the real texture. Any non-POT world texture that tiles
+  shows transparent/garbage bands. (POT textures — most of PD — and the 16-texel-wide
+  glyph rows are immune, which is why it hasn't screamed.) **Fix:** when
+  `cms/cmt == WRAP` and the dimension is NPOT, physically REPLICATE the texels across
+  the container in `nxdk_upload_texture` (tile the source until dw/dh is filled) and
+  set us/vs = 1... only exact when dw % w == 0; otherwise fall back to clamping. Or
+  detect that the draw's UV span never exceeds [0,1] (most cases) and use CLAMP.
+- **T8 — Fog is decoded but discarded.** Room draws carry per-vertex fog RGBA
+  (`opt_fog` floats the layout skips); with depth fixed and long sightlines real,
+  unfogged distant rooms will pop bright on big stages. **Fix without shaders:** bind
+  the fog factor/colour to the SECONDARY-colour vertex attribute
+  (`XGU_SECONDARY_COLOR_ARRAY`, currently disabled) and blend it in the FINAL
+  combiner: the E/F/G terms and `SPECULAR_FOG_CW0/1` are already ours — route
+  `out = lerp(combined, fogcolor, fogfactor)` via A=fog.a(secondary alpha),
+  B=fogcolor... the final combiner computes `A*B + (1−A)*C + D`; put fog colour in a
+  constant, combined colour in C, fog alpha in A. Verify against SDL_render_xgu's fog
+  register conventions before trusting.
+- **T9 — `nxdk_combiner_lerp2` assumes flat inputs.** It samples input1/input2 from
+  vertex 0 — correct for PRIM/ENV (per-draw constants), wrong if a 2-texture ≥2-input
+  combiner ever routes SHADE (per-vertex varying) into those slots: the surface goes
+  flat-tinted. No such PD combiner found in the audit, but if a world surface renders
+  flat after the text fix, THIS gate is the suspect. **Fix if it bites:** exclude
+  combiners whose input mapping contains `G_CCMUX_SHADE` from the lerp2 gate (the
+  mapping is in `comb->shader_input_mapping`; would need gfx_pc to expose it — or
+  cheaper, compare input floats of vertex 0 vs vertex 1 and bail to the old path if
+  they differ).
+- **T10 — Shader-clamp bounds (`tm` bits) ignored.** When a CLAMP tile is smaller
+  than the uploaded texture, gfx_pc STRIPS `G_TX_CLAMP` from the sampler, switches to
+  a `SHADER_OPT_TEXEL0_CLAMP_S/T` variant and emits per-vertex clamp bounds the
+  fragment shader must apply — we skip the floats and sample with WRAP: edge bleeding
+  on padded tiles (UI panels, sky, glyph fringes). **Fix (approximation):** clamp the
+  per-vertex UV against the bound on the CPU in `nxdk_draw_triangles` (exact for
+  screen-aligned rects, close enough for 3D); the bound floats sit right after each
+  UV pair in the layout (`cc->clamp[i][j]`), so the offsets are already computed.
+- **T11 — `nxdk_now()` uses pdclib `clock()`.** Coarse tick resolution → frame-pacing
+  jitter once the renderer is otherwise smooth. **Fix:**
+  `KeQueryPerformanceCounter/Frequency` (already flagged in the code comment).
 
 ## Next steps (priority order)
 
