@@ -163,7 +163,9 @@ NEEDS HARDWARE CONFIRM.** The chain:
 What to verify on hardware with this build: (1) a chr/prop standing in front of a wall
 is visible; (2) walking around a prop keeps it correctly occluded/visible; (3) menus/
 HUD unchanged; (4) decals (bullet marks, blood) may be patchy — known follow-up
-(ZMODE_DEC needs a polygon-offset equivalent), don't chase it as a regression.
+(ZMODE_DEC needs a polygon-offset equivalent), don't chase it as a regression;
+(5) text: HUD ammo digits + hudmsgs now visible (dark core, coloured glow) — see
+OPEN #3 below for the text-combiner fix shipped in the same build.
 
 OPEN / BROKEN:
 1. **Depth fix above unconfirmed on hardware** (everything else depends on it).
@@ -173,8 +175,24 @@ OPEN / BROKEN:
    rule that the composite matrix must include the viewport mapping, the earlier
    "radiates from a point" / "zoomed+upside-down" failures make sense and that path may
    finally be tractable: bake clip→screen into the composite and feed raw clip verts.
-3. **Missing font letters** — some glyphs don't render (font atlas / UV-clamp issue,
-   separate from depth).
+3. **Missing font letters — root cause found (code analysis), fix shipped, NEEDS
+   HARDWARE CONFIRM.** Not a font-atlas/UV issue: PD's main text path (`textRender`,
+   `game_1531a0.c` ~2294) is a **2-cycle combiner** — colour `(ENV−PRIM)*TEX1_ALPHA +
+   PRIM`, alpha `TEX0_ALPHA * ENV_ALPHA` — the glyph texture bound to BOTH tiles with
+   two palettes (tile 0 wide coverage, tile 1 tight core): PRIM-coloured halo around an
+   ENV-coloured core. Our combiner flattened every textured draw to `tex0 * input0`
+   where input0 = ENV (fast3d numbers inputs by first appearance; ENV is slot A), so
+   text rendered as a flat ENV-coloured glyph — and HUD/hudmsg/sight strings pass
+   ENV = `0x000000a0` (black glow) → near-invisible dark smudges = "missing letters".
+   (1-cycle PRIM text paths, e.g. `text0f153628`, map fine to `tex0*input0` — which is
+   why only SOME text vanished.) Fix: a third combiner mode `nxdk_combiner_lerp2`
+   (gated on `used_textures[0] && used_textures[1] && num_inputs >= 2`): one general
+   stage computes `rgb = tex0a*C0 + (1−tex0a)*C1`, `a = tex0a * C0a`, with C0 = input1
+   (ENV+alpha), C1 = input2 (PRIM) pulled from vertex 0 (flat per draw) into the
+   combiner FACTOR0/1 constants; tex0's alpha approximates tile 1's (slightly thicker
+   core, visually fine). Verify: HUD ammo digits (dark core + green glow), menu text,
+   hudmsgs. Per-vertex shader-clamp bounds (`tm`/SHADER_OPT_TEXEL0_CLAMP_*) are still
+   ignored — possible minor glyph edge artefacts, separate follow-up.
 4. **No sound** (audio subsystem not wired).
 5. **Decals z-fight** (ZMODE_DEC has no polygon offset yet — cosmetic).
 6. **Portal scissor untested** on hardware.
@@ -201,7 +219,8 @@ OPEN / BROKEN:
 `us/vs` UV scale) · `nxdk_update_blend` (the `use_alpha && !depth_mask` gate) ·
 `nxdk_set_depth_mode` · `nxdk_set_viewport` (identity XY, Z-scale 0xFFFFFF + clip min/max)
 · `nxdk_set_scissor` (portal clip, Y-flip) · `nxdk_vertex_layout` · `nxdk_combiner_mode`
-(unlit vs `2D_PROJECTIVE` textured input combiner) · `nxdk_apply_texture` ·
+(unlit vs `2D_PROJECTIVE` textured input combiner) · `nxdk_combiner_lerp2` (two-constant
+glyph/outline combiner for PD text — see OPEN #3) · `nxdk_apply_texture` ·
 `nxdk_draw_triangles` (**the hot path**: de-interleave + near-clip + divide + bind) ·
 `nxdk_setup_combiner` (register-combiner output, adapted from `SDL_render_xgu`) ·
 `nxdk_start_frame` / `wm_start_frame` / `nxdk_bind_back_surface` (surface clip/format/pitch).

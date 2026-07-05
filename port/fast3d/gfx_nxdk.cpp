@@ -89,7 +89,8 @@ static struct {
     int vtx_frame;                    // which buffer this frame writes to (0/1, toggled per frame)
 
     uint32_t tex_bound[2];            // bound texture id per tile (0 = none)
-    int combiner_textured;            // current combiner mode (-1 unset / 0 unlit / 1 textured)
+    int combiner_textured;            // current combiner mode (-1 unset / 0 unlit / 1 textured / 2 const-lerp)
+    uint32_t combiner_f0, combiner_f1; // constant colours pushed for mode 2 (valid only while mode == 2)
     uint32_t tex_applied;             // texture id last programmed into stage 0 (per-frame cache)
     bool tex_is_fb;                   // tile 0 is bound to a framebuffer (effect) we don't have
 } g;
@@ -487,9 +488,23 @@ static void nxdk_vertex_layout(const struct CCFeatures *cc, int *stride,
     *stride = total;
 }
 
+// Stage-0 colour OCW variants: the product modes (unlit/textured) write A*B to the
+// final-combiner input register (AB_DST = 0x4, as set once by nxdk_setup_combiner);
+// the const-lerp mode computes A*B + C*D, so the SUM must land there instead
+// (SUM_DST = 0x4, AB/CD discarded). Pushed on every mode switch so the modes can't
+// inherit each other's routing.
+#define NXDK_COLOR_OCW(ab_dst, sum_dst) ( \
+    XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_AB_DST, (ab_dst)) \
+    | XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_CD_DST, 0x0) \
+    | XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_SUM_DST, (sum_dst)) \
+    | XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_MUX_ENABLE, 0) \
+    | XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_AB_DOT_ENABLE, 0) \
+    | XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_CD_DOT_ENABLE, 0) \
+    | XGU_MASK(NV097_SET_COMBINER_COLOR_OCW_OP, NV097_SET_COMBINER_COLOR_OCW_OP_NOSHIFT))
+
 // Switch the register combiner between unlit (output = vertex diffuse) and textured
 // (output = tex0 * diffuse). Only the shader-stage program + the colour/alpha input
-// combiner words change; the OCW/control/fog set by nxdk_setup_combiner stay. Tracked so
+// combiner words change; the control/fog set by nxdk_setup_combiner stay. Tracked so
 // a run of same-mode draws doesn't re-push it. ICW masks match SDL_render_xgu's
 // unlit_combiner_apply / texture_combiner_apply.
 static void nxdk_combiner_mode(bool textured) {
@@ -497,6 +512,7 @@ static void nxdk_combiner_mode(bool textured) {
     g.combiner_textured = (int)textured;
     uint32_t *p = pb_begin();
     p = pb_push1(p, NV097_SET_SHADER_OTHER_STAGE_INPUT, 0);
+    p = pb_push1(p, NV097_SET_COMBINER_COLOR_OCW + 0 * 4, NXDK_COLOR_OCW(0x4, 0x0));
     if (textured) {
         p = pb_push1(p, NV097_SET_SHADER_STAGE_PROGRAM,
             XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE0, NV097_SET_SHADER_STAGE_PROGRAM_STAGE0_2D_PROJECTIVE));
@@ -530,6 +546,53 @@ static void nxdk_combiner_mode(bool textured) {
     pb_end(p);
 }
 
+// Const-lerp combiner (mode 2) for PD's two-tone glyph/outline shaders:
+//
+//   rgb = tex0.a * C0.rgb + (1 - tex0.a) * C1.rgb      (one general stage: A*B + C*D)
+//   a   = tex0.a * C0.a
+//
+// PD text (textRender) is a 2-cycle combiner: colour = (ENV - PRIM) * TEX1_ALPHA + PRIM
+// with alpha = TEX0_ALPHA * ENV_ALPHA -- the same glyph texture is bound to both tiles,
+// tile 0 with the wide-coverage palette, tile 1 with the tight-core palette, giving a
+// PRIM-coloured halo around an ENV-coloured core (HUD digits: green glow, dark core).
+// The old tex0*diffuse path flattened that to tex0 * input0 = a flat ENV-coloured glyph;
+// HUD/hudmsg text passes ENV = 0x000000a0 (black glow), so those strings rendered as
+// near-invisible dark smudges -- the "missing font letters". Here C0 = input1 (ENV, with
+// ENV alpha -- fast3d numbers inputs by first appearance, and ENV is combiner slot A),
+// C1 = input2 (PRIM), and tex0's alpha stands in for tile 1's (same glyph, slightly
+// wider coverage ramp -- a marginally thicker core, visually fine). The constants ride
+// the NV2A combiner FACTOR registers; COMBINER_CONTROL is already SAME_FACTOR_ALL.
+static void nxdk_combiner_lerp2(uint32_t f0, uint32_t f1) {
+    if (g.combiner_textured == 2 && g.combiner_f0 == f0 && g.combiner_f1 == f1) { return; }
+    const bool mode_changed = (g.combiner_textured != 2);
+    g.combiner_textured = 2;
+    g.combiner_f0 = f0;
+    g.combiner_f1 = f1;
+    uint32_t *p = pb_begin();
+    p = pb_push1(p, NV097_SET_COMBINER_FACTOR0 + 0 * 4, f0);
+    p = pb_push1(p, NV097_SET_COMBINER_FACTOR1 + 0 * 4, f1);
+    if (mode_changed) {
+        p = pb_push1(p, NV097_SET_SHADER_OTHER_STAGE_INPUT, 0);
+        p = pb_push1(p, NV097_SET_SHADER_STAGE_PROGRAM,
+            XGU_MASK(NV097_SET_SHADER_STAGE_PROGRAM_STAGE0, NV097_SET_SHADER_STAGE_PROGRAM_STAGE0_2D_PROJECTIVE));
+        // Colour: A = tex0 alpha (replicated), B = const0, C = 1 - tex0 alpha, D = const1;
+        // route the SUM (not AB) to the final-combiner input.
+        p = pb_push1(p, NV097_SET_COMBINER_COLOR_OCW + 0 * 4, NXDK_COLOR_OCW(0x0, 0x4));
+        p = pb_push1(p, NV097_SET_COMBINER_COLOR_ICW + 0 * 4,
+            XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_SOURCE, 0x8) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_A_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_SOURCE, 0x1) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_B_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_SOURCE, 0x8) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_C_MAP, 0x1)
+            | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_SOURCE, 0x2) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_ALPHA, 0) | XGU_MASK(NV097_SET_COMBINER_COLOR_ICW_D_MAP, 0x6));
+        // Alpha: A = tex0 alpha, B = const0 alpha (AB_DST 0x4 from nxdk_setup_combiner).
+        p = pb_push1(p, NV097_SET_COMBINER_ALPHA_ICW + 0 * 4,
+            XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_SOURCE, 0x8) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_A_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_SOURCE, 0x1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_B_MAP, 0x6)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_C_MAP, 0x0)
+            | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_SOURCE, 0x0) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_ALPHA, 1) | XGU_MASK(NV097_SET_COMBINER_ALPHA_ICW_D_MAP, 0x0));
+    }
+    pb_end(p);
+}
+
 // Map fast3d's N64 clamp mode to an NV2A texture address mode. cms/cmt are bit flags:
 // G_TX_CLAMP=2, G_TX_MIRROR=1, plain repeat=0. CLAMP wins (fonts/UI need it -- without
 // it glyph quads whose UVs touch the atlas edge wrap to a different glyph -> fragmented
@@ -541,11 +604,17 @@ static XguTextureAddress nxdk_cm_to_xgu(uint32_t cm) {
 }
 
 // Program NV2A texture stage 0 from the bound swizzled texture (A8R8G8B8) and switch the
-// combiner to the textured path, or disable both. Matches SDL_render_xgu's bind.
-static void nxdk_apply_texture(const struct CCFeatures *cc) {
+// combiner to the textured / const-lerp path, or disable both. Matches SDL_render_xgu's
+// bind. lerp2 (with f0/f1) selects the two-constant glyph combiner -- see
+// nxdk_combiner_lerp2.
+static void nxdk_apply_texture(const struct CCFeatures *cc, bool lerp2, uint32_t f0, uint32_t f1) {
     const bool use = cc->used_textures[0] && g.tex_bound[0] && g.tex_bound[0] < NXDK_MAX_TEXTURES
                      && g_NxdkTex[g.tex_bound[0]].argb;
-    nxdk_combiner_mode(use);
+    if (use && lerp2) {
+        nxdk_combiner_lerp2(f0, f1);
+    } else {
+        nxdk_combiner_mode(use);
+    }
     if (use) {
         // Skip re-pushing the texture registers for a run of same-texture draws (fast3d
         // batches by texture) -- 546 re-binds/frame would flood the push buffer.
@@ -658,6 +727,26 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             us = g_NxdkTex[tid].us; vs = g_NxdkTex[tid].vs;
         }
     }
+    // PD's two-tone glyph/outline shaders (both texture tiles + >= 2 constant combiner
+    // inputs, e.g. text: colour = lerp(PRIM -> ENV, tile1 alpha), alpha = tex0a * ENVa)
+    // get the const-lerp combiner. The inputs are flat per draw (prim/env constants
+    // written per-vertex by gfx_pc), so read them once from vertex 0: input1 (ENV +
+    // its alpha) and input2 (PRIM) sit consecutively after color_off. Everything else
+    // keeps the plain tex0 * input0 path. See nxdk_combiner_lerp2 for why (this was
+    // the "missing font letters": HUD text ENV is 0x000000a0, a near-invisible flat
+    // dark glyph under the old path).
+    const bool lerp2 = textured && cc->used_textures[1] && cc->num_inputs >= 2 && color_off >= 0;
+    uint32_t lerp_f0 = 0, lerp_f1 = 0;
+    if (lerp2) {
+        const float *i1 = buf_vbo + color_off;               // input1 rgb(+a): ENV for text
+        const float *i2 = buf_vbo + color_off + color_size;  // input2 rgb: PRIM for text
+        const float a1 = (color_size == 4) ? i1[3] : 1.0f;
+        #define NXDK_F2B(f) ((uint32_t)(((f) < 0.0f ? 0.0f : ((f) > 1.0f ? 1.0f : (f))) * 255.0f + 0.5f))
+        lerp_f0 = (NXDK_F2B(a1) << 24) | (NXDK_F2B(i1[0]) << 16) | (NXDK_F2B(i1[1]) << 8) | NXDK_F2B(i1[2]);
+        lerp_f1 = 0xFF000000u | (NXDK_F2B(i2[0]) << 16) | (NXDK_F2B(i2[1]) << 8) | NXDK_F2B(i2[2]);
+        #undef NXDK_F2B
+    }
+
     // fast3d hands CLIP-space verts and expects the GPU to do BOTH the perspective divide
     // and the near-plane clip. We divide on the CPU (the NV2A rasterises pretransformed
     // screen pixels with no homogeneous clip), so we must clip the near plane ourselves: a
@@ -748,7 +837,7 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     __asm__ __volatile__("sfence" ::: "memory");
 
     NXDK_RTRACE("rdr: deinterleaved");
-    nxdk_apply_texture(cc);
+    nxdk_apply_texture(cc, lerp2, lerp_f0, lerp_f1);
     NXDK_RTRACE("rdr: applied tex");
 
     const uint32_t bstride = NXDK_VTX_FLOATS * sizeof(float);
