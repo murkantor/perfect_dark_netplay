@@ -365,16 +365,22 @@ static void nxdk_update_blend(void) {
 
 static void nxdk_set_depth_mode(bool depth_test, bool depth_update, bool depth_compare,
                                 bool depth_source_prim, uint16_t zmode) {
-    (void)depth_compare; (void)depth_source_prim; (void)zmode;
+    (void)depth_source_prim; (void)zmode;
     g.depth_test = depth_test;
     g.depth_mask = depth_update;
     uint32_t *p = pb_begin();
-    // Depth-tested draws bind 3-component positions (X,Y screen pixels + NDC z in [0,1]);
-    // the viewport Z-scale (nxdk_set_viewport) maps that into the Z24 buffer so the world
-    // and models sort front-to-back. Depth-off draws bind 2 components (z defaults to 0).
+    // Depth-tested draws bind 3-component positions (X,Y screen pixels + Z pre-scaled to
+    // the Z24 range [0,0xFFFFFF] in draw_triangles) so the world and models sort
+    // front-to-back. Depth-off draws bind 2 components (z defaults to 0).
+    //
+    // depth_test with depth_compare OFF means "write z, never reject" (N64 Z_UPD without
+    // Z_CMP); the GL/SDL_GPU backends map that to ALWAYS. With depth rejection now real,
+    // keeping LESS_OR_EQUAL here would wrongly cull those draws. ZMODE_DEC (decals) still
+    // shares LESS_OR_EQUAL -- the reference backends add a polygon offset, which the NV2A
+    // path doesn't do yet (patchy decals are a known cosmetic follow-up, not a blocker).
     p = xgu_set_depth_test_enable(p, depth_test);
     p = xgu_set_depth_mask(p, depth_update);
-    p = xgu_set_depth_func(p, XGU_FUNC_LESS_OR_EQUAL);
+    p = xgu_set_depth_func(p, depth_compare ? XGU_FUNC_LESS_OR_EQUAL : XGU_FUNC_ALWAYS);
     pb_end(p);
     // depth_mask feeds the blend gate (opaque depth-writers must not blend).
     nxdk_update_blend();
@@ -392,16 +398,21 @@ static void nxdk_set_viewport(int x, int y, int width, int height) {
     // pass through untouched. Wrestling the NV2A X/Y viewport scale/offset for clip-space
     // input collapsed the geometry; pre-transforming to screen pixels is deterministic.
     //
-    // DEPTH (Z) is the exception: the fixed-function pipeline still runs the viewport Z
-    // transform + clamp, so map the CPU-supplied NDC z [0,1] -> the Z24 buffer range
-    // [0, 0xFFFFFF] here (offset 0, scale 0xFFFFFF) AND pin the depth clip range to match.
-    // The earlier 3-comp attempt left the clip range at pbkit's default and wrote z values
-    // outside it, so the NV2A clamped every fragment to one depth -> no sorting ("no
-    // effect"). Setting both explicitly removes that unknown.
+    // DEPTH (Z): the NV2A fixed-function pipeline does NOT run SET_VIEWPORT_SCALE/OFFSET
+    // as a vertex transform stage -- the composite matrix is expected to output SCREEN
+    // coordinates including the Z range (xemu models this by applying an INVERSE viewport
+    // to the composite result; the nxdk xgu samples bake a viewport matrix into their
+    // composite). With composite == identity, a viewport Z-scale of 0xFFFFFF never
+    // multiplied anything: the raster received raw NDC z in [0,1], which collapses to ~1
+    // code out of 16.7M in the Z24 buffer -> every depth-tested fragment tied and draws
+    // resolved in submission order (rooms-through-walls, props erased by their own room).
+    // So: draw_triangles pre-scales z to [0, 0xFFFFFF] on the CPU, the viewport Z-scale
+    // stays 1.0 (identity, like X/Y), and the depth clip range is pinned to the same
+    // [0, 0xFFFFFF] (leaving it at pbkit's default clamped every fragment to one depth).
     NXDK_RTRACE("rdr: viewport %d %d %d %d", x, y, width, height);
     uint32_t *p = pb_begin();
     p = xgu_set_viewport_offset(p, 0.0f, 0.0f, 0.0f, 0.0f);
-    p = xgu_set_viewport_scale(p, 1.0f, 1.0f, (float)0xFFFFFF, 1.0f);
+    p = xgu_set_viewport_scale(p, 1.0f, 1.0f, 1.0f, 1.0f);
     p = xgu_set_clip_min(p, 0.0f);
     p = xgu_set_clip_max(p, (float)0xFFFFFF);
     pb_end(p);
@@ -701,8 +712,8 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 const float iw = (v->w != 0.0f) ? 1.0f / v->w : 0.0f;
                 const float ndcx = v->x * iw, ndcy = v->y * iw;
                 float ndcz = v->z * iw;
-                // Clamp NDC depth to [0,1]; the viewport Z-scale (nxdk_set_viewport) maps it
-                // into the Z24 range. Clamping keeps far-plane overshoot from firing the
+                // Clamp NDC depth to [0,1] before the Z24 pre-scale below. Clamping keeps
+                // far-plane overshoot outside the pinned depth clip range from firing the
                 // NV2A's Z clip on these pretransformed verts (which would mangle their XY).
                 ndcz = ndcz < 0.0f ? 0.0f : (ndcz > 1.0f ? 1.0f : ndcz);
                 if (doclip) { // depth-tested draws only -- track the NDC-z span (x1000)
@@ -712,7 +723,14 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 }
                 dst[0] = (ndcx * 0.5f + 0.5f) * vpw + vpx;          // screen x (pixels)
                 dst[1] = (1.0f - (ndcy * 0.5f + 0.5f)) * vph + vpy; // screen y (pixels, flipped)
-                dst[2] = ndcz;                                      // NDC depth [0,1]
+                // Pre-scale depth to the Z24 range ON THE CPU. The fixed-function path
+                // treats the composite output (== our vertex, identity matrices) as
+                // already screen-space, so no viewport Z-scale is ever applied to it --
+                // raw NDC z in [0,1] quantised to a single Z24 code and every
+                // depth-tested draw tied (submission-order rendering: props erased by
+                // their own room's BG, rooms painted through walls). 16777215 = 0xFFFFFF
+                // matches the depth clip range pinned in nxdk_set_viewport.
+                dst[2] = ndcz * 16777215.0f;                        // Z24 depth [0, 0xFFFFFF]
                 dst[3] = 1.0f;
                 dst[4] = v->r; dst[5] = v->g; dst[6] = v->b; dst[7] = v->a;
                 dst[8] = v->s; dst[9] = v->t;
@@ -739,8 +757,8 @@ static void nxdk_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     // SDL_render_xgu's float pos[2]: the NV2A rasterises in screen space with no homogeneous
     // clip. (Binding 4 components ran every vertex through the clip pipeline where z>>w
     // clipped all geometry away.) For depth-tested draws bind 3 components so the per-vertex
-    // screen-space Z (dst[2], NDC z in [0,1]) reaches the Z24 buffer and the world/models
-    // sort front-to-back; depth-off 2D/HUD keeps 2 components (NV2A defaults z=0). Gated, so
+    // screen-space Z (dst[2], pre-scaled to [0,0xFFFFFF]) reaches the Z24 buffer and the
+    // world/models sort front-to-back; depth-off 2D/HUD keeps 2 components (z=0). Gated, so
     // a Z mishap only touches depth-tested geometry, never the proven menu/HUD path.
     xgux_set_attrib_pointer(XGU_VERTEX_ARRAY, XGU_FLOAT, g.depth_test ? 3 : 2, bstride, base);
     xgux_set_attrib_pointer(XGU_COLOR_ARRAY,  XGU_FLOAT, 4, bstride, base + 4);
