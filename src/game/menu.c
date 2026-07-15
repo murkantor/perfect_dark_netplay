@@ -53,6 +53,7 @@
 #include "video.h"
 #include "input.h"
 #include "net/net.h"
+#include "system.h"
 #define BLUR_OFS 10
 #else
 #define BLUR_OFS 30
@@ -2192,7 +2193,11 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 
 			if (menumodel->loaddelay == 0) {
 				if (MENUMODELPARAMS_GET_FILENUM(menumodel->newparams) == 0xffff || MENUMODELPARAMS_HAS_MASTER_HEADBODY(menumodel->newparams)) {
+#ifdef PLATFORM_N64
 					if (MENUMODELPARAMS_HAS_MASTER_HEADBODY(menumodel->newparams)) {
+#else // All in One Mod
+					if (MENUMODELPARAMS_HAS_MASTER_HEADBODY(menumodel->newparams) && MENUMODELPARAMS_GET_FILENUM(menumodel->newparams) != 0xffff) {
+#endif
 						headnum = MENUMODELPARAMS_GET_MASTER_HEADNUM(menumodel->newparams);
 						bodynum = MENUMODELPARAMS_GET_MASTER_BODYNUM(menumodel->newparams);
 					} else {
@@ -4252,6 +4257,13 @@ void menuResetModel(struct menumodel *menumodel, u32 allocationlen, bool allocat
 {
 	menumodel->alloclen = allocationlen;
 	menumodel->allocstart = allocate ? mempAlloc(allocationlen, MEMPOOL_STAGE) : NULL;
+
+#ifndef PLATFORM_N64
+	if (allocate && menumodel->allocstart == NULL) {
+		sysFatalError("out of memory when allocating menu model (len %d)", allocationlen);
+	}
+#endif
+
 	menumodel->loaddelay = 0;
 	menumodel->newparams = MENUMODELPARAMS_SET_FILENUM(0xffff);
 	menumodel->bodymodeldef = NULL;
