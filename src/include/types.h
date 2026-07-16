@@ -1217,7 +1217,7 @@ struct chrdata {
 	s8 actiontype;
 	u8 race;
 	u8 team;
-	s8 headnum;
+	s16 headnum; // s8 on N64; widened for the AIO mod heads (>= 0x80)
 	s16 chrnum;
 	s16 bodynum;
 	u32 hidden;
