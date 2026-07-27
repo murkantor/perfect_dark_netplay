@@ -840,7 +840,11 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
 #endif
 
     if (gl_es) {
+#ifdef PD_ENABLE_VR
+        append_line(vs_buf, &vs_len, "precision highp float;"); // VR (upstream)
+#else
         append_line(vs_buf, &vs_len, "precision mediump float;");
+#endif
     }
 
     if (gl_glsl_version >= 130) {
@@ -1002,7 +1006,11 @@ static struct ShaderProgram* gfx_opengl_create_and_load_new_shader(uint64_t shad
     fs_len += sprintf(fs_buf + fs_len, "#version %s\n", gl_glsl_version_str);
 
     if (gl_es) {
+#ifdef PD_ENABLE_VR
+        append_line(fs_buf, &fs_len, "precision highp float;"); // VR (upstream)
+#else
         append_line(fs_buf, &fs_len, "precision mediump float;");
+#endif
     }
 
     if (gl_glsl_version >= 130) {
@@ -1898,8 +1906,15 @@ static void gfx_opengl_init(void) {
         gl_glsl_version = 300;
         snprintf(gl_glsl_version_str, sizeof(gl_glsl_version_str), "%d es", gl_glsl_version);
     } else if (!gl_core_profile) {
+#ifdef PD_ENABLE_VR
+        // VR (upstream): the compat profile would ask for the lowest version it
+        // can, but GL_OVR_multiview2 is rejected below GLSL 330 — the stereo
+        // vertex shader then fails to compile at boot.
+        gl_glsl_version = 330;
+#else
         // in compat profile we can just request the lowest possible
         gl_glsl_version = 130;
+#endif
         snprintf(gl_glsl_version_str, sizeof(gl_glsl_version_str), "%d", gl_glsl_version);
     } else {
         // otherwise we have to pick a specific version
