@@ -4247,6 +4247,23 @@ extern "C" void gfx_start_frame(void) {
     }
     gfx_prev_dimensions = gfx_current_dimensions;
 
+#ifdef PD_ENABLE_VR
+    // VR DEVIATION (renderer): force MSAA off while the headset is driving.
+    // gfx_msaa_level > 1 sets game_renders_to_framebuffer, routing the world
+    // through an offscreen buffer + a resolve blit — but in VR fb 0 is the
+    // OpenXR swapchain, a layered GL_TEXTURE_2D_ARRAY that glBlitFramebuffer
+    // cannot read. It also makes vr_begin_eye_render attach via
+    // FramebufferTextureMultisampleMultiviewOVR (implicit multisample resolve),
+    // a far less well supported extension than plain multiview. Symptom is a
+    // garbled eye image: quadrants of stale frames, menu/title/gameplay mixed.
+    // Upstream never hits this because its config does not set MSAA; ours does
+    // (pd.ini MSAA=16 is common here). vidMSAA (the SAVED value) is deliberately
+    // left alone — see videoGetMSAA — so the flat exe keeps the user's setting.
+    if (vr_is_initialized()) {
+        gfx_msaa_level = 1;
+    }
+#endif
+
     bool different_size = gfx_current_dimensions.width != gfx_current_game_window_viewport.width ||
                           gfx_current_dimensions.height != gfx_current_game_window_viewport.height;
     if (gfx_framebuffers_enabled && (different_size || gfx_msaa_level > 1)) {

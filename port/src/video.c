@@ -500,8 +500,16 @@ s32 videoGetDisplayModeIndex(void)
 
 s32 videoGetMSAA(void)
 {
+#ifdef PD_ENABLE_VR
+	// VR DEVIATION (shared file): the VR frame path forces gfx_msaa_level to 1
+	// (see gfx_start_frame). Syncing that back into vidMSAA would persist
+	// MSAA=1 into the SHARED pd.ini and silently disable MSAA for the flat exe,
+	// so report the stored value and leave it untouched.
+	return vidMSAA;
+#else
 	vidMSAA = (s32)gfx_msaa_level;
 	return vidMSAA;
+#endif
 }
 
 // VRR (G-Sync/FreeSync) support, Video.VSync = -2: tearing-allowed

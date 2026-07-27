@@ -94,6 +94,18 @@ Other renderer notes:
 - fb 0 becomes the layered swapchain, so `glBlitFramebuffer` cannot read it — upstream's
   `mv_blit` shader path copies via the texture array instead (menu backgrounds, camspy,
   cloak). Kept verbatim, including the Meta-runtime `fb_dst == 25` special case.
+- **MSAA is forced off while VR is active** (`gfx_start_frame`), and this is
+  load-bearing, not an optimisation. `gfx_msaa_level > 1` sets
+  `game_renders_to_framebuffer`, routing the world through an offscreen buffer and a
+  resolve blit that *cannot read the layered swapchain*, and it makes
+  `vr_begin_eye_render` attach via `FramebufferTextureMultisampleMultiviewOVR` instead
+  of plain multiview. Symptom: a garbled eye image — quadrants of stale frames with
+  title, menu and gameplay composited together. Upstream never hits it because its
+  config does not set MSAA; `pd.ini MSAA=16` is common in this fork. This cost a whole
+  session on the previous attempt; **suspects downstream of the resolve path (scissors,
+  stereo offsets, FBO binding, dlcache) will all test clean, because disabling any of
+  them cannot change the outcome.** `vidMSAA` — the value saved to the shared `pd.ini` —
+  is deliberately left untouched so the flat exe keeps the user's MSAA setting.
 - The desktop **mirror window** is a second SDL3 window sharing the GL context; the main
   window is hidden. Upstream drives its mirror from a vendored ImGui toolbar — **not
   ported**; use `gfx_sdl_set_mirror_mode(0..3)` (off / left eye / right eye / SbS)
