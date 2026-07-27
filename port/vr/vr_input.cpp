@@ -49,10 +49,12 @@ XrSpaceLocation spaceLocation;
 float vr_ctrl_velocity[2][3]; // [ctrlIndex][x,y,z]
 bool gIsValveIndex = false;
 
-// PORT DIAGNOSTIC (not upstream): raw OpenXR action-state dump, on by default
-// while VR input is being brought up on real runtimes. Writes to vr_debug.txt
-// only when a state changes. Set Input.VRInputDebug=0 in pd-vr.ini to silence.
-extern "C" int g_VrInputDebug = 1;
+// PORT DIAGNOSTIC (not upstream): raw OpenXR action-state dump + the [VR_PAD]
+// controller-pad trace in port/src/input.c. Writes to vr_debug.txt on state
+// change only. Default OFF now that VR input is runtime-confirmed; flip to 1
+// to debug an input report. This pair is what identified the bool-ABI seam —
+// keep them.
+extern "C" int g_VrInputDebug = 0;
 
 // ===== MANUAL RELOADING =========================
 

@@ -1,8 +1,28 @@
 # Port-only VR (PCVR / OpenXR) — verbatim port of the Alex-LeTux VR mod
 
-**Status: complete port, compile-verified in both configurations. NOT runtime-tested.**
-Both binaries build and link from one tree: `-DUSE_VR=ON` produces the VR exe, the
-normal build is unchanged. Nothing here has been run in a headset yet.
+**Status: RUNTIME-CONFIRMED on hardware (Quest 2 via SteamVR, 2026-07-27) — stereo
+rendering and full motion-controller input both working.** Both binaries build from one
+tree: `-DUSE_VR=ON` produces the VR exe, the normal build is unchanged.
+
+Still unverified: VR + netplay, VR + splitscreen (unsupported), and the finer feel
+systems (per-stage world scale, manual reload, two-hand grip) beyond "input arrives".
+
+### First-run bring-up: four bugs, all ours, none of them what they looked like
+
+| Symptom | Actual cause |
+|---|---|
+| Fatal at boot: `GL_OVR_multiview2 not supported for version 130` | GLSL 330 must be set in **two** places — the static default *and* the runtime assignment in `gfx_opengl_init`. Only one was ported. |
+| Garbled eye image, quadrants of stale frames | `MSAA=16` in the shared `pd.ini` routes rendering through a resolve blit that cannot read the layered swapchain. Now forced off in VR. |
+| No buttons, sticks fine | The pad block was gated on `controlmode == CONTROLMODE_12`; upstream pins that value globally, this fork keeps the user's. |
+| Still no buttons | **The `bool` ABI seam** (see Gotchas). Buttons were reading as *permanently held*, not dead — so no press edge ever fired. |
+
+The recurring trap: **locomotion kept working through all of it**, because `bondwalk.c`
+reads the thumbstick directly via `get_2d_input` rather than through `OSContPad`. It is
+the one input path that touches neither the gate nor the pad, so "sticks work, buttons
+don't" never meant what it appeared to. Two diagnostics each settled in a single run what
+rounds of reasoning could not: `[VR_INPUT_DBG]` (raw OpenXR action state) and `[VR_PAD]`
+(the pad the game actually receives). Both remain in the tree behind `g_VrInputDebug`,
+default off — **turn them on before theorising about any future input report.**
 
 Source: [Alex-LeTux/perfect_dark_VR][vr] (`vr/port`, HEAD `cdcae050c` at port time).
 Common ancestor with this fork: `19541418b`.
@@ -211,9 +231,21 @@ a constant 1/3). Only memory-unsafe code was guarded, minimally:
 
 ## Gotchas
 
-- **`bool` width.** Game TUs (`types.h`) make `bool` an `s32`; renderer/C++ TUs use a
-  1-byte `bool`. Never share a raw `bool` across that seam. `VrIsTitleLegal` is defined
-  as `int32_t` in `gfx_opengl.cpp` for exactly this reason.
+- **`bool` width — this cost four test cycles; read it before adding any VR API.**
+  Game TUs (`types.h`) make `bool` an `s32`; C++ TUs (`port/vr/*.cpp`, the renderer) use
+  a 1-byte `bool`. A C++ function returning `bool` sets only `AL`; a game-C caller that
+  saw `bool` as `s32` reads the whole 32-bit register and gets **garbage in the top 24
+  bits — reliably non-zero, i.e. permanently `true`.** That is what made every VR button
+  read as held down forever, which presents as "buttons do nothing" because the game
+  never sees a press *edge*.
+  **Every C-facing VR function and global therefore uses fixed-width `int`/`int32_t`,
+  never `bool`** — `get_button_state`, `get_2d_input`, `vr_is_initialized`,
+  `vr_begin_frame_and_update_poses`, `vr_end_frame_and_submit`, `vr_configure_resolution`,
+  `vr_restart_with_new_scale`, `vrWaitForRuntime`, `VrWeaponRecoil`, `VrIsTitleLegal`.
+  Note the asymmetry: a `bool` *defined* in game C and read from C++ is safe (the C++ side
+  reads the low byte of a 0/1 word); the reverse is not. Upstream never hits this because
+  it has no game-C/C++ boolean seam of its own — the hazard is created by this fork's
+  `types.h`.
 - **`videoInitDisplayModes` must be non-static under `PD_ENABLE_VR`** — `vr_openxr.cpp`
   calls it after a render-scale change. Easy to miss; it is the last link error you get.
 - **This repo is LF; the VR fork is CRLF.** The Edit tool has CRLF'd files here before —
@@ -235,7 +267,13 @@ movement code.
 
 ## Honest limits
 
-- **No headset has run this build.** Every claim above is "it compiles and links".
+- **Confirmed on hardware:** boots into the headset, stereo renders correctly, and all
+  motion-controller input (triggers, grips, A/B/X/Y, menu, sticks) reaches the game.
+  Quest 2 over SteamVR, 2026-07-27.
+- **Not yet exercised:** everything past "input arrives" — per-stage world scale in real
+  play, manual reload, two-hand grip, motion throwing, the cutscene camera, the VR menu
+  layout retunes. These are ported verbatim but nobody has judged whether they *feel*
+  right.
 - VR + netplay is unverified and has the known hazards tabled above.
 - VR + splitscreen is unsupported.
 - `g_TickRateDiv` defaults to 0 in VR builds — one headset uncaps the tick rate for the
