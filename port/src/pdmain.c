@@ -697,10 +697,19 @@ s32 optionsGetControlMode(s32 mpchrnum); // game/options.h decl (not in this TU'
 
 s32 vrInputVrControlModeActive(void)
 {
-	if (g_Vars.currentplayerstats == NULL) {
-		return 0;
-	}
-	return optionsGetControlMode(g_Vars.currentplayerstats->mpindex) == CONTROLMODE_12;
+	// VR DEVIATION (input): upstream gates this on
+	//   optionsGetControlMode(currentplayerstats->mpindex) == CONTROLMODE_12
+	// but it also force-pins every player's controlmode to CONTROLMODE_12, so
+	// that test is always true there. This fork keeps the user's saved control
+	// style (it lives in the SHARED gamefile, so we must not pin and persist
+	// it), which made the check fail for anyone not on "1.2" and silently
+	// dropped EVERY VR button — locomotion still worked because bondwalk.c
+	// reads the thumbstick directly rather than through OSContPad, which is
+	// what made this look like a controller-binding problem.
+	// The VR controllers are the only input device in a VR build, so "VR is
+	// running" is the condition upstream actually means. Also tolerates a NULL
+	// currentplayerstats: input is polled outside the per-player tick.
+	return vr_init_done && vr_is_initialized();
 }
 
 s32 vrInputIsPaused(void)

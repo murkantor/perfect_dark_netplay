@@ -49,6 +49,11 @@ XrSpaceLocation spaceLocation;
 float vr_ctrl_velocity[2][3]; // [ctrlIndex][x,y,z]
 bool gIsValveIndex = false;
 
+// PORT DIAGNOSTIC (not upstream): raw OpenXR action-state dump, on by default
+// while VR input is being brought up on real runtimes. Writes to vr_debug.txt
+// only when a state changes. Set Input.VRInputDebug=0 in pd-vr.ini to silence.
+extern "C" int g_VrInputDebug = 1;
+
 // ===== MANUAL RELOADING =========================
 
 float gVrReloadPullLocalX = 0.0f;
@@ -545,6 +550,34 @@ XrResult update_vr_controllers(XrTime predicted_time) {
 
         if (gIsValveIndex) {
             XR_TRY(GetActionState(gGripForceAction, handPath, state.grip_force));
+        }
+
+        // PORT DIAGNOSTIC (not upstream): dump raw action state so a dead-button
+        // report can be split into "runtime never bound it" (act=0) versus
+        // "bound and pressed but the game ignored it" (act=1 cur=1). Logs only on
+        // change, so an idle session writes nothing. Remove once VR input is
+        // confirmed working on the target runtimes.
+        if (g_VrInputDebug) {
+            char line[256];
+            snprintf(line, sizeof(line),
+                "h%d sel(a%d c%d) grip(a%d c%d) menu(a%d c%d) A(a%d c%d) B(a%d c%d) "
+                "X(a%d c%d) Y(a%d c%d) tsclick(a%d c%d) ts(a%d %.2f,%.2f)",
+                hand,
+                state.select.isActive, state.select.currentState,
+                state.grip_click.isActive, state.grip_click.currentState,
+                state.menu.isActive, state.menu.currentState,
+                state.button_a.isActive, state.button_a.currentState,
+                state.button_b.isActive, state.button_b.currentState,
+                state.button_x.isActive, state.button_x.currentState,
+                state.button_y.isActive, state.button_y.currentState,
+                state.thumbstick_click.isActive, state.thumbstick_click.currentState,
+                state.thumbstick.isActive,
+                state.thumbstick.currentState.x, state.thumbstick.currentState.y);
+            static char prev[2][256] = {{0}, {0}};
+            if (strcmp(line, prev[hand]) != 0) {
+                snprintf(prev[hand], sizeof(prev[hand]), "%s", line);
+                vr_log("[VR_INPUT_DBG] %s", line);
+            }
         }
     }
 
