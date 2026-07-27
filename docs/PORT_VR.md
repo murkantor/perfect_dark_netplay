@@ -84,8 +84,13 @@ identity, making this byte-identical to upstream; on cached geometry it is what 
 cached rooms stereo separation at all. **If you touch the dlcache matrix, re-check this.**
 
 Other renderer notes:
-- GLSL is raised to 330 in VR builds (multiview needs it; the compat profile would ask
-  for 130).
+- GLSL is raised to 330 in VR builds. **This must be done in TWO places** — the
+  `gl_glsl_version` static default *and* the runtime assignment in `gfx_opengl_init`,
+  where the compat profile otherwise deliberately requests the lowest version it can
+  (130). `GL_OVR_multiview2` is rejected below 330, so missing the second site fails
+  every stereo shader at boot with
+  `error C0210: extension GL_OVR_multiview2 not supported for version 130`.
+  This bit both attempts at this port; it is the first thing to check if VR won't start.
 - fb 0 becomes the layered swapchain, so `glBlitFramebuffer` cannot read it — upstream's
   `mv_blit` shader path copies via the texture array instead (menu backgrounds, camspy,
   cloak). Kept verbatim, including the Meta-runtime `fb_dst == 25` special case.
