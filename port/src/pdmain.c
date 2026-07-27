@@ -682,8 +682,8 @@ void mainLoop(void)
 #ifdef PD_ENABLE_VR
 // VR (upstream, verbatim; docs/PORT_VR.md): OpenXR session entry points.
 extern void vr_initialize();
-extern bool vr_is_initialized();
-extern bool vr_begin_frame_and_update_poses();
+extern s32 vr_is_initialized();
+extern s32 vr_begin_frame_and_update_poses();
 extern void vr_poll_events();
 extern void vr_end_frame_and_submit();
 bool vr_init_done = false;

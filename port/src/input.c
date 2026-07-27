@@ -159,6 +159,8 @@ static f32 gyroDY = 0.f;
 extern bool vr_init_done;         // defined in pdmain.c (game bool == s32; values 0/1 only)
 extern bool vr_leftHasWeapon;     // game-side s32 bool, 0/1
 extern int vr_invert_hands;
+extern int g_VrInputDebug;        // PORT DIAGNOSTIC (vr_input.cpp)
+extern void vr_log(const char *fmt, ...); // vr_log.c
 extern bool vr_grip_for_unarmed;  // game-side s32 bool, 0/1
 int vr_button_R_grip = false;
 int vr_button_L_grip = false;
@@ -1264,7 +1266,32 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		}
 
 		inputChaosDelayApply(idx, npad); // port hook, orthogonal — kept in the VR branch
+
+		// PORT DIAGNOSTIC (not upstream): prove whether this block runs and what
+		// it produces. Logs on change only. [VR_PAD] blk=1 means the VR branch
+		// executed; btn is the mask handed to the game.
+		if (g_VrInputDebug) {
+			static u32 prevbtn = 0xffffffffu;
+			if ((u32)npad->button != prevbtn) {
+				prevbtn = (u32)npad->button;
+				vr_log("[VR_PAD] blk=1 btn=0x%04x trig=%d gripR=%d A=%d B=%d X=%d invert=%d lhw=%d",
+					(u32)npad->button, get_button_state(1, "trigger"), get_button_state(1, "grip"),
+					get_button_state(1, "a"), get_button_state(1, "b"), get_button_state(0, "x"),
+					vr_invert_hands, (int)vr_leftHasWeapon);
+			}
+		}
 		return 0;
+	}
+
+	// The VR branch did NOT run. Log why — this is the single most valuable
+	// fact if buttons are dead, and it is invisible from inside the block.
+	if (g_VrInputDebug && idx == 0) {
+		static int logged = 0;
+		if (logged < 20) {
+			logged++;
+			vr_log("[VR_PAD] blk=0 (VR pad path SKIPPED) gate=%d idx=%d",
+				(int)vrInputVrControlModeActive(), idx);
+		}
 	}
 #endif // PD_ENABLE_VR
 

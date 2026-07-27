@@ -192,7 +192,7 @@ static float sSnapRotOffsetZ = 0.0f;  // roll correction
 static int   sSnapRotAxis    = 0;
 //-------------------------------------------------------------------
 void vrRecoilNotifyShotFired(int handnum);
-extern bool VrWeaponRecoil;
+extern s32 VrWeaponRecoil;
 bool VR_FUNC_SECONDARY = false; // For vr_input.cpp / recoil
 //-----------
 

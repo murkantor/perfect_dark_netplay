@@ -128,7 +128,7 @@ extern "C" {
 bool get_controller_pose(int hand_index, XrPosef* pose);
 
 
-bool get_button_state(int hand_index, const char* button_name);
+int get_button_state(int hand_index, const char* button_name);
 
 /**
  * @brief Gets the 2D value of an input (joystick, trackpad)
@@ -137,7 +137,7 @@ bool get_button_state(int hand_index, const char* button_name);
  * @param value Pointer to the output 2D value
  * @return true if the value is valid, false otherwise
  */
-bool get_2d_input(int hand_index, const char* input_name, XrVector2f* value);
+int get_2d_input(int hand_index, const char* input_name, XrVector2f* value);
 
 #ifdef __cplusplus
 }

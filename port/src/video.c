@@ -25,7 +25,7 @@ extern s32 g_NetDedicatedMode;
 #include "../vr/vr_log.h"
 
 extern float RENDER_SCALE;
-extern bool vr_restart_with_new_scale(float scale);
+extern s32 vr_restart_with_new_scale(float scale);
 static f32 *vidModeScales = NULL;
 #endif
 

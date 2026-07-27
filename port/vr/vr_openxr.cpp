@@ -241,7 +241,7 @@ extern bool WepCanZoom;
 // vr_is_initialized
 // ============================================================================
 
-extern "C" bool vr_is_initialized() {
+extern "C" int vr_is_initialized() {
     return g_vrInitialized;
 }
 
@@ -474,7 +474,7 @@ struct vimode {
 
 extern struct vimode g_ViModes[6];
 
-extern "C" bool vr_configure_resolution() {
+extern "C" int vr_configure_resolution() {
     uint32_t viewCount = 0;
     XrResult r = xrEnumerateViewConfigurationViews(
             g_vrState.instance,
@@ -1245,7 +1245,7 @@ extern "C" void openxr_initialize_vr(JavaVM* vm, jobject activity, ANativeWindow
 #else
 
 
-extern "C" bool vrWaitForRuntime(int waitSeconds) {
+extern "C" int vrWaitForRuntime(int waitSeconds) {
     return vrEnsureDefaultRuntimeRunning();
 }
 
@@ -1433,7 +1433,7 @@ int shaders_build_xr_view(
 // FRAME LIFECYCLE - Begin Frame & Update Poses
 // ============================================================================
 
-extern "C" bool vr_begin_frame_and_update_poses()
+extern "C" int vr_begin_frame_and_update_poses()
 {
     if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE)
         return false;
@@ -1715,7 +1715,7 @@ extern "C" float vrComputeCrosshairParallax(float distanceGameUnits) {
 // FRAME LIFECYCLE - Submit
 // ============================================================================
 
-extern "C" bool vr_end_frame_and_submit()
+extern "C" int vr_end_frame_and_submit()
 {
     if (!g_vrState.sessionRunning || g_vrState.session == XR_NULL_HANDLE)
         return false;
@@ -1798,7 +1798,7 @@ extern "C" void vr_shutdown()
 // ============================================================================
 // Restart VR with new scale
 // ============================================================================
-extern "C" bool vr_restart_with_new_scale(float new_scale) {
+extern "C" int vr_restart_with_new_scale(float new_scale) {
     LOGI("vr_restart_with_new_scale: %.2f -> %.2f", RENDER_SCALE, new_scale);
     RENDER_SCALE = new_scale;
     vr_shutdown();

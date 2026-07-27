@@ -39,7 +39,7 @@ extern int vr_button_R_grip;
 extern int vr_button_L_grip;
 extern bool VrMotionThrowing;
 bool WepCanZoom = false;
-bool VrWeaponRecoil = true;
+int32_t VrWeaponRecoil = true;
 extern "C" bool VrTwoHandsGun(int weaponnum);
 
 // ===== VR CODE EXTENSION WITH FULL CONTROLLER SUPPORT =====
@@ -597,7 +597,7 @@ XrResult update_vr_controllers(XrTime predicted_time) {
 
 
 // Get a button state
-extern "C" bool get_button_state(int hand_index, const char* button_name) {
+extern "C" int get_button_state(int hand_index, const char* button_name) {
     if (hand_index < 0 || hand_index > 1) return false;
 
     //vr_log("[VR_INPUT] get_button_state called: main=%d, button=%s", hand_index, button_name);
@@ -663,7 +663,7 @@ extern "C" bool get_button_state(int hand_index, const char* button_name) {
 }*/
 
 
-extern "C" bool get_2d_input(int hand_index, const char* input_name, XrVector2f* value) {
+extern "C" int get_2d_input(int hand_index, const char* input_name, XrVector2f* value) {
     if (hand_index < 0 || hand_index > 1 || !value) return false;
 
     const auto& state = gControllerStates[hand_index];

@@ -57,7 +57,7 @@ static uint64_t qpc_freq;
 // ============================================================================
 #include "../vr/vr_log.h"
 
-extern "C" bool vrWaitForRuntime(int waitSeconds);
+extern "C" int vrWaitForRuntime(int waitSeconds);
 extern uint32_t VrRecommendedW;
 extern uint32_t VrRecommendedH;
 extern int32_t g_internalRenderWidth;

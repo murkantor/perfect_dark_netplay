@@ -66,7 +66,7 @@ uintptr_t gfxFramebuffer;
 #include "../vr/vr_openxr.h"
 #include "../vr/vr_log.h"
 
-extern "C" bool vr_is_initialized();
+extern "C" int vr_is_initialized();
 void   vr_begin_eye_render();
 void   vr_end_eye_render();
 float* vr_get_eye_proj_mtx(int eye);
@@ -76,7 +76,7 @@ int vr_MpPause = 0;
 static float s_vr_proj_col_major[16] = {};
 extern "C" int vr_get_internal_render_width();
 extern "C" int vr_get_internal_render_height();
-extern "C" bool vr_end_frame_and_submit();
+extern "C" int vr_end_frame_and_submit();
 extern float vr_get_horizontal_fov_offset_ratio(int eye);
 static float g_vr_internal_scale = 1.0f;
 extern "C" void gfx_sdl_get_mirror_dimensions(int* w, int* h);

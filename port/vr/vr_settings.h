@@ -1,3 +1,4 @@
+#include <stdint.h>
 
 #define VR_INI_PATH "pd-vr.ini"
 extern bool VrManualReloading;
@@ -10,7 +11,7 @@ extern float VrStereoCrosshair;
 #define HUD_STEREO_DEPTH_MAX 4.0f
 extern bool VrSeatedMode;
 extern bool VrMotionThrowing;
-extern bool VrWeaponRecoil;
+extern int32_t VrWeaponRecoil;
 #define WORLDSCALE_MIN    0.50f
 #define WORLDSCALE_MAX    1.50f
 extern float VrSetWorldScale;
