@@ -33,6 +33,14 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#ifdef PD_ENABLE_VR
+#include "config.h"
+
+#include <math.h> // VR: for roundf; upstream got it via its platform include chain
+#include "../../port/vr/vr_settings.h"
+
+#define LOGI(...) printf(__VA_ARGS__)
+#endif
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "mpsetups.h"
@@ -63,6 +71,427 @@ struct menudialogdef g_LuaDirectorMenuDialog;
 bool g_NotLoadMod;
 #endif
 
+#ifdef PD_ENABLE_VR
+// VR---------------
+struct menudialogdef gVROptionsMenuDialog;
+//---
+extern f32  inputRumbleGetStrength(s32 playernum);
+extern void inputRumbleSetStrength(s32 playernum, f32 strength);
+//---
+extern bool VRDebugMtxPos;
+extern bool VRDebugMtxPos;
+extern bool VRDebugMtxPos;
+//---
+static char gExtendedGameFovLabel[80];
+extern void vrSettingsSave();
+//---
+#define HUD_STEREO_DEPTH_STEP  0.05f
+#define HUD_STEREO_DEPTH_STEPS ((s32)((HUD_STEREO_DEPTH_MAX - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP))
+//---
+#define WORLDSCALE_STEP   0.01f
+#define WORLDSCALE_STEPS  (s32)((WORLDSCALE_MAX - WORLDSCALE_MIN) / WORLDSCALE_STEP)
+
+//--
+
+
+MenuItemHandlerResult menuhandlerVRSnapTurn(s32 operation, struct menuitem *item, union handlerdata *data) {
+    switch (operation) {
+        case MENUOP_GET:
+            return VrUseSnapTurn ? true : false;
+        case MENUOP_SET:
+            VrUseSnapTurn = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRWorldScale(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    static u8 lastRawValue = 0xFF;
+
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf((VrSetWorldScale - WORLDSCALE_MIN) / WORLDSCALE_STEP);
+            data->slider.value = (u8)roundf((f32)stepIndex / (f32)WORLDSCALE_STEPS * 255.0f);
+            lastRawValue = data->slider.value;
+        }
+            break;
+        case MENUOP_SET:
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+            if (delta != 0) {
+                s32 currentStep = (s32)roundf((VrSetWorldScale - WORLDSCALE_MIN) / WORLDSCALE_STEP);
+                s32 stepDelta = delta > 0 ? 1 : -1;
+                currentStep += stepDelta;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > WORLDSCALE_STEPS) currentStep = WORLDSCALE_STEPS;
+                VrSetWorldScale = WORLDSCALE_MIN + (f32)currentStep * WORLDSCALE_STEP;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+                lastRawValue = data->slider.value;
+            }
+        }
+            break;
+        case MENUOP_GETSLIDERLABEL:
+            sprintf(data->slider.label, "%.2fx", VrSetWorldScale);
+            break;
+    }
+
+    return 0;
+}
+
+
+MenuItemHandlerResult menuhandlerVRWeaponRecoil(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrWeaponRecoil ? true : false;
+        case MENUOP_SET:
+            VrWeaponRecoil = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRMotionThrowing(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrMotionThrowing ? true : false;
+        case MENUOP_SET:
+            VrMotionThrowing = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRSeatedMode(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrSeatedMode ? true : false;
+        case MENUOP_SET:
+            VrSeatedMode = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+
+MenuItemHandlerResult menuhandlerStereoCrosshair(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    static u8 lastRawValue = 0xFF;
+
+    switch (operation)
+    {
+        case MENUOP_GETSLIDER:
+        {
+            s32 stepIndex = (s32)roundf((VrStereoCrosshair - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP);
+            data->slider.value = (u8)roundf((f32)stepIndex * 255.0f / (f32)HUD_STEREO_DEPTH_STEPS);
+            lastRawValue = data->slider.value;
+            break;
+        }
+        case MENUOP_SET:
+        {
+            s32 delta = (s32)data->slider.value - (s32)lastRawValue;
+
+            if (delta != 0)
+            {
+                s32 currentStep = (s32)roundf((VrStereoCrosshair - HUD_STEREO_DEPTH_MIN) / HUD_STEREO_DEPTH_STEP);
+                s32 stepDelta = (delta > 0) ? 1 : -1;
+
+                currentStep += stepDelta;
+                if (currentStep < 0) currentStep = 0;
+                if (currentStep > HUD_STEREO_DEPTH_STEPS) currentStep = HUD_STEREO_DEPTH_STEPS;
+
+                VrStereoCrosshair = HUD_STEREO_DEPTH_MIN + (f32)currentStep * HUD_STEREO_DEPTH_STEP;
+                g_Vars.modifiedfiles |= MODFILE_GAME;
+            }
+
+            lastRawValue = data->slider.value;
+            break;
+        }
+        case MENUOP_GETSLIDERLABEL:
+            sprintf(data->slider.label, "%.2f", VrStereoCrosshair);
+            break;
+    }
+    return 0;
+}
+
+static const char* menutextGameFov(struct menuitem *item)
+{
+
+    snprintf(gExtendedGameFovLabel, sizeof(gExtendedGameFovLabel),
+             "Default FOV for your VR Headset is %d\n", (s32)XrFov);
+
+    return gExtendedGameFovLabel;
+}
+
+
+static MenuItemHandlerResult menuhandlerFieldOfView(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+            data->slider.value = g_PlayerExtCfg[g_ExtMenuPlayer].fovy + 0.5f;
+            break;
+        case MENUOP_SET:
+            if (data->slider.value >= 15) {
+                g_PlayerExtCfg[g_ExtMenuPlayer].fovy = data->slider.value;
+                if (g_PlayerExtCfg[g_ExtMenuPlayer].fovzoom) {
+                    g_PlayerExtCfg[g_ExtMenuPlayer].fovzoommult = g_PlayerExtCfg[g_ExtMenuPlayer].fovy / XrFov;
+                    playerClampGunZoomFovY(g_ExtMenuPlayer);
+                }
+            }
+            break;
+    }
+
+    return 0;
+}
+
+
+// VR Vibration (from optionsmenu.c)
+MenuItemHandlerResult menuhandlerVRVibration(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GETSLIDER:
+            data->slider.value = inputRumbleGetStrength(g_ExtMenuPlayer) * 10.f + 0.5f;
+            break;
+        case MENUOP_SET:
+            inputRumbleSetStrength(g_ExtMenuPlayer, (f32)data->slider.value / 10.f);
+            break;
+//        case MENUOP_CHECKHIDDEN: // VR
+        case MENUOP_CHECKDISABLED:
+            if (!inputRumbleSupported(g_ExtMenuPlayer)) {
+                return true;
+            }
+            break;
+    }
+
+    return 0;
+}
+
+
+
+
+
+MenuItemHandlerResult menuhandlerVRLaserDotForAll(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrlaserDotForALL ? true : false;
+        case MENUOP_SET:
+            VrlaserDotForALL = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+MenuItemHandlerResult menuhandlerVRManualReloading(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VrManualReloading ? true : false;
+        case MENUOP_SET:
+            VrManualReloading = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+
+MenuItemHandlerResult menuhandlerVRDebugMtxPos(s32 operation, struct menuitem *item, union handlerdata *data)
+{
+    switch (operation) {
+        case MENUOP_GET:
+            return VRDebugMtxPos ? true : false;
+        case MENUOP_SET:
+            VRDebugMtxPos = data->checkbox.value ? true : false;
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+            break;
+    }
+
+    return 0;
+}
+
+MenuDialogHandlerResult menudialogVROptions(s32 operation, struct menudialogdef *dialogdef, union handlerdata *data)
+{
+    if (operation == MENUOP_CLOSE) {
+        vrSettingsSave();
+    }
+    return 0;
+}
+
+
+struct menuitem gVROptionsMenuItems[] = {
+
+//        {
+//                // Debug Matrix Position
+//                MENUITEMTYPE_CHECKBOX,
+//                0,
+//                MENUITEMFLAG_LITERAL_TEXT,
+//                (uintptr_t)"VRDebugMtxPos",
+//                0,
+//                menuhandlerVRDebugMtxPos,
+//        },
+
+    {
+        MENUITEMTYPE_LABEL,
+        0,
+        MENUITEMFLAG_SELECTABLE_CENTRE,
+        (uintptr_t)menutextGameFov,
+        0,
+        NULL,
+        },
+
+        // FOV from optionmenu
+        {
+        MENUITEMTYPE_SLIDER,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Vert FOV",
+        170,
+        menuhandlerFieldOfView,
+        },
+
+        {
+        MENUITEMTYPE_SEPARATOR,
+        0,
+        0,
+        0,
+        0,
+        NULL,
+        },
+
+        // VR Slider Crosshair/Menu/HUD distance
+        {
+        MENUITEMTYPE_SLIDER,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"HUD/Crosshair Depth",
+        0xff,
+        menuhandlerStereoCrosshair,
+        },
+
+        // VR World Scale
+        {
+        MENUITEMTYPE_SLIDER,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"World Scale",
+        0xff,
+        menuhandlerVRWorldScale
+        },
+
+        // VR Weapon Recoil
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Weapon Recoil",
+        0,
+        menuhandlerVRWeaponRecoil,
+        },
+
+        // VR Motion Throwing
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Motion Combat & Throwing",
+        0,
+        menuhandlerVRMotionThrowing,
+        },
+
+        // Lasers for all weapons
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Lasers for all weapons",
+        0,
+        menuhandlerVRLaserDotForAll,
+        },
+
+        // VR Seated Mode
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Seated Mode",
+        0,
+        menuhandlerVRSeatedMode,
+        },
+
+        {
+            MENUITEMTYPE_CHECKBOX,
+            0,
+            MENUITEMFLAG_LITERAL_TEXT,
+            (uintptr_t)"Snap Turn",
+            0,
+            menuhandlerVRSnapTurn,
+        },
+
+        // Manual Reloading
+        {
+        MENUITEMTYPE_CHECKBOX,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Manual Reloading [WIP]Only Falcon2",
+        0,
+        menuhandlerVRManualReloading,
+        },
+
+        // VR Vibration
+        {
+        MENUITEMTYPE_SLIDER,
+        0,
+        MENUITEMFLAG_LITERAL_TEXT,
+        (uintptr_t)"Controllers vibration",
+        10,
+        menuhandlerVRVibration,
+        },
+
+        // SEPARATOR + Back
+        {
+        MENUITEMTYPE_SEPARATOR,
+        0,
+        0,
+        0x000000c8,
+        0,
+        NULL,
+        },
+        {
+        MENUITEMTYPE_SELECTABLE,
+        0,
+        MENUITEMFLAG_SELECTABLE_CLOSESDIALOG,
+        L_OPTIONS_219,   // "Back"
+        0,
+        NULL,
+        },
+        { MENUITEMTYPE_END },
+};
+
+struct menudialogdef gVROptionsMenuDialog = {
+        MENUDIALOGTYPE_DEFAULT,
+        (uintptr_t)"Virtual Reality",
+        gVROptionsMenuItems,
+        menudialogVROptions,
+        MENUDIALOGFLAG_LITERAL_TEXT,
+        NULL,
+};
+// ======================================
+#endif
 char *menuTextCurrentStageName(struct menuitem *item)
 {
 	sprintf(g_StringPointer, "%s\n", langGet(g_SoloStages[g_MissionConfig.stageindex].name3));
@@ -99,6 +528,61 @@ u16 g_ControlStyleOptions[] = {
 	L_OPTIONS_246, // "2.4"
 };
 
+#ifdef PD_ENABLE_VR
+MenuItemHandlerResult menuhandlerControlStyleImpl(s32 operation, struct menuitem *item, union handlerdata *data, s32 mpindex) // VR
+{
+    // Display index 0 -> control mode 1 (VR-1) 1.2
+    // Display index 1 -> control mode 8 (VR-2) PC Ext
+    static const s32 vrModes[] = { 1, 8 };
+
+    if (g_Vars.coopplayernum >= 0 || g_Vars.antiplayernum >= 0) {
+        mpindex = g_Vars.currentplayerstats->mpindex;
+    }
+
+    switch (operation) {
+        case MENUOP_GETOPTIONCOUNT:
+            data->list.value = 1;  // only VR-1. (VR-2 is not used).
+            break;
+        case MENUOP_GETOPTGROUPCOUNT:
+            data->list.value = 1;
+            break;
+        case MENUOP_GETOPTIONTEXT:
+            if (data->list.value == 0) {
+                return (uintptr_t) "VR-1";
+            } else {
+                return (uintptr_t) "VR-2";
+            }
+        case MENUOP_GETOPTGROUPTEXT:
+            return (uintptr_t) "VR";
+        case MENUOP_GETGROUPSTARTINDEX:
+            data->list.groupstartindex = 0; // one groupe, start at 0
+            break;
+        case MENUOP_SET: {
+            s32 actualMode = vrModes[data->list.value];
+            optionsSetControlMode(mpindex, actualMode);
+            g_Vars.modifiedfiles |= MODFILE_GAME;
+#ifndef PLATFORM_N64
+            g_PlayerExtCfg[mpindex & 3].extcontrols = (actualMode == CONTROLMODE_PC);
+#endif
+            break;
+        }
+        case MENUOP_GETSELECTEDINDEX: {
+            s32 currentMode = optionsGetControlMode(mpindex);
+            // Reverse map : mode 8 -> display 1, else -> display 0
+            data->list.value = (currentMode == 8) ? 1 : 0;
+            g_Menus[g_MpPlayerNum].main.mpindex = mpindex;
+            break;
+        }
+        case MENUOP_LISTITEMFOCUS:
+            if (g_MenuData.root == MENUROOT_MAINMENU) {
+                g_Menus[g_MpPlayerNum].main.controlmode = vrModes[data->list.value];
+            }
+            break;
+    }
+
+    return 0;
+}
+#else
 MenuItemHandlerResult menuhandlerControlStyleImpl(s32 operation, struct menuitem *item, union handlerdata *data, s32 mpindex)
 {
 	u16 categories[] = {
@@ -152,6 +636,7 @@ MenuItemHandlerResult menuhandlerControlStyleImpl(s32 operation, struct menuitem
 
 	return 0;
 }
+#endif
 
 MenuItemHandlerResult menuhandler001024dc(s32 operation, struct menuitem *item, union handlerdata *data)
 {
@@ -180,6 +665,10 @@ MenuItemHandlerResult menuhandlerReversePitch(s32 operation, struct menuitem *it
 	}
 
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+        case MENUOP_CHECKHIDDEN:
+            return true;  // VR hide
+#endif
 	case MENUOP_GET:
 		return !optionsGetForwardPitch(mpchrnum);
 	case MENUOP_SET:
@@ -392,6 +881,10 @@ MenuItemHandlerResult menuhandlerLookAhead(s32 operation, struct menuitem *item,
 	}
 
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+        case MENUOP_CHECKHIDDEN:
+            return true;  // VR hide
+#endif
 	case MENUOP_GET:
 		return optionsGetLookAhead(mpchrnum);
 	case MENUOP_SET:
@@ -663,6 +1156,10 @@ MenuItemHandlerResult menuhandlerAutoAim(s32 operation, struct menuitem *item, u
 	}
 
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+        case MENUOP_CHECKHIDDEN:
+            return true;  // VR hide
+#endif
 	case MENUOP_GET:
 		return optionsGetAutoAim(mpchrnum);
 	case MENUOP_SET:
@@ -3389,6 +3886,7 @@ struct menudialogdef g_CiDisplayPlayer2MenuDialog = {
 };
 
 struct menuitem g_MissionControlOptionsMenuItems[] = {
+#ifndef PD_ENABLE_VR // VR hide, "Controle Style"
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3397,6 +3895,7 @@ struct menuitem g_MissionControlOptionsMenuItems[] = {
 		(uintptr_t)&func0f105664,
 		menuhandlerControlStyle,
 	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -3545,6 +4044,7 @@ struct menudialogdef g_CiControlOptionsMenuDialog2 = {
 #endif
 
 struct menuitem g_CiControlOptionsMenuItems[] = {
+#ifndef PD_ENABLE_VR // VR hide : "Controle Style"
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3553,6 +4053,7 @@ struct menuitem g_CiControlOptionsMenuItems[] = {
 		(uintptr_t)&func0f105664,
 		(void *)&g_CiControlStyleMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -3622,6 +4123,7 @@ struct menudialogdef g_CiControlOptionsMenuDialog = {
 };
 
 struct menuitem g_CiControlPlayer2MenuItems[] = {
+#ifndef PD_ENABLE_VR // VR hide : "Controle Style"
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3630,6 +4132,7 @@ struct menuitem g_CiControlPlayer2MenuItems[] = {
 		(uintptr_t)&func0f1056a0,
 		(void *)&g_CiControlStylePlayer2MenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_CHECKBOX,
 		0,
@@ -3793,6 +4296,16 @@ struct menuitem g_SoloMissionOptionsMenuItems[] = {
 		0,
 		(void *)&g_AudioOptionsMenuDialog,
 	},
+#ifdef PD_ENABLE_VR
+        {
+                MENUITEMTYPE_SELECTABLE, // VR Menu
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Virtual Reality",
+                0,
+                (void *)&gVROptionsMenuDialog,
+        },
+#else
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3801,6 +4314,7 @@ struct menuitem g_SoloMissionOptionsMenuItems[] = {
 		0,
 		(void *)&g_VideoOptionsMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3967,6 +4481,16 @@ struct menuitem g_CiOptionsMenuItems[] = {
 		1,
 		(void *)&g_AudioOptionsMenuDialog,
 	},
+#ifdef PD_ENABLE_VR
+        {
+                MENUITEMTYPE_SELECTABLE,
+                0,
+                MENUITEMFLAG_SELECTABLE_OPENSDIALOG | MENUITEMFLAG_BIGFONT | MENUITEMFLAG_LITERAL_TEXT,
+                (uintptr_t)"Virtual Reality",
+                0,
+                (void *)&gVROptionsMenuDialog,
+        },
+#else
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3975,6 +4499,7 @@ struct menuitem g_CiOptionsMenuItems[] = {
 		2,
 		(void *)&g_VideoOptionsMenuDialog,
 	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -4233,7 +4758,11 @@ void func0f105948(s32 weaponnum)
 		g_Menus[g_MpPlayerNum].menumodel.newrotx = gunconfig[useindex][3];
 		g_Menus[g_MpPlayerNum].menumodel.currotx = gunconfig[useindex][3];
 
+#ifdef PD_ENABLE_VR
+        menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, gunconfig[useindex][4] / 1.3, MENUMODELFLAG_HASSCALE); // VR
+#else
 		menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, gunconfig[useindex][4], MENUMODELFLAG_HASSCALE);
+#endif
 
 		g_Menus[g_MpPlayerNum].menumodel.curscale = 0;
 		g_Menus[g_MpPlayerNum].menumodel.partvisibility = weapon->partvisibility;
@@ -4257,7 +4786,11 @@ void func0f105948(s32 weaponnum)
 			g_Menus[g_MpPlayerNum].menumodel.partvisibility = NULL;
 			g_Menus[g_MpPlayerNum].menumodel.removingpiece = false;
 
+#ifdef PD_ENABLE_VR
+            menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, 0.3f, MENUMODELFLAG_HASSCALE); // VR
+#else
 			menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, 0, 0, 0, 0, 0, 0, 1, MENUMODELFLAG_HASSCALE);
+#endif
 
 			g_Menus[g_MpPlayerNum].menumodel.rottimer60 = TICKS(60);
 			g_Menus[g_MpPlayerNum].menumodel.zoomtimer60 = TICKS(120);
@@ -4275,8 +4808,15 @@ MenuDialogHandlerResult inventoryMenuDialog(s32 operation, struct menudialogdef 
 	if (operation == MENUOP_TICK) {
 		if (g_Menus[g_MpPlayerNum].curdialog && g_Menus[g_MpPlayerNum].curdialog->definition == dialogdef) {
 			g_Menus[g_MpPlayerNum].menumodel.zoomtimer60 -= g_Vars.diffframe60;
+#ifdef PD_ENABLE_VR
+            // Accumuler la rotation via delta frame plutôt que valeur absolue
+            f32 deltaRoty = (18.849555969238f / (20.0f * 60.0f)) * g_Vars.diffframe60;
+            g_Menus[g_MpPlayerNum].menumodel.curroty += deltaRoty;
+            g_Menus[g_MpPlayerNum].menumodel.newroty  = g_Menus[g_MpPlayerNum].menumodel.curroty;
+#else
 			g_Menus[g_MpPlayerNum].menumodel.newroty = 18.849555969238f * g_20SecIntervalFrac;
 			g_Menus[g_MpPlayerNum].menumodel.curroty = 18.849555969238f * g_20SecIntervalFrac;
+#endif
 			g_Menus[g_MpPlayerNum].menumodel.currotz = 0;
 			g_Menus[g_MpPlayerNum].menumodel.newrotz = 0;
 

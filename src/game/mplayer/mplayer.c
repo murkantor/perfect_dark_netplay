@@ -41,6 +41,10 @@
 #include "mod.h"
 #endif
 
+#ifdef PD_ENABLE_VR
+extern bool vr_dl_is_pause_or_menu; // VR
+extern int vr_MpPause; // VR
+#endif
 // bss
 struct chrdata *g_MpAllChrPtrs[MAX_MPCHRS];
 struct mpchrconfig *g_MpAllChrConfigPtrs[MAX_MPCHRS];
@@ -135,6 +139,44 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 
 #ifndef PLATFORM_N64
 
+#ifdef PD_ENABLE_VR
+
+// VR: upstream raises the default vertical FOV from 60 to 110 (replaced by the
+// headset's XrFov in VrApplySettingsOnStart once the session is up).
+// VR DEVIATION (shared file): gunfovy is the port-only Gun FOV feature, which
+// upstream has no equivalent of — it overrides the viewmodel pass with its own
+// symmetric viPerspectiveFov (bondgun.c `usegunfov`), which would fight the
+// per-eye asymmetric XR projection. It is NOT an absolute FOV: bondgun.c maps
+// it in tan space relative to a 60 baseline, so "gunfovy == fovy" does not mean
+// "gun drawn at eye FOV" (110 against a ~100 XrFov renders the gun at ~142).
+// Below 5 the whole feature is off (usegunfov false, bgunGetRenderFovY falls
+// back to PLAYER_DEFAULT_FOV so the position offsets collapse to zero), which
+// is exactly upstream's viewmodel — so VR defaults it off instead of tracking
+// fovy. The flat default (60) is untouched below.
+#define PLAYER_EXT_CFG_DEFAULT { \
+	.fovy = 110.f, \
+	.fovzoommult = 1.f, \
+	.fovzoom = true, \
+	.gunfovy = 0.f, \
+	.mouseaimmode = MOUSEAIM_CLASSIC, \
+	.mouseaimspeedx = 0.7f, \
+	.mouseaimspeedy = 0.7f, \
+	.radialmenuspeed = 4.f, \
+	.crosshairsway = 1.0f, \
+	.crouchmode = CROUCHMODE_TOGGLE_ANALOG, \
+	.extcontrols = true, \
+	.crosshaircolour = 0x00ff0028, \
+	.crosshairsize = 2, \
+	.crosshairedgeboundary = 0.7f, \
+	.crosshairhealth = CROSSHAIR_HEALTH_OFF, \
+	.crosshairforceclassic = false, \
+	.crosshairhideunlessaiming = false, \
+	.crosshairuniversal = false, \
+	.usereloads = false, \
+}
+
+#else
+
 #define PLAYER_EXT_CFG_DEFAULT { \
 	.fovy = 60.f, \
 	.fovzoommult = 1.f, \
@@ -156,6 +198,8 @@ struct mpweapon g_MpWeapons[NUM_MPWEAPONS] = {
 	.crosshairuniversal = false, \
 	.usereloads = false, \
 }
+
+#endif
 
 struct extplayerconfig g_PlayerExtCfg[MAX_LOCAL_PLAYERS] = { 
 	PLAYER_EXT_CFG_DEFAULT,
@@ -813,11 +857,19 @@ void mpPlayerSetDefaults(s32 playernum, bool autonames)
 
 	func0f187fbc(playernum);
 
+#ifdef PD_ENABLE_VR
+	g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_12; // VR
+#else
 	g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_11;
+#endif
 
 #ifndef PLATFORM_N64
 	if (g_PlayerExtCfg[playernum % MAX_LOCAL_PLAYERS].extcontrols) {
+#ifdef PD_ENABLE_VR
+		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_12; // VR
+#else
 		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_PC;
+#endif
 	}
 #endif
 
@@ -1839,6 +1891,10 @@ s32 mpGetWeaponSet(void)
 
 bool mpIsPaused(void)
 {
+#ifdef PD_ENABLE_VR
+	vr_MpPause = 1;
+	vr_dl_is_pause_or_menu = true; // VR
+#endif
 	if (PLAYERCOUNT() == 1
 			&& g_Vars.mplayerisrunning
 			&& g_Menus[g_Vars.currentplayerstats->mpindex].curdialog) {
@@ -1846,6 +1902,10 @@ bool mpIsPaused(void)
 	}
 
 	if (g_MpSetup.paused == PAUSEMODE_UNPAUSED) {
+#ifdef PD_ENABLE_VR
+		vr_dl_is_pause_or_menu = false; // VR
+		vr_MpPause = 0;
+#endif
 		return false;
 	}
 
@@ -4452,7 +4512,11 @@ void mpplayerfileLoadWad(s32 playernum, struct savebuffer *buffer, s32 arg2)
 #ifndef PLATFORM_N64
 	// override with PC controls if enabled in the config
 	if (g_PlayerExtCfg[playernum % MAX_LOCAL_PLAYERS].extcontrols) {
+#ifdef PD_ENABLE_VR
+		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_12; // VR
+#else
 		g_PlayerConfigsArray[playernum].controlmode = CONTROLMODE_PC;
+#endif
 	}
 #endif
 
@@ -4591,7 +4655,11 @@ void mpplayerfileSaveWad(s32 playernum, struct savebuffer *buffer)
 #else
 	// PC control mode is enabled in the .ini to avoid changing the save structure
 	const u32 controlmode = g_PlayerConfigsArray[playernum].controlmode;
+#ifdef PD_ENABLE_VR
+	savebufferOr(buffer, ((controlmode == CONTROLMODE_12) ? CONTROLMODE_12 : controlmode), 2); // VR
+#else
 	savebufferOr(buffer, ((controlmode == CONTROLMODE_PC) ? CONTROLMODE_11 : controlmode), 2);
+#endif
 #endif
 
 	savebufferOr(buffer, g_PlayerConfigsArray[playernum].options, 12);

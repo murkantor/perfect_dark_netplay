@@ -1,4 +1,9 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include <math.h> // VR (upstream)
+#endif
+
 #include "constants.h"
 #include "game/quaternion.h"
 #include "game/game_0b2150.h"
@@ -20,6 +25,11 @@
 #include "game/artifact.h"
 #include "game/player.h"
 #include "game/cheats.h"
+#endif
+
+#ifdef PD_ENABLE_VR
+// VR (upstream)
+extern float XrAspect;
 #endif
 
 #define SKYABS(val) (val >= 0.0f ? (val) : -(val))
@@ -2651,6 +2661,17 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 				g_SunScreenXPositions[i] = (g_SunPositions[i].f[0] / g_SunPositions[i].f[2] + 1.0f) * 0.5f * viewwidthf + viewleftf;
 				g_SunScreenYPositions[i] = (-g_SunPositions[i].f[1] / g_SunPositions[i].f[2] + 1.0f) * 0.5f * viewheightf + viewtopf;
 				radius = 60.0f / viGetFovY() * sun->texture_size;
+
+#ifdef PD_ENABLE_VR
+				{
+					// VR (upstream): high-FOV sun fix — normalize the sun disk
+					// screen size to make it FOV-independent
+					const float kFovRefDeg = 60.0f;
+					const float corr = tanf(0.5f * kFovRefDeg * (float)M_PI / 180.0f)
+							/ tanf(0.5f * viGetFovY() * (float)M_PI / 180.0f);
+					radius *= corr;
+				}
+#endif
 				onscreen = false;
 
 				if (g_SunScreenXPositions[i] >= viewleftf - radius
@@ -2769,7 +2790,11 @@ Gfx *skyRenderSuns(Gfx *gdl, bool xray)
 					sp12c[1] = radius * 0.50f;
 
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+					sp12c[0] *=  XrAspect / videoGetAspect(); // VR (upstream)
+#else
 					sp12c[0] *=  SCREEN_ASPECT / videoGetAspect();
+#endif
 #endif
 
 					func0f0b2150(&gdl, sp134, sp12c, g_TexLightGlareConfigs[5].width, g_TexLightGlareConfigs[5].height, 0, 1, 1, 1, 0, 1);
@@ -2856,7 +2881,19 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 	fovy = viGetFovY();
 
 	gDPSetEnvColor(gdl++, 0xff, 0xff, 0xff, (s32) (alphafrac * intensityfrac * 255.0f));
+#ifdef PD_ENABLE_VR
+	{
+		// VR (upstream): high-FOV sun fix — normalize the central sprite size
+		// to a constant pixel size regardless of FOV
+		const float kFovRefDeg = 60.0f;
+		const float corr = tanf(0.5f * kFovRefDeg * (float)M_PI / 180.0f)
+				/ tanf(0.5f * fovy * (float)M_PI / 180.0f);
+
+		f2 = (s32)((size * (0.5f + 0.5f * intensityfrac)) * corr);
+	}
+#else
 	f2 = ((s32) ((60.0f / fovy) * (size * (0.5f + (0.5f * intensityfrac)))));
+#endif
 
 	sp17c[0] = x;
 	sp17c[1] = y;
@@ -2864,7 +2901,11 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 	sp174[0] = f2 * 0.5f * scale;
 
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+	sp174[0] *=  XrAspect / videoGetAspect(); // VR (upstream)
+#else
 	sp174[0] *=  SCREEN_ASPECT / videoGetAspect();
+#endif
 #endif
 
 	func0f0b2150(&gdl, sp17c, sp174, g_TexLightGlareConfigs[6].width, g_TexLightGlareConfigs[6].height, 0, 1, 1, 1, 0, 1);
@@ -2925,7 +2966,11 @@ Gfx *skyRenderFlare(Gfx *gdl, f32 x, f32 y, f32 intensityfrac, f32 size, s32 fla
 		sp174[0] = tmp * 0.5f * scale;
 
 #ifndef PLATFORM_N64
-		sp174[0] *=  SCREEN_ASPECT / videoGetAspect();
+	#ifdef PD_ENABLE_VR
+	sp174[0] *=  XrAspect / videoGetAspect(); // VR (upstream)
+#else
+	sp174[0] *=  SCREEN_ASPECT / videoGetAspect();
+#endif
 #endif
 
 		func0f0b2150(&gdl, sp17c, sp174, g_TexLightGlareConfigs[1].width, g_TexLightGlareConfigs[1].height, 0, 0, 0, 0, 0, 1);

@@ -23,10 +23,28 @@
 #include "game/bondview.h"
 #endif
 
+#ifdef PD_ENABLE_VR
+#include "../port/vr/vr_log.h"
+#define LOGI(...) vr_log(__VA_ARGS__)
+
+// VR
+extern bool vr_dl_is_pause_or_menu;
+extern int VrSmallW;
+extern int VrSmallH;
+#endif
+
 #define NUM_SUCCESS_PARTICLES 280
 
+#ifdef PD_ENABLE_VR
+// VR
+#define BLURIMG_WIDTH  100
+#define BLURIMG_HEIGHT 92
+#define BLURIMG_WIDTH_SIZE_FIX  31
+#define BLURIMG_HEIGHT_SIZE_FIX 33
+#else
 #define BLURIMG_WIDTH  40
 #define BLURIMG_HEIGHT 30
+#endif
 #define SAMPLE_WIDTH  8
 #define SAMPLE_HEIGHT 8
 #define PXTOBYTES(val) ((val) * 2)
@@ -173,9 +191,20 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 	gDPPipeSync(gdl++);
 	gSPTexture(gdl++, 0xffff, 0xffff, 0, G_TX_RENDERTILE, G_ON);
 
+#ifdef PD_ENABLE_VR
+//    gDPLoadTextureBlock(gdl++, g_BlurBuffer, G_IM_FMT_RGBA, G_IM_SIZ_16b, BLURIMG_WIDTH, BLURIMG_HEIGHT, 0,
+//                        G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP,
+//                        G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+
+    // Use the screen dimensions for UV mapping, not the blur buffer's dimensions
+    gDPLoadTextureBlock(gdl++, g_BlurBuffer, G_IM_FMT_RGBA, G_IM_SIZ_16b, BLURIMG_WIDTH_SIZE_FIX, BLURIMG_HEIGHT_SIZE_FIX, 0, // vr
+			G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP,
+			G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+#else
 	gDPLoadTextureBlock(gdl++, g_BlurBuffer, G_IM_FMT_RGBA, G_IM_SIZ_16b, BLURIMG_WIDTH, BLURIMG_HEIGHT, 0,
 			G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP,
 			G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD, G_TX_NOLOD);
+#endif
 
 #ifndef PLATFORM_N64
 	// LoadTextureBlock will set up the sizes, but we'll use the framebuffer instead of g_BlurBuffer
@@ -210,10 +239,32 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 #ifdef PLATFORM_N64
 	width = viGetWidth() * 10;
 #else
+#ifdef PD_ENABLE_VR
+    width = VrSmallW * 25; // VR
+#else
 	width = SCREEN_320 * 10;
 #endif
+#endif
+#ifdef PD_ENABLE_VR
+    height = VrSmallH * 20; // VR
+#else
 	height = viGetHeight() * 10;
+#endif
 
+#ifdef PD_ENABLE_VR
+    *(u16 *)&vertices[0].x = arg2;
+    *(u16 *)&vertices[0].y = arg3;
+    vertices[0].z = -9;
+    *(u16 *)&vertices[1].x = (s32)width + arg2 + 40;
+    *(u16 *)&vertices[1].y = arg3;
+    vertices[1].z = -9;
+    *(u16 *)&vertices[2].x = (s32)width + arg2 + 40;
+    *(u16 *)&vertices[2].y = (s32)height + arg3 + 50;
+    vertices[2].z = -9;
+    *(u16 *)&vertices[3].x = arg2;
+    *(u16 *)&vertices[3].y = (s32)height + arg3 + 50;
+    vertices[3].z = -9;
+#else
 	*(u16 *)&vertices[0].x = arg2;
 	*(u16 *)&vertices[0].y = arg3;
 	vertices[0].z = -10;
@@ -226,6 +277,7 @@ Gfx *menugfxRenderBgBlur(Gfx *gdl, u32 colour, s16 arg2, s16 arg3)
 	*(u16 *)&vertices[3].x = arg2;
 	*(u16 *)&vertices[3].y = (s32)height + arg3 + 50;
 	vertices[3].z = -10;
+#endif
 #else
 	*(u16 *)&vertices[0].x = arg2;
 	*(u16 *)&vertices[0].y = arg3;

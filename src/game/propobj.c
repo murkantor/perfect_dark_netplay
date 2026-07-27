@@ -84,6 +84,12 @@
 #include "system.h" // sysLogPrintf/LOG_* for the propsRenderBeams cycle guard
 #endif
 
+#ifdef PD_ENABLE_VR
+//VR
+extern bool g_DisableGrabViaB;
+//---
+#endif
+
 void rng2SetSeed(u32 seed);
 
 struct weaponobj *g_Proxies[30];
@@ -16899,6 +16905,9 @@ bool propobjInteract(struct prop *prop)
 			result = propPickupByPlayer(prop, 1);
 		}
 	} else if (currentPlayerTryMountHoverbike(prop) == false
+#ifdef PD_ENABLE_VR
+               && !g_DisableGrabViaB // VR Grab only whehe grip button pressed
+#endif
 			&& (obj->flags3 & OBJFLAG3_GRABBABLE)
 			&& g_Vars.currentplayer->bondmovemode == MOVEMODE_WALK
 			&& bmoveGetCrouchPos() == CROUCHPOS_STAND
@@ -22119,7 +22128,11 @@ Gfx *countdownTimerRender(Gfx *gdl)
 		f32 value60 = g_CountdownTimerValue60;
 		u32 stack;
 		s32 viewright = viGetViewLeft() + (viGetViewWidth() >> 1);
+#ifdef PD_ENABLE_VR
+		s32 y = viGetViewTop() + viGetViewHeight() - 110; // VR
+#else
 		s32 y = viGetViewTop() + viGetViewHeight() - 18;
+#endif
 		s32 playercount = LOCALPLAYERCOUNT();
 		char *fmt = ":\n";
 

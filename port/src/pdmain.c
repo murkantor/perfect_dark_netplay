@@ -679,6 +679,53 @@ void mainLoop(void)
 	}
 }
 
+#ifdef PD_ENABLE_VR
+// VR (upstream, verbatim; docs/PORT_VR.md): OpenXR session entry points.
+extern void vr_initialize();
+extern bool vr_is_initialized();
+extern bool vr_begin_frame_and_update_poses();
+extern void vr_poll_events();
+extern void vr_end_frame_and_submit();
+bool vr_init_done = false;
+extern void vrSettingsLoad();
+extern float XrFov;
+
+// Game-side glue for port/src/input.c, which cannot include types.h (its
+// bool #define collides with SDL3's stdbool API). This TU compiles with the
+// full game headers, so it resolves g_Vars / optionsGetControlMode here.
+s32 optionsGetControlMode(s32 mpchrnum); // game/options.h decl (not in this TU's include set)
+
+s32 vrInputVrControlModeActive(void)
+{
+	if (g_Vars.currentplayerstats == NULL) {
+		return 0;
+	}
+	return optionsGetControlMode(g_Vars.currentplayerstats->mpindex) == CONTROLMODE_12;
+}
+
+s32 vrInputIsPaused(void)
+{
+	return g_Vars.currentplayer != NULL && g_Vars.currentplayer->pausemode == PAUSEMODE_PAUSED;
+}
+
+static bool gVrFovApplied = false;
+static void VrApplySettingsOnStart(void)
+{
+	if (!gVrFovApplied && vr_init_done && XrFov != 0.0f) {
+		// Deviation: upstream loops MAX_PLAYERS (== 4 in the VR fork);
+		// g_PlayerExtCfg is sized MAX_LOCAL_PLAYERS here (netplay widened
+		// MAX_PLAYERS to 8). Same four entries either way.
+		for (s32 j = 0; j < MAX_LOCAL_PLAYERS; j++) {
+			g_PlayerExtCfg[j].fovy = XrFov;
+			g_PlayerExtCfg[j].fovzoommult = g_PlayerExtCfg[j].fovzoom
+			                               ? (g_PlayerExtCfg[j].fovy / 60.0f) : 1.0f;
+			g_TickRateDiv = 0;
+		}
+		gVrFovApplied = true;
+	}
+}
+#endif
+
 void mainTick(void)
 {
 	// Crash-hunt: mt_entry0 BEFORE any local variable declarations / function
@@ -694,6 +741,18 @@ void mainTick(void)
 			entry0_logged++;
 		}
 	}
+
+#ifdef PD_ENABLE_VR
+	// VR (upstream): retry initialization every frame until the session is up
+	if (!vr_init_done) {
+		vr_initialize();
+		if (vr_is_initialized()) {
+			vr_poll_events();
+			vrSettingsLoad();
+			vr_init_done = true;
+		}
+	}
+#endif
 
 	Gfx *gdl = NULL;
 	Gfx *gdlstart = NULL;
@@ -723,6 +782,15 @@ void mainTick(void)
 		profileSetMarker(PROFILE_MAINTICK_START);
 		joyDebugJoy();
 		schedSetCrashEnable2(false);
+
+#ifdef PD_ENABLE_VR
+		// VR (upstream): pump OpenXR events + acquire this frame's poses
+		if (vr_init_done) {
+			vr_poll_events();
+			vr_begin_frame_and_update_poses();
+			VrApplySettingsOnStart();
+		}
+#endif
 
 		if (g_MainGameLogicEnabled) {
 			// Headless dedicated server: skip the renderer setup. gfxGetMasterDisplayList
@@ -1272,6 +1340,13 @@ void mainTick(void)
 		memaPrint();
 		profileSetMarker(PROFILE_MAINTICK_END);
 	}
+
+#ifdef PD_ENABLE_VR
+	// VR (upstream): release + submit the frame to the compositor
+	if (vr_init_done) {
+		vr_end_frame_and_submit();
+	}
+#endif
 
 	if (g_NetDedicatedMode == 1) {
 		// No vsync sleep in headless — pace the loop to 60 Hz so the server

@@ -1,8 +1,14 @@
 #include <ultra64.h>
+#ifdef PD_ENABLE_VR
+#include <math.h>
+#endif
 #include "constants.h"
 #include "game/bondmove.h"
 #include "game/game_096b20.h"
 #include "game/bondhead.h"
+#ifdef PD_ENABLE_VR
+#include "game/camera.h"
+#endif
 #include "bss.h"
 #include "lib/rng.h"
 #include "lib/mtx.h"
@@ -10,6 +16,16 @@
 #include "lib/model.h"
 #include "data.h"
 #include "types.h"
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_input.h"
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
+#define LOGI(...) printf(__VA_ARGS__)
+
+extern bool VrSeatedMode;
+#endif
 
 struct headanim g_HeadAnims[] = {
 	{ ANIM_002B, 9.5, 27, 0, 0,   1.5 },
@@ -179,8 +195,31 @@ void bheadUpdate(f32 arg0, f32 arg1)
 		}
 
 		headpos.x = g_Vars.currentplayer->bondheadmatrices[0].m[3][0] * g_Vars.currentplayer->headamplitude;
+#ifdef PD_ENABLE_VR
+        // VR
+        // VR DEVIATION (netplay): the local HMD height (gHeadPos) may only drive the local
+        // pawn — remote players tick bheadUpdate here too and would inherit our head height.
+        // Remote pawns fall through to the unmodified height below — upstream is
+        // single-player and cannot hit this.
+        if(!VrSeatedMode && !g_Vars.currentplayer->isremote) {
+            struct coord VrMaxHeight = {0, 0, 0};
+            VrMaxHeight.y = (g_Vars.currentplayer->bondheadmatrices[0].m[3][1] -
+                             g_Vars.currentplayer->standheight) *
+                            g_Vars.currentplayer->headamplitude + g_Vars.currentplayer->standheight;
+            if (gHeadPos.y > VrMaxHeight.y) {
+                headpos.y = VrMaxHeight.y;
+            } else {
+                headpos.y = gHeadPos.y;
+            }
+        }
+        else{
+            headpos.y = (g_Vars.currentplayer->bondheadmatrices[0].m[3][1] - g_Vars.currentplayer->standheight) *
+                        g_Vars.currentplayer->headamplitude + g_Vars.currentplayer->standheight;
+        }
+#else
 		headpos.y = (g_Vars.currentplayer->bondheadmatrices[0].m[3][1] - g_Vars.currentplayer->standheight) *
 			g_Vars.currentplayer->headamplitude + g_Vars.currentplayer->standheight;
+#endif
 		headpos.z = g_Vars.currentplayer->bondheadmatrices[0].m[3][2] * g_Vars.currentplayer->headamplitude;
 
 		if (g_Vars.currentplayer->headanim >= 0) {
@@ -216,7 +255,27 @@ void bheadUpdate(f32 arg0, f32 arg1)
 		g_Vars.currentplayer->headbodyoffset.z = g_Vars.currentplayer->standbodyoffset.z;
 
 		headpos.x = 0;
+#ifdef PD_ENABLE_VR
+        // VR
+        // VR DEVIATION (netplay): same as above — local HMD height only for the local pawn;
+        // remote players keep standheight — upstream is single-player and cannot hit this.
+        if(!VrSeatedMode && !g_Vars.currentplayer->isremote) {
+            struct coord VrMaxHeight = {0, 0, 0};
+            VrMaxHeight.y = g_Vars.currentplayer->standheight;
+
+            if (gHeadPos.y > VrMaxHeight.y) {
+                headpos.y = VrMaxHeight.y;
+            } else {
+                headpos.y = gHeadPos.y;
+            }
+        }
+        else
+        {
+            headpos.y = g_Vars.currentplayer->standheight;
+        }
+#else
 		headpos.y = g_Vars.currentplayer->standheight;
+#endif
 		headpos.z = 0;
 
 		g_Vars.currentplayer->headwalkingtime60 = 0;
@@ -237,16 +296,26 @@ void bheadUpdate(f32 arg0, f32 arg1)
 					&g_Vars.currentplayer->standlook[1 - g_Vars.currentplayer->standcnt],
 					g_Vars.currentplayer->standfrac, &lookvel);
 
+#ifdef PD_ENABLE_VR
+            //lookvel.x *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+            //lookvel.y *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+#else
 			lookvel.x *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
 			lookvel.y *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+#endif
 
 			func0f096b20(
 					&g_Vars.currentplayer->standup[g_Vars.currentplayer->standcnt],
 					&g_Vars.currentplayer->standup[1 - g_Vars.currentplayer->standcnt],
 					g_Vars.currentplayer->standfrac, &upvel);
 
+#ifdef PD_ENABLE_VR
+            //upvel.x *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+            //upvel.z *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+#else
 			upvel.x *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
 			upvel.z *= 1 + 5 * g_Vars.currentplayer->bondbreathing;
+#endif
 		}
 	}
 

@@ -149,7 +149,45 @@ static f32 gyroDY = 0.f;
 #define GYRO_UNIT_SCALE (57.29578f * 0.3f)
 #define GYRO_MAX_EVENT_DT 0.5f  // ignore integration gaps longer than this (s)
 
+#ifdef PD_ENABLE_VR
+// === VR (upstream Alex-LeTux/perfect_dark_VR, verbatim where possible;
+// docs/PORT_VR.md). Forward decls only — pulling game headers (types.h) into
+// this SDL3 TU would redefine `bool` under SDL3's stdbool API (the same
+// reason video.c forward-declares g_NetDedicatedMode).
+#include "../vr/vr_input.h"   // get_button_state / get_2d_input / haptics
+
+extern bool vr_init_done;         // defined in pdmain.c (game bool == s32; values 0/1 only)
+extern bool vr_leftHasWeapon;     // game-side s32 bool, 0/1
+extern int vr_invert_hands;
+extern bool vr_grip_for_unarmed;  // game-side s32 bool, 0/1
+int vr_button_R_grip = false;
+int vr_button_L_grip = false;
+int vr_right_gun_fire;
+int vr_left_gun_fire;
+
+// Game-side glue (defined in pdmain.c, which compiles with types.h):
+extern s32 vrInputVrControlModeActive(void); // controlmode == CONTROLMODE_12 ("VR-1")
+extern s32 vrInputIsPaused(void);
+extern s32 bgunIsFiring(s32 hand); // game bool == s32; HAND_RIGHT 0 / HAND_LEFT 1
+
+__attribute__((unused)) static const char *vkVRNames[] = {
+        "VR_LEFT_TRIGGER",
+        "VR_LEFT_GRIP",
+        "VR_LEFT_X",
+        "VR_LEFT_Y",
+        "VR_LEFT_MENU",
+        "VR_LEFT_THUMBSTICK",
+        "VR_RIGHT_TRIGGER",
+        "VR_RIGHT_GRIP",
+        "VR_RIGHT_A",
+        "VR_RIGHT_B",
+        "VR_RIGHT_THUMBSTICK",
+};
+
+static s32 mouseEnabled = 0; // VR (upstream): mouse disabled
+#else
 static s32 mouseEnabled = 1;
+#endif
 static s32 mouseX, mouseY;
 static s32 mouseDX, mouseDY;
 static u32 mouseButtons;
@@ -947,6 +985,11 @@ s32 inputInit(void)
 		inputSetDefaultKeyBinds(i, 0);
 	}
 
+#ifdef PD_ENABLE_VR
+	// VR (upstream): install the VR controller bindings for player 1
+	inputSetupVRBindings(0);
+#endif
+
 	// videoInit ran just before us, so the window exists; the FOCUS_GAINED
 	// watcher keeps this asserted from here on. Starts from the "gameplay"
 	// default, which the main menu clears the moment it opens.
@@ -958,7 +1001,11 @@ s32 inputInit(void)
 		inputControllerSetSticksSwapped(i, padsCfg[i].swapSticks);
 	}
 
+#ifndef PD_ENABLE_VR
+	// VR (upstream): saved binds are NOT loaded in VR — the defaults + VR
+	// bindings above are authoritative.
 	inputLoadBinds();
+#endif
 
 	return connectedMask;
 }
@@ -1128,6 +1175,98 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 	npad->stick_y = ydiff < 0 ? -0x80 : (ydiff > 0 ? 0x7F : 0);
 
 	const struct controllercfg *cfg = &padsCfg[idx];
+
+#ifdef PD_ENABLE_VR
+	// === VR INPUT PLAYER 1 (upstream, verbatim; active in control mode VR-1).
+	// Replaces the SDL gamepad path below for the VR player, like upstream.
+	if (idx == 0 && vrInputVrControlModeActive()) {
+		// index 1 = Right hand / index 0 = Left hand
+		if (!vr_invert_hands) {
+			if (get_button_state(1, "trigger")) npad->button |= CONT_G; // Z_TRIG
+			if (get_button_state(0, "grip") && vr_leftHasWeapon) { // Aim left grip
+				if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+					npad->button |= CONT_R;
+				}
+				vr_button_L_grip = true;
+			} else {
+				vr_button_L_grip = false;
+			}
+
+			if (get_button_state(1, "grip")) { // Aim right grip
+				if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+					npad->button |= CONT_R;
+				}
+				vr_button_R_grip = true;
+			} else {
+				vr_button_R_grip = false;
+			}
+		} else {
+			if (get_button_state(0, "trigger")) npad->button |= CONT_G; // Z_TRIG
+			if (get_button_state(1, "grip") && vr_leftHasWeapon) {
+				if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+					npad->button |= CONT_R;
+				}
+				vr_button_L_grip = true;
+			} else {
+				vr_button_L_grip = false;
+			}
+
+			if (get_button_state(0, "grip")) {
+				if (!vr_grip_for_unarmed) { // if not aim. For unarmed
+					npad->button |= CONT_R;
+				}
+				vr_button_R_grip = true;
+			} else {
+				vr_button_R_grip = false;
+			}
+		}
+
+		if (get_button_state(1, "a")) npad->button |= CONT_A; // A_BUTTON
+		if (get_button_state(1, "b")) npad->button |= CONT_B; // B_BUTTON
+		// left "y" is not here — lv.c handles it for reloading the left gun
+
+		if (get_button_state(0, "x")) {
+			npad->button |= CONT_START;   // START_BUTTON
+		}
+
+		// VR: C-Buttons mapped to the left thumbstick (directional mapping)
+		XrVector2f leftThumbstick;
+		if (get_2d_input(0, "thumbstick", &leftThumbstick)) {
+			if (leftThumbstick.y > 0.5f) npad->button |= CONT_E;   // U_CBUTTONS
+			if (leftThumbstick.y < -0.5f) npad->button |= CONT_D;  // D_CBUTTONS
+			if (leftThumbstick.x < -0.5f) npad->button |= CONT_C;  // L_CBUTTONS
+			if (leftThumbstick.x > 0.5f) npad->button |= CONT_F;   // R_CBUTTONS
+		}
+
+		if (!vrInputIsPaused() && !get_button_state(1, "a")) {
+			XrVector2f rightThumbstick;
+			if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
+				if (fabsf(rightThumbstick.x) > 0.1f) {
+					npad->stick_x = (s32)(rightThumbstick.x * 127.0f);
+				}
+				if (fabsf(rightThumbstick.y) > 0.1f) {
+					npad->stick_y = (s32)(rightThumbstick.y * 127.0f);
+				}
+			}
+		} else {
+			npad->stick_x = 0;
+			npad->stick_y = 0;
+		}
+
+		if (cfg->cancelCButtons) {
+			// opposite C buttons cancel each other out
+			if ((npad->button & (L_CBUTTONS | R_CBUTTONS)) == (L_CBUTTONS | R_CBUTTONS)) {
+				npad->button &= ~(L_CBUTTONS | R_CBUTTONS);
+			}
+			if ((npad->button & (U_CBUTTONS | D_CBUTTONS)) == (U_CBUTTONS | D_CBUTTONS)) {
+				npad->button &= ~(U_CBUTTONS | D_CBUTTONS);
+			}
+		}
+
+		inputChaosDelayApply(idx, npad); // port hook, orthogonal — kept in the VR branch
+		return 0;
+	}
+#endif // PD_ENABLE_VR
 
 	if (cfg->cancelCButtons) {
 		// opposite C buttons cancel each other out
@@ -1340,9 +1479,12 @@ void inputUpdate(void)
 
 	SDL_UpdateGamepads();
 
+#ifndef PD_ENABLE_VR
+	// VR (upstream): mouse input removed
 	if (mouseEnabled) {
 		inputUpdateMouse();
 	}
+#endif
 
 	if (padLEDEnabled) {
 		inputUpdatePadLEDs();
@@ -1366,11 +1508,69 @@ s32 inputRumbleSupported(s32 idx)
 	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS) {
 		return 0;
 	}
+#ifdef PD_ENABLE_VR
+	// VR (upstream): player 1 always has VR haptics
+	if (idx == 0) {
+		return 1;
+	}
+#endif
 	return padsCfg[idx].rumbleOn;
 }
 
 void inputRumble(s32 idx, f32 strength, f32 time)
 {
+#ifdef PD_ENABLE_VR
+	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS) {
+		return;
+	}
+
+	if (padsCfg[idx].rumbleScale <= 0.f) {
+		return;
+	}
+
+	// === VR HAPTICS Player 1 (upstream, verbatim) ===
+	if (vr_init_done && idx == 0) {
+		strength *= padsCfg[idx].rumbleScale;
+
+		if (strength > 0.f) {
+			if (strength > 1.f) strength = 1.f;
+
+			if (bgunIsFiring(HAND_RIGHT)) {
+				vr_right_gun_fire = 5;
+			}
+			if (bgunIsFiring(HAND_LEFT)) {
+				vr_left_gun_fire = 5;
+			}
+
+			if (bgunIsFiring(HAND_RIGHT) && vr_right_gun_fire > 0) {
+				trigger_haptic_vibration_c(1, strength, time);
+			}
+			if (vr_right_gun_fire > 0) {
+				vr_right_gun_fire--;
+			}
+
+			if (bgunIsFiring(HAND_LEFT) && vr_left_gun_fire > 0) {
+				trigger_haptic_vibration_c(0, strength, time);
+			}
+			if (vr_left_gun_fire > 0) {
+				vr_left_gun_fire--;
+			}
+
+			if (!bgunIsFiring(HAND_RIGHT) && !bgunIsFiring(HAND_LEFT) && vr_right_gun_fire == 0 && vr_left_gun_fire == 0) {
+				trigger_haptic_vibration_c(1, strength, time);
+				trigger_haptic_vibration_c(0, strength, time);
+			}
+		} else {
+			stop_haptic_vibration_c(0);
+			stop_haptic_vibration_c(1);
+		}
+		return;
+	}
+
+	if (!pads[idx]) {
+		return;
+	}
+#else
 	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || !pads[idx]) {
 		return;
 	}
@@ -1378,6 +1578,7 @@ void inputRumble(s32 idx, f32 strength, f32 time)
 	if (padsCfg[idx].rumbleScale <= 0.f) {
 		return;
 	}
+#endif
 
 	if (padsCfg[idx].rumbleOn) {
 		strength *= padsCfg[idx].rumbleScale;
@@ -1617,7 +1818,30 @@ s32 inputKeyPressed(u32 vk)
 		return (mouseButtons & SDL_BUTTON_MASK(vk - VK_MOUSE_BEGIN + 1)) != 0;
 	}
 
-	if (vk >= VK_JOY_BEGIN && vk < VK_TOTAL_COUNT) {
+#ifdef PD_ENABLE_VR
+	// VR (upstream): OpenXR controller virtkeys — must be checked before the
+	// joystick range below, which now spans up to the extended VK_TOTAL_COUNT
+	if (vk >= VK_VR_BEGIN && vk < VK_VR_END) {
+		switch (vk) {
+			case VK_VR_LEFT_TRIGGER: return get_button_state(0, "trigger");
+			case VK_VR_LEFT_GRIP: return get_button_state(0, "grip");
+			case VK_VR_LEFT_X: return get_button_state(0, "x");
+			case VK_VR_LEFT_Y: return get_button_state(0, "y");
+			case VK_VR_LEFT_MENU: return get_button_state(0, "menu");
+			case VK_VR_LEFT_THUMBSTICK_CLICK: return get_button_state(0, "thumbstick_click");
+
+			case VK_VR_RIGHT_TRIGGER: return get_button_state(1, "trigger");
+			case VK_VR_RIGHT_GRIP: return get_button_state(1, "grip");
+			case VK_VR_RIGHT_A: return get_button_state(1, "a");
+			case VK_VR_RIGHT_B: return get_button_state(1, "b");
+			case VK_VR_RIGHT_THUMBSTICK_CLICK: return get_button_state(1, "thumbstick_click");
+
+			default: return 0;
+		}
+	}
+#endif
+
+	if (vk >= VK_JOY_BEGIN && vk < VK_JOY_BEGIN + INPUT_MAX_CONTROLLERS * INPUT_MAX_CONTROLLER_BUTTONS) {
 		vk -= VK_JOY_BEGIN;
 		const s32 idx = vk / INPUT_MAX_CONTROLLER_BUTTONS;
 		if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS || !pads[idx]) {
@@ -1753,25 +1977,40 @@ void inputMouseSetSpeed(f32 x, f32 y)
 
 s32 inputMouseIsEnabled(void)
 {
+#ifdef PD_ENABLE_VR
+	return 0; // VR (upstream): mouse input removed
+#else
 	return mouseEnabled;
+#endif
 }
 
 void inputMouseEnable(s32 enabled)
 {
+#ifdef PD_ENABLE_VR
+	// VR (upstream): mouse input removed
+	(void)enabled;
+#else
 	mouseEnabled = !!enabled;
 	// both halves follow mouseEnabled so controller-only players keep a free,
 	// unconfined cursor
 	inputApplyMousePolicy();
+#endif
 }
 
 s32 inputAutoLockMouse(s32 wantlock)
 {
+#ifdef PD_ENABLE_VR
+	// VR (upstream): mouse input removed
+	(void)wantlock;
+	return 0;
+#else
 	// Record the game's intent for every mode -- MLOCK_ON needs it too, to
 	// know a menu is open and hand back a usable cursor (while still keeping
 	// that cursor inside the window).
 	mouseWantLock = !!wantlock;
 	inputApplyMousePolicy();
 	return mouseEnabled && mouseLockMode != MLOCK_OFF;
+#endif
 }
 
 void inputMouseShowCursor(s32 show)
@@ -2132,6 +2371,21 @@ void inputGyroCommand(const char *arg)
 		}
 	}
 }
+
+#ifdef PD_ENABLE_VR
+void inputSetupVRBindings(s32 cidx) {  // VR (upstream, verbatim)
+    if (cidx < 0 || cidx >= INPUT_MAX_CONTROLLERS) return;
+
+    inputKeyBind(cidx, CK_A, 0, VK_VR_RIGHT_A);
+    inputKeyBind(cidx, CK_B, 0, VK_VR_RIGHT_B);
+    //inputKeyBind(cidx, CK_X, 0, VK_VR_RIGHT_B);
+    // inputKeyBind(cidx, CK_ZTRIG, 0, VK_VR_RIGHT_TRIGGER);
+    inputKeyBind(cidx, CK_START, 0, VK_VR_LEFT_MENU);
+    inputKeyBind(cidx, CK_Y, 0, VK_VR_RIGHT_A);
+    inputKeyBind(cidx, CK_LTRIG, 0, VK_VR_RIGHT_THUMBSTICK_CLICK);
+    inputKeyBind(cidx, CK_DPAD_D, 0, VK_VR_LEFT_THUMBSTICK_CLICK);
+}
+#endif
 
 PD_CONSTRUCTOR static void inputConfigInit(void)
 {

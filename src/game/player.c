@@ -1,4 +1,11 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include <math.h>
+#include "input.h"
+#include "../../port/vr/vr_input.h"
+#endif
+
 #include "constants.h"
 #include "game/bondeyespy.h"
 #include "game/bondmove.h"
@@ -73,12 +80,43 @@
 #ifndef PLATFORM_N64
 #include "platform.h"
 #include "video.h"
+#ifndef PD_ENABLE_VR
 #include "input.h"
+#endif
 #include "net/net.h"
 #include "net/demo.h"
 #include "net/netmsg.h"
 #include "mpsetups.h"
 #include "rt_ext.h"
+#endif
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+#include "string.h"
+
+#define LOGI(...) printf(__VA_ARGS__)
+
+// VR
+extern void vr_align_with_game_angle(float target_game_angle);
+float vr_player_angle = 0.0f;
+extern float vr_joyAccum;
+extern void vr_special_rot_mode(void);
+extern struct model g_VrCopyWepModel;
+extern struct modeldef *g_VrCopyWepModeldef;
+bool vr_is_duel = false;
+bool VrSetNewAnimCutscene = false;
+extern bool VrIsTitleLegal;
+extern int VrSmallW;
+extern int VrSmallH;
+extern void vr_player_rot();
+
+static s16 g_PrevAnimNumForContinuity = -1;
+static f32 g_RefHMDQuat[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+extern float XrFov;
+extern float XrAspect;
+float VrSetWorldScale = 1.0f;
+//---
 #endif
 
 s32 g_DefaultWeapons[2];
@@ -143,12 +181,22 @@ struct vimode g_ViModes[] = {
 	{ SCREEN_WIDTH_LO, SCREEN_HEIGHT_LO, SCREEN_WIDTH_LO, 1,                VIMODE_LO, SCREEN_HEIGHT_LO, 0,  212, 20, 168, 42 }, // default
 	{ SCREEN_WIDTH_HI, SCREEN_HEIGHT_HI, SCREEN_WIDTH_HI, 0.71428567171097, VIMODE_LO, SCREEN_HEIGHT_HI, 0,  212, 20, 168, 42 }, // hi-res
 #else
+#ifdef PD_ENABLE_VR
+// VR
+{SCREEN_WIDTH_LO, SCREEN_HEIGHT_LO, SCREEN_WIDTH_LO, 1, VIMODE_LO, SCREEN_HEIGHT_LO, 0, 360, 40, 272, 84  }, // default VR
+{ SCREEN_WIDTH_HI, SCREEN_HEIGHT_HI, SCREEN_WIDTH_HI, 1,              VIMODE_LO, SCREEN_HEIGHT_HI, 0,  360, 40, 272, 84  }, // hi-res VR
+{ 640,             960,              640,             2,                VIMODE_HI, 880,              20, 720, 120, 544, 208 }, // unused
+{ 880,             660,              880,             1,                VIMODE_LO, 660,              0,  660, 0,  660, 0   }, // unused
+{ 880,             480,              880,             (1.0f / 1.375f),  VIMODE_LO, 440,              0,  360, 0,  272, 0   }, // unused
+{ 800,             600,              800,             1,                VIMODE_HI, 600,              0,  600, 0,  600, 0   }, // unused
+#else
 	{ SCREEN_WIDTH_LO, SCREEN_HEIGHT_LO, SCREEN_WIDTH_LO, 1,                VIMODE_LO, SCREEN_HEIGHT_LO, 0,  180, 20, 136, 42  }, // default
 	{ SCREEN_WIDTH_HI, SCREEN_HEIGHT_HI, SCREEN_WIDTH_HI, 0.5,              VIMODE_LO, SCREEN_HEIGHT_HI, 0,  180, 20, 136, 42  }, // hi-res
 	{ 320,             480,              320,             2,                VIMODE_HI, 440,              20, 360, 60, 272, 104 }, // unused
 	{ 440,             330,              440,             1,                VIMODE_LO, 330,              0,  330, 0,  330, 0   }, // unused
 	{ 440,             240,              440,             (1.0f / 1.375f),  VIMODE_LO, 220,              0,  180, 0,  136, 0   }, // unused
 	{ 400,             300,              400,             1,                VIMODE_HI, 300,              0,  300, 0,  300, 0   }, // unused
+#endif
 #endif
 };
 
@@ -529,6 +577,9 @@ f32 playerChooseSpawnLocation(f32 chrradius, struct coord *dstpos, RoomNum *dstr
 		dstpos->z = pad.pos.z;
 
 		dstangle = atan2f(pad.look.x, pad.look.z);
+#ifdef PD_ENABLE_VR
+        vr_log("playerChooseSpawnLocation: no shortlist, using random pad angle=%f\n", dstangle);
+#endif
 	}
 
 	return dstangle;
@@ -648,7 +699,19 @@ void playerStartNewLife(void)
 	pos.y = groundy + g_Vars.currentplayer->vv_eyeheight;
 
 	g_Vars.currentplayer->vv_manground = groundy;
+#ifdef PD_ENABLE_VR
+//		g_Vars.currentplayer->vv_theta = angle * 360.0f / M_BADTAU;  // Removed for VR
+	// VR DEVIATION (netplay): restore the spawn-facing write for REMOTE pawns only — upstream is single-player and cannot hit this.
+	// The local VR pawn keeps upstream's behaviour (headset pose owns the view), but
+	// the port-only UCMD_FL_FORCEANGLE block below is honoured from vv_theta on the
+	// wire (net.c: move->angles[0] = pl->vv_theta), so a remote client respawning
+	// without this snaps to its stale pre-death facing.
+	if (g_Vars.currentplayer->isremote) {
+		g_Vars.currentplayer->vv_theta = angle * 360.0f / M_BADTAU;
+	}
+#else
 	g_Vars.currentplayer->vv_theta = angle * 360.0f / M_BADTAU;
+#endif
 	g_Vars.currentplayer->vv_ground = groundy;
 
 	playerResetBond(&g_Vars.currentplayer->bond2, &pos);
@@ -855,6 +918,12 @@ void playerLoadDefaults(void)
 	g_Vars.currentplayer->isdead = false;
 
 	if (stageGetIndex(g_Vars.stagenum) == STAGEINDEX_DUEL) {
+#ifdef PD_ENABLE_VR
+        // VR Fix The Duel
+        vr_is_duel = true;
+        VrSetNewAnimCutscene = true;
+        //---
+#endif
 		g_Vars.currentplayer->bondhealth = 0.01f;
 	} else if (stageGetIndex(g_Vars.stagenum) == STAGEINDEX_MAIANSOS) {
 		g_Vars.currentplayer->bondhealth = 0.5f;
@@ -886,7 +955,11 @@ void playerLoadDefaults(void)
 	g_Vars.currentplayer->speedthetacontrol = 0;
 	g_Vars.currentplayer->vv_costheta = 1;
 	g_Vars.currentplayer->vv_sintheta = 0;
+#ifdef PD_ENABLE_VR
+    //g_Vars.currentplayer->vv_verta = -4;      // Removed for VR
+#else
 	g_Vars.currentplayer->vv_verta = -4;
+#endif
 	g_Vars.currentplayer->vv_verta360 = g_Vars.currentplayer->vv_verta;
 
 	if (g_Vars.currentplayer->vv_verta360 < 0) {
@@ -1986,6 +2059,17 @@ void playerTickMpSwirl(void)
 
 void player0f0b9a20(void)
 {
+#ifdef PD_ENABLE_VR
+    // VR
+    //Reset CopyWep... texture...
+    g_VrCopyWepModeldef = NULL;
+    memset(&g_VrCopyWepModel, 0, sizeof(g_VrCopyWepModel));
+    // VR force screensize
+    optionsSetScreenSize(SCREENSIZE_FULL);
+    g_PlayerExtCfg[0].usereloads = true;
+    //----------------------------------------------------------------
+#endif
+
 	playerSetTickMode(TICKMODE_NORMAL);
 	g_PlayerTriggerGeFadeIn = false;
 	bmoveSetMode(MOVEMODE_WALK);
@@ -2006,6 +2090,23 @@ void player0f0b9a20(void)
 
 void playerEndCutscene(void)
 {
+#ifdef PD_ENABLE_VR
+    // VR
+    //Reset CopyWep... texture...
+    g_VrCopyWepModeldef = NULL;
+    memset(&g_VrCopyWepModel, 0, sizeof(g_VrCopyWepModel));
+    // VR force screensize
+    optionsSetScreenSize(SCREENSIZE_FULL);
+    g_PlayerExtCfg[0].usereloads = true;
+    //------------------------------------------------
+
+    // reset joystick
+    vr_joyAccum = 0.0f;
+    // Realign the headset to this new reference frame
+    vr_align_with_game_angle(vr_player_angle);
+    //---------------------------
+#endif
+
 	if (g_IsTitleDemo) {
 		mainChangeToStage(STAGE_TITLE);
 	} else if (g_Vars.autocutplaying) {
@@ -2236,6 +2337,20 @@ void playerReorientForCutsceneStop(s32 tweenduration60)
 	theta = (M_BADTAU - theta) * 57.304901123047f;
 	g_Vars.bond->vv_theta = theta;
 
+#ifdef PD_ENABLE_VR
+    // VR
+    //Reset VrCopyWep texture...
+    g_VrCopyWepModeldef = NULL;
+    memset(&g_VrCopyWepModel, 0, sizeof(g_VrCopyWepModel));
+
+    // Initial VR player orientation at level start
+    vr_player_angle = - theta;
+    // Continued in playerEndCutscene
+    //---------------------------
+    VrSetNewAnimCutscene = true;
+    VrIsTitleLegal = false;
+#endif
+
 	chrSetLookAngle(g_Vars.bond->prop->chr, (360 - theta) * 0.017450513318181f);
 }
 
@@ -2327,6 +2442,74 @@ void playerTickCutscene(bool arg0)
 
 	mtx4LoadRotation(&rot, &rotmtx);
 
+#ifdef PD_ENABLE_VR
+
+/* ===================== VR HMD DELTA / CUTSCENE ROTATION ===================== */
+
+    if (g_CutsceneAnimNum != g_PrevAnimNumForContinuity || VrSetNewAnimCutscene) {
+        g_PrevAnimNumForContinuity = g_CutsceneAnimNum;
+        VrSetNewAnimCutscene = false;
+
+        g_RefHMDQuat[0] = vr_HMD_rot_Q.w;
+        g_RefHMDQuat[1] = vr_HMD_rot_Q.x;
+        g_RefHMDQuat[2] = vr_HMD_rot_Q.y;
+        g_RefHMDQuat[3] = vr_HMD_rot_Q.z;
+
+    }
+
+    f32 refConj[4] = { g_RefHMDQuat[0], -g_RefHMDQuat[1], -g_RefHMDQuat[2], -g_RefHMDQuat[3] };
+    f32 currentHMDQuat[4] = { vr_HMD_rot_Q.w, vr_HMD_rot_Q.x, vr_HMD_rot_Q.y, vr_HMD_rot_Q.z };
+    f32 deltaHMDQuat[4];
+    quaternionMultQuaternion(refConj, currentHMDQuat, deltaHMDQuat);
+
+    f32 cutsceneQuat[4];
+    quaternion0f097044(&rotmtx, cutsceneQuat);
+
+    f32 combinedQuat[4];
+    quaternionMultQuaternion(cutsceneQuat, deltaHMDQuat, combinedQuat);
+
+    Mtxf combinedMtx;
+    quaternionToMtx(combinedQuat, &combinedMtx);
+
+    up.x = combinedMtx.m[1][0];
+    up.y = combinedMtx.m[1][1];
+    up.z = combinedMtx.m[1][2];
+    look.x = -combinedMtx.m[2][0];
+    look.y = -combinedMtx.m[2][1];
+    look.z = -combinedMtx.m[2][2];
+
+/* ===================== END ===================== */
+
+    //Get anim FOV for world scale calculation
+    fovy = animGetCameraValue(1, g_CutsceneAnimNum, frameslot);
+
+    switch (g_Vars.stagenum) { // VR Cutscene world scall
+        case STAGE_DEFECTION:
+            // Hack for STAGE_DEFECTION, so building looks bigger and better
+            if(g_CutsceneAnimNum == 252 || g_CutsceneAnimNum == 255 || g_CutsceneAnimNum == 238
+            || g_CutsceneAnimNum == 302 || g_CutsceneAnimNum == 261 || g_CutsceneAnimNum == 307
+            || g_CutsceneAnimNum == 263 || g_CutsceneAnimNum == 267 || g_CutsceneAnimNum == 341
+            || g_CutsceneAnimNum == 242) {
+                vr_world_scale = -11.0f / 14.0f * fovy + 745.0f / 7.0f;
+            } else {
+                vr_world_scale = (-11.0f / 14.0f * fovy + 745.0f / 7.0f) * 0.13f;
+            }
+            break;
+        case STAGE_AIRBASE:
+        case STAGE_VILLA:
+        case STAGE_CRASHSITE:
+        case STAGE_TEST_MP20:
+            vr_world_scale = (-11.0f / 14.0f * fovy + 745.0f / 7.0f) * 0.5f;
+            break;
+        default:
+            vr_world_scale = -11.0f / 14.0f * fovy + 745.0f / 7.0f;
+    }
+    vr_world_scale = vr_world_scale * VrSetWorldScale;
+
+    //Set VR FOV
+    fovy = XrFov;
+
+#else
 	up.x = rotmtx.m[1][0];
 	up.y = rotmtx.m[1][1];
 	up.z = rotmtx.m[1][2];
@@ -2336,6 +2519,7 @@ void playerTickCutscene(bool arg0)
 	look.z = -rotmtx.m[2][2];
 
 	fovy = animGetCameraValue(1, g_CutsceneAnimNum, frameslot);
+#endif
 	g_CutsceneBlurFrac = animGetCameraValue(2, g_CutsceneAnimNum, frameslot);
 	g_CutsceneTweenFrac = 0;
 
@@ -2372,7 +2556,11 @@ void playerTickCutscene(bool arg0)
 		look.z = rotmtx.m[2][2];
 
 		g_CutsceneBlurFrac += tweenfrac * (0 - g_CutsceneBlurFrac);
+#ifdef PD_ENABLE_VR
+//        fovy = g_Vars.currentplayer->fovy;  // VR
+#else
 		fovy += tweenfrac * (60 - fovy);
+#endif
 	}
 
 	playerSetCameraMode(CAMERAMODE_THIRDPERSON);
@@ -2382,7 +2570,18 @@ void playerTickCutscene(bool arg0)
 
 	if (g_Vars.currentplayerindex == 0) {
 		g_CutsceneCurTotalFrame60f += g_Vars.lvupdate60freal;
+#ifdef PD_ENABLE_VR
+//        LOGI("g_CutsceneCurTotalFrame60f %.2f", g_CutsceneCurTotalFrame60f); // VR
+//        LOGI("g_CutsceneAnimNum %d", g_CutsceneAnimNum);
+#endif
 	}
+
+#ifdef PD_ENABLE_VR
+    // VR Fix The Duel
+    if(g_CutsceneAnimNum == 1160) {
+        vr_is_duel = true;
+    }
+#endif
 
 #ifndef PLATFORM_N64
 	if (arg0 && inputKeyJustPressed(VK_ESCAPE)) {
@@ -3538,13 +3737,21 @@ s16 playerGetViewportHeight(void)
 			height = g_ViModes[g_ViRes].cinemaheight;
 		} else if (g_InCutscene && !var8009dfc0) {
 			if (g_CutsceneTweenDuration60 >= 1) {
+#ifdef PD_ENABLE_VR
+                f32 a = g_ViModes[g_ViRes].fullheight; // VR
+#else
 				f32 a = g_ViModes[g_ViRes].wideheight;
+#endif
 				f32 b = g_ViModes[g_ViRes].fullheight;
 				a = a * (1.0f - g_CutsceneTweenFrac);
 				b = b * g_CutsceneTweenFrac;
 				height = a + b;
 			} else {
+#ifdef PD_ENABLE_VR
+                height = g_ViModes[g_ViRes].fullheight; // VR
+#else
 				height = g_ViModes[g_ViRes].wideheight;
+#endif
 			}
 		} else {
 			height = g_ViModes[g_ViRes].fullheight;
@@ -3598,7 +3805,11 @@ s16 playerGetViewportTop(void)
 					top = g_ViModes[g_ViRes].fulltop;
 				}
 			} else {
+#ifdef PD_ENABLE_VR
+                top = g_ViModes[g_ViRes].fulltop; // VR
+#else
 				top = g_ViModes[g_ViRes].widetop;
+#endif
 			}
 		} else if (optionsGetEffectiveScreenSize() == SCREENSIZE_CINEMA) {
 			top = g_ViModes[g_ViRes].cinematop;
@@ -3606,13 +3817,21 @@ s16 playerGetViewportTop(void)
 			if (g_InCutscene && !var8009dfc0
 					&& (!optionsGetCutsceneSubtitles() || g_Vars.stagenum == STAGE_CITRAINING)) {
 				if (g_CutsceneTweenDuration60 >= 1) {
+#ifdef PD_ENABLE_VR
+                    f32 a = g_ViModes[g_ViRes].fulltop; // VR
+#else
 					f32 a = g_ViModes[g_ViRes].widetop;
+#endif
 					f32 b = g_ViModes[g_ViRes].fulltop;
 					a = a * (1.0f - g_CutsceneTweenFrac);
 					b = b * g_CutsceneTweenFrac;
 					top = a + b;
 				} else {
+#ifdef PD_ENABLE_VR
+                    top = g_ViModes[g_ViRes].fulltop; // VR
+#else
 					top = g_ViModes[g_ViRes].widetop;
+#endif
 				}
 			} else {
 				return g_ViModes[g_ViRes].fulltop;
@@ -3636,6 +3855,28 @@ f32 player0f0bd358(void)
 #ifdef PLATFORM_N64
 	return result;
 #else
+#ifdef PD_ENABLE_VR
+    // OpenXR's optical frustum, rather than the swapchain dimensions, defines
+    // the projection aspect. The previous expression cancelled the render
+    // target ratio and forced this value to exactly 1.0 on every headset.
+    if (XrAspect > 0.01f) {
+        return XrAspect;
+    }
+    {
+        // VR DEVIATION (netplay): headless aspect guard carried into the VR branch — upstream is single-player and cannot hit this.
+        // Before XrAspect is valid (0) — and always on the dedicated server /
+        // --headless-client, where the renderer never initializes — videoGetAspect()
+        // returns 0, which zeroes every pawn's c_perspaspect and NaNs the aim rays
+        // (the projectile-sync/hit-validation bug class). Treat it as native (x1.0).
+        f32 vidaspect = videoGetAspect();
+
+        if (!(vidaspect > 0.0f)) {
+            return result;
+        }
+
+        return result * (vidaspect / ((f32)VrSmallW / (f32)VrSmallH));
+    }
+#else
 	{
 		// Headless (dedicated server / --headless-client): the renderer never
 		// initializes, so videoGetAspect() returns 0 — and playerTick feeds
@@ -3655,6 +3896,7 @@ f32 player0f0bd358(void)
 
 		return result * (vidaspect / ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO));
 	}
+#endif
 #endif
 }
 
@@ -3681,6 +3923,16 @@ void playerAutoWalk(s16 aimpad, u8 walkspeed, u8 turnspeed, u8 lookup, u8 dist)
 	g_Vars.currentplayer->autocontrol_turnspeed = turnspeed;
 	g_Vars.currentplayer->autocontrol_lookup = lookup;
 	g_Vars.currentplayer->autocontrol_dist = dist;
+
+#ifdef PD_ENABLE_VR
+    // VR fix for The Duel
+    VrSetNewAnimCutscene = true;
+    vr_joyAccum = 0.0f;
+    vr_align_with_game_angle(-120.0f);
+    gHeadPos.x = 0.0f;
+    gHeadPos.z = 0.0f;
+    vr_is_duel = false;
+#endif
 }
 
 void playerLaunchSlayerRocket(struct weaponobj *rocket)
@@ -3809,6 +4061,22 @@ void playerTick(bool arg0)
 {
 	f32 aspectratio;
 	f32 f20;
+
+#ifdef PD_ENABLE_VR
+    if(g_Vars.tickmode != TICKMODE_CUTSCENE) {
+        switch (g_Vars.stagenum) { // VR in game stage world scall
+            case STAGE_AIRBASE:
+            case STAGE_VILLA:
+            case STAGE_CRASHSITE:
+            case STAGE_TEST_MP20:
+                vr_world_scale = 42.5f * VrSetWorldScale;
+                break;
+            default :
+                vr_world_scale = 85.0f * VrSetWorldScale;;
+
+        }
+    }
+#endif
 
 	g_ViRes = g_HiResEnabled;
 
@@ -4522,6 +4790,10 @@ void playerTick(bool arg0)
 		spf4.y = b + spf4.y;
 		spf4.z = c + spf4.z;
 
+#ifdef PD_ENABLE_VR
+        vr_special_rot_mode(); // VR rotation for Hoverbik, flying crate etc...
+#endif
+
 		player0f0c1840(&spf4,
 				&g_Vars.currentplayer->bond2.unk28,
 				&g_Vars.currentplayer->bond2.unk1c,
@@ -4796,6 +5068,14 @@ void playerTick(bool arg0)
 				g_Vars.currentplayer->prop->rooms);
 	} else if (g_Vars.tickmode == TICKMODE_MPSWIRL) {
 		// Start of an MP match where the camera circles around the player
+
+#ifdef PD_ENABLE_VR
+        // VR
+        //Reset CopyWep texture...
+        g_VrCopyWepModeldef = NULL;
+        memset(&g_VrCopyWepModel, 0, sizeof(g_VrCopyWepModel));
+#endif
+
 		playerTickChrBody();
 		bmoveTick(0, 0, 0, 1);
 		playerTickMpSwirl();
@@ -4816,6 +5096,12 @@ void playerTick(bool arg0)
 		f32 direction;
 		struct pad pad;
 		f32 speedfrac;
+
+#ifdef PD_ENABLE_VR
+        // VR Fix The duel
+        vr_joyAccum = 0.0f;
+        vr_align_with_game_angle(-120.0f);
+#endif
 
 		playerRemoveChrBody();
 		padUnpack(g_Vars.currentplayer->autocontrol_aimpad, PADFIELD_POS, &pad);

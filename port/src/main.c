@@ -41,7 +41,11 @@ u32 g_VmNumPageMisses = 0;
 u32 g_VmNumPageReplaces = 0;
 u8 g_VmShowStats = 0;
 
+#ifdef PD_ENABLE_VR
+s32 g_TickRateDiv = 0; // VR (upstream): uncapped tick rate — the headset paces frames
+#else
 s32 g_TickRateDiv = 1;
+#endif
 s32 g_TickExtraSleep = true;
 
 s32 g_SkipIntro = false;
@@ -122,8 +126,18 @@ static void cleanup(void)
 	// TODO: actually shut down all subsystems
 }
 
+#ifdef PD_ENABLE_VR
+extern void vrShowWaitingWindow(const char *bmpPath);
+#endif
+
 int main(int argc, const char **argv)
 {
+#ifdef PD_ENABLE_VR
+	// VR (upstream): block until the OpenXR runtime answers — the whole boot
+	// (window sizing, aspect, resolution regime) depends on the headset.
+	vrShowWaitingWindow("logo.bmp");
+#endif
+
 	sysInitArgs(argc, argv);
 
 	if (!sysArgCheck("--no-crash-handler")) {
@@ -260,6 +274,19 @@ int main(int argc, const char **argv)
 	return 0;
 }
 
+#ifdef PD_ENABLE_VR
+// VR DEVIATION (shared file): the flat exe reads the same pd.ini (CONFIG_FNAME
+// has no VR variant). The VR build stamps the headset FOV over
+// g_PlayerExtCfg[].fovy on every boot (VrApplySettingsOnStart), and configSave
+// writes whatever is in memory on exit — so registering the real fields would
+// leak the headset FOV into the flat build's Game.PlayerN.FovY / .GunFovY keys.
+// The VR build parks those two keys in these shadows instead: the flat user's
+// values are read and written back untouched, and VR is unaffected because its
+// FOV comes from XrFov at runtime, never from the config.
+static f32 g_VrShadowFovY[MAX_LOCAL_PLAYERS];
+static f32 g_VrShadowGunFovY[MAX_LOCAL_PLAYERS];
+#endif
+
 PD_CONSTRUCTOR static void gameConfigInit(void)
 {
 	configRegisterInt("Game.MemorySize", &g_OsMemSizeMb, 4, 2048);
@@ -275,9 +302,24 @@ PD_CONSTRUCTOR static void gameConfigInit(void)
 	configRegisterInt("Game.MaxExplosions", &g_MaxExplosions, 6, 96);
 	for (s32 j = 0; j < MAX_LOCAL_PLAYERS; ++j) {
 		const s32 i = j + 1;
+#ifdef PD_ENABLE_VR
+		// VR DEVIATION (shared file): park the FOV keys in shadows (see above)
+		// so a VR session round-trips the flat exe's values instead of
+		// overwriting them. Seeded with the flat default so a pd.ini that has
+		// no FovY key still gets the flat default written back (an unseeded 0
+		// would be clamped to the 5.f minimum on save).
+		g_VrShadowFovY[j] = 60.f;
+		g_VrShadowGunFovY[j] = 60.f;
+		configRegisterFloat(strFmt("Game.Player%d.FovY", i), &g_VrShadowFovY[j], 5.f, 175.f);
+#else
 		configRegisterFloat(strFmt("Game.Player%d.FovY", i), &g_PlayerExtCfg[j].fovy, 5.f, 175.f);
+#endif
 		configRegisterInt(strFmt("Game.Player%d.FovAffectsZoom", i), &g_PlayerExtCfg[j].fovzoom, 0, 1);
+#ifdef PD_ENABLE_VR
+		configRegisterFloat(strFmt("Game.Player%d.GunFovY", i), &g_VrShadowGunFovY[j], 5.f, 175.f);
+#else
 		configRegisterFloat(strFmt("Game.Player%d.GunFovY", i), &g_PlayerExtCfg[j].gunfovy, 5.f, 175.f);
+#endif
 		configRegisterInt(strFmt("Game.Player%d.MouseAimMode", i), &g_PlayerExtCfg[j].mouseaimmode, 0, 1);
 		configRegisterFloat(strFmt("Game.Player%d.MouseAimSpeedX", i), &g_PlayerExtCfg[j].mouseaimspeedx, 0.f, 10.f);
 		configRegisterFloat(strFmt("Game.Player%d.MouseAimSpeedY", i), &g_PlayerExtCfg[j].mouseaimspeedy, 0.f, 10.f);

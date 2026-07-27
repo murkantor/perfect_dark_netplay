@@ -21,6 +21,13 @@
 #include "data.h"
 #include "types.h"
 
+#ifdef PD_ENABLE_VR
+// VR DEVIATION (shared file): the VR build force-applies CONTROLMODE_12 to the live options,
+// so gamefileSave cannot derive the saved control mode from them without overwriting the
+// preference the flat exe reads out of this same save file. Remember what was stored instead.
+static s32 g_VrStoredControlMode[2] = { CONTROLMODE_11, CONTROLMODE_11 };
+#endif
+
 u8 *gamefileGetFlags(void)
 {
 	return g_GameFile.flags;
@@ -109,9 +116,17 @@ void gamefileApplyOptions(struct gamefile *file)
 	}
 
 	if (pakHasBitflag(GAMEFILEFLAG_SCREENSIZE_CINEMA, file->flags)) {
+#ifdef PD_ENABLE_VR
+		optionsSetScreenSize(SCREENSIZE_FULL);
+#else
 		optionsSetScreenSize(SCREENSIZE_CINEMA);
+#endif
 	} else if (pakHasBitflag(GAMEFILEFLAG_SCREENSIZE_WIDE, file->flags)) {
+#ifdef PD_ENABLE_VR
+		optionsSetScreenSize(SCREENSIZE_FULL);
+#else
 		optionsSetScreenSize(SCREENSIZE_WIDE);
+#endif
 	} else {
 		optionsSetScreenSize(SCREENSIZE_FULL);
 	}
@@ -160,11 +175,30 @@ void gamefileLoadDefaults(struct gamefile *file)
 	optionsSetMusicVolume(0x7f80);
 #endif
 	sndSetSoundMode(SOUNDMODE_STEREO);
+#ifdef PD_ENABLE_VR
+	// VR
+	optionsSetControlMode(player1, CONTROLMODE_12);
+	optionsSetControlMode(player2, CONTROLMODE_12);
+	// VR DEVIATION (shared file): a fresh file must persist the flat default, not VR's forced mode.
+	g_VrStoredControlMode[0] = CONTROLMODE_11;
+	g_VrStoredControlMode[1] = CONTROLMODE_11;
+#else
 	optionsSetControlMode(player1, CONTROLMODE_11);
 	optionsSetControlMode(player2, CONTROLMODE_11);
+#endif
+
 	pakClearAllBitflags(file->flags);
 
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+	// VR
+	if (g_PlayerExtCfg[0].extcontrols) {
+		optionsSetControlMode(player1, CONTROLMODE_12);
+	}
+	if (g_PlayerExtCfg[1].extcontrols) {
+		optionsSetControlMode(player2, CONTROLMODE_12);
+	}
+#else
 	// override with PC controls if enabled in the config
 	if (g_PlayerExtCfg[0].extcontrols) {
 		optionsSetControlMode(player1, CONTROLMODE_PC);
@@ -172,6 +206,7 @@ void gamefileLoadDefaults(struct gamefile *file)
 	if (g_PlayerExtCfg[1].extcontrols) {
 		optionsSetControlMode(player2, CONTROLMODE_PC);
 	}
+#endif
 #endif
 
 #ifdef PLATFORM_N64
@@ -340,6 +375,21 @@ s32 gamefileLoad(s32 device)
 			optionsSetControlMode(p2index, savebufferReadBits(&buffer, 3));
 
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+			// VR DEVIATION (shared file): capture the stored control modes before VR forces
+			// CONTROLMODE_12 over them, so gamefileSave can write the user's preference back
+			// unchanged for the flat exe.
+			g_VrStoredControlMode[0] = optionsGetControlMode(p1index);
+			g_VrStoredControlMode[1] = optionsGetControlMode(p2index);
+
+			// VR
+			if (g_PlayerExtCfg[0].extcontrols) {
+				optionsSetControlMode(p1index, CONTROLMODE_12);
+			}
+			if (g_PlayerExtCfg[1].extcontrols) {
+				optionsSetControlMode(p2index, CONTROLMODE_12);
+			}
+#else
 			// override with PC controls if enabled in the config
 			if (g_PlayerExtCfg[0].extcontrols) {
 				optionsSetControlMode(p1index, CONTROLMODE_PC);
@@ -347,6 +397,7 @@ s32 gamefileLoad(s32 device)
 			if (g_PlayerExtCfg[1].extcontrols) {
 				optionsSetControlMode(p2index, CONTROLMODE_PC);
 			}
+#endif
 #endif
 
 			for (i = 0; i < ARRAYCOUNT(g_GameFile.flags); i++) {
@@ -451,12 +502,18 @@ s32 gamefileSave(s32 device, s32 fileid, u16 deviceserial)
 	pakSetBitflag(GAMEFILEFLAG_SCREENSPLIT, g_GameFile.flags, optionsGetScreenSplit());
 	pakSetBitflag(GAMEFILEFLAG_SCREENRATIO, g_GameFile.flags, optionsGetScreenRatio());
 
+#ifndef PD_ENABLE_VR
 #if VERSION >= VERSION_NTSC_1_0
 	pakSetBitflag(GAMEFILEFLAG_SCREENSIZE_WIDE, g_GameFile.flags, optionsGetScreenSize() == SCREENSIZE_WIDE);
 	pakSetBitflag(GAMEFILEFLAG_SCREENSIZE_CINEMA, g_GameFile.flags, optionsGetScreenSize() == SCREENSIZE_CINEMA);
 #else
 	pakSetBitflag(GAMEFILEFLAG_SCREENSIZE_WIDE, g_GameFile.flags, optionsGetEffectiveScreenSize() == SCREENSIZE_WIDE);
 	pakSetBitflag(GAMEFILEFLAG_SCREENSIZE_CINEMA, g_GameFile.flags, optionsGetEffectiveScreenSize() == SCREENSIZE_CINEMA);
+#endif
+#else
+	// VR DEVIATION (shared file): gamefileApplyOptions force-applies SCREENSIZE_FULL in VR, so
+	// re-deriving these bits from the live value would erase the screen size stored for the flat
+	// exe that shares this save. Leave the loaded bits as they are.
 #endif
 
 	pakSetBitflag(GAMEFILEFLAG_HIRES, g_GameFile.flags, g_ViRes == VIRES_HI);
@@ -516,6 +573,14 @@ s32 gamefileSave(s32 device, s32 fileid, u16 deviceserial)
 #ifdef PLATFORM_N64
 		savebufferOr(&buffer, optionsGetControlMode(p1index), 3);
 		savebufferOr(&buffer, optionsGetControlMode(p2index), 3);
+#elif defined(PD_ENABLE_VR)
+		// VR
+		// VR DEVIATION (shared file): upstream passed the CONTROLMODE_12 constant as a player
+		// index, saving mpchr slot 1's control mode into both fields. Write back the stored
+		// preference for a player VR force-applied CONTROLMODE_12 to, and the live value
+		// otherwise — the flat exe reads these fields out of the same save file.
+		savebufferOr(&buffer, g_PlayerExtCfg[0].extcontrols ? g_VrStoredControlMode[0] : optionsGetControlMode(p1index), 3);
+		savebufferOr(&buffer, g_PlayerExtCfg[1].extcontrols ? g_VrStoredControlMode[1] : optionsGetControlMode(p2index), 3);
 #else
 		// PC control mode is enabled in the .ini to avoid changing the save structure
 		s32 controlmode = optionsGetControlMode(p1index);

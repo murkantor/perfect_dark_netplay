@@ -24,6 +24,11 @@
 #include "data.h"
 #include "types.h"
 #include "string.h"
+
+#ifdef PD_ENABLE_VR
+#include "../port/vr/vr_log.h"
+#endif
+
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "game/lang.h" /* langChaosTransform (chaos UwUify) */
@@ -154,9 +159,16 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 		timery -= 8;
 	}
 
+#ifdef PD_ENABLE_VR
+    // Removed for VR
+//	if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && hudmsgIsZoomRangeVisible()) {
+//		timery -= 8;
+//	}
+#else
 	if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && hudmsgIsZoomRangeVisible()) {
 		timery -= 8;
 	}
+#endif
 
 	if (playercount == 2) {
 		if (IS4MB() || (optionsGetScreenSplit() != SCREENSPLIT_VERTICAL && playernum == 0)) {
@@ -211,6 +223,12 @@ Gfx *hudmsgRenderMissionTimer(Gfx *gdl, u32 alpha)
 		gSPExtraGeometryModeEXT(gdl++, G_ASPECT_MODE_EXT,
 				cheatIsActive(CHEAT_MIRROR) ? g_HudAlignModeR : g_HudAlignModeL);
 	}
+#endif
+
+#ifdef PD_ENABLE_VR
+    // VR
+    x = viewleft + g_HudPaddingX + 3 + 105;
+    y = timery - 84;
 #endif
 
 	gdl = textRender(gdl, &x, &y, buffer, g_CharsNumeric, g_FontNumeric, textcolour, 0x000000a0, viGetWidth(), viGetHeight_hack(), 0, 0);
@@ -275,6 +293,14 @@ Gfx *hudmsgRenderZoomRange(Gfx *gdl, u32 alpha)
 	} else if (optionsGetEffectiveScreenSize() != SCREENSIZE_FULL) {
 		texty += 8;
 	}
+
+#ifdef PD_ENABLE_VR
+    texty -= 84; // VR
+    // VR
+    if ((IS4MB() || optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || playercount >= 3) && !g_CountdownTimerOff) {
+        texty += 10;
+    }
+#endif
 
 	// Left side - current zoom level
 	zoomfov = currentPlayerGetGunZoomFov();
@@ -432,6 +458,12 @@ s32 hudmsg0f0ddb1c(s32 *arg0, s32 arg1)
 
 	result = result + viewwidth - *arg0 - arg1 - 11;
 
+#ifdef PD_ENABLE_VR
+    if (result > 230) { // VR
+    result = 230;
+}
+#endif
+
 	if (LOCALPLAYERCOUNT() == 1 || (LOCALPLAYERCOUNT() == 2 && g_InCutscene && !g_MainIsEndscreen)) {
 		result -= 16;
 
@@ -458,6 +490,12 @@ s32 hudmsg0f0ddb1c(s32 *arg0, s32 arg1)
 	}
 
 	result = result + viewwidth - *arg0 - arg1 - 11;
+
+#ifdef PD_ENABLE_VR
+    if (result > 230) { // VR
+        result = 230;
+    }
+#endif
 
 	if (LOCALPLAYERCOUNT() == 1) {
 		result -= 16;
@@ -985,7 +1023,11 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = msg->ymargin;
 		break;
 	case HUDMSGALIGN_TOP:
+#ifdef PD_ENABLE_VR
+        y = viewtop + msg->ymargin + 150; // VR Top Subtitle // y = viewtop + msg->ymargin + 13;
+#else
 		y = viewtop + msg->ymargin + 13;
+#endif
 		break;
 	case HUDMSGALIGN_BOTTOM:
 		y = viewtop + viewheight - msg->height - msg->ymargin - 14;
@@ -1012,7 +1054,11 @@ void hudmsgCalculatePosition(struct hudmessage *msg)
 		y = (viewheight - msg->height) / 2 + viewtop + msg->ymargin;
 		break;
 	case HUDMSGALIGN_BELOWVIEWPORT:
+#ifdef PD_ENABLE_VR
+		y = viewtop + viewheight - (msg->height / 2) - 150; // VR Down Subtitle // y = viewtop + viewheight - (msg->height / 2) + 18;
+#else
 		y = viewtop + viewheight - (msg->height / 2) + 18;
+#endif
 		break;
 	default:
 		y = msg->ymargin;
@@ -1535,6 +1581,15 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		x = msg->x;
 		y = msg->y;
 
+#ifdef PD_ENABLE_VR
+        // VR
+        if(msg->type == 0) {
+            s32 xMiddle = viGetViewLeft() + (viGetViewWidth() >> 1) / 2;
+            x = xMiddle;
+            y -= 70;
+        }
+#endif
+
 		if (msg->type == HUDMSGTYPE_INGAMESUBTITLE && playerIsHealthVisible()) {
 			y += (s32)(16.0f * playerGetHealthBarHeightFrac());
 		}
@@ -1565,6 +1620,19 @@ Gfx *hudmsgsRender(Gfx *gdl)
 		}
 #endif
 
+#ifdef PD_ENABLE_VR
+//		if (msg->type == HUDMSGTYPE_CUTSCENESUBTITLE) { // Removed for VR
+//#if VERSION >= VERSION_NTSC_1_0
+//			gDPSetScissor(gdl++, 0,
+//					(x - 4) * g_ScaleX, 0,
+//					(x + msg->width + 3) * g_ScaleX, viGetBufHeight());
+//#else
+//			gDPSetScissor(gdl++, 0,
+//					(x - 4) * g_ScaleX, y - 4,
+//					(x + msg->width + 3) * g_ScaleX, y + msg->height);
+//#endif
+//		}
+#else
 		if (msg->type == HUDMSGTYPE_CUTSCENESUBTITLE) {
 #if VERSION >= VERSION_NTSC_1_0
 			gDPSetScissor(gdl++, 0,
@@ -1576,6 +1644,7 @@ Gfx *hudmsgsRender(Gfx *gdl)
 					(x + msg->width + 3) * g_ScaleX, y + msg->height + 3);
 #endif
 		}
+#endif
 
 		switch (msg->state) {
 		case HUDMSGSTATE_FREE:

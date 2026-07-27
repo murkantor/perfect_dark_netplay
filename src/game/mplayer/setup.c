@@ -467,6 +467,41 @@ MenuItemHandlerResult mpArenaMenuHandler(s32 operation, struct menuitem *item, u
 	return 0;
 }
 
+#ifdef PD_ENABLE_VR
+MenuItemHandlerResult menuhandlerMpControlStyle(s32 operation, struct menuitem *item, union handlerdata *data) // VR
+{
+    // Display index 0 -> actual value 1 ("1.2")
+    // Display index 1 -> actual value 4 ("Ext" / CONTROLMODE_PC)
+    static const s32 vrModes[] = { 1, 4 };
+
+    switch (operation) {
+        case MENUOP_GETOPTIONCOUNT:
+            data->dropdown.value = 1; // Only VR-1 (VR-2 is not used)
+            break;
+        case MENUOP_GETOPTIONTEXT:
+            if (data->dropdown.value == 0) {
+                return (intptr_t) "VR-1";
+            } else {
+                return (intptr_t) "VR-2";
+            }
+        case MENUOP_SET: {
+            s32 actualValue = vrModes[data->dropdown.value];
+            optionsSetControlMode(g_MpPlayerNum, (actualValue == 4 ? CONTROLMODE_PC : actualValue));
+#ifndef PLATFORM_N64
+            g_PlayerExtCfg[g_MpPlayerNum & 3].extcontrols = (actualValue == 4);
+#endif
+            break;
+        }
+        case MENUOP_GETSELECTEDINDEX: {
+            s32 currentMode = optionsGetControlMode(g_MpPlayerNum);
+            data->dropdown.value = (currentMode == CONTROLMODE_PC) ? 1 : 0;
+            break;
+        }
+    }
+
+    return 0;
+}
+#else
 MenuItemHandlerResult menuhandlerMpControlStyle(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	u16 labels[] = {
@@ -498,6 +533,7 @@ MenuItemHandlerResult menuhandlerMpControlStyle(s32 operation, struct menuitem *
 
 	return 0;
 }
+#endif
 
 MenuItemHandlerResult menuhandlerMpWeaponSlot(s32 operation, struct menuitem *item, union handlerdata *data)
 {

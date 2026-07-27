@@ -16,6 +16,23 @@
 #include "mod.h"
 #endif
 
+#ifdef PD_ENABLE_VR
+#define LOGI(...) printf(__VA_ARGS__)
+
+
+#include <stdio.h>
+#include <game/bondgun.h>
+
+
+
+// VR------------------------------
+extern bool vr_R_trigger;
+extern bool vr_L_trigger;
+extern bool vr_throw_cancelled;
+extern bool VrMotionThrowing;
+//-----------------------------------
+#endif
+
 #define ANIM_HEADER_CACHE_SIZE 40
 #define ANIM_FRAME_CACHE_SIZE  32
 
@@ -293,6 +310,80 @@ u8 animLoadFrame(s16 animnum, s32 framenum)
 	s32 offset;
 	s32 stack;
 	s32 loadframenum = framenum;
+
+#ifdef PD_ENABLE_VR
+
+    if(VrMotionThrowing) {
+
+        if (animnum == 107 || animnum == 43 || animnum == 354 || animnum == 353 || animnum == 27 ||
+            animnum == 516 || animnum == 106 || animnum == 234 || animnum == 235 ||
+            animnum == 156) {
+            // nothing
+        } else {
+//        LOGI("animLoadFrame : animnum = %d, framenum = %d", animnum, framenum);
+        }
+
+        // --- VR HOOK: JUMP CUT (START THEN END) --- VR
+        if (animnum == 1010 || animnum == 1031) { // WEAPON_FALCON... / WEAPON_DY357... swing VR
+
+            loadframenum = 1;
+        }
+
+        if (animnum == 1055) { // WEAPON_UNARMED palm
+            loadframenum = 1;
+        }
+
+        if (animnum == 1002) { // WEAPON_UNARMED fist
+            loadframenum = 29;
+        }
+
+        if (animnum == 1027 ||
+            animnum == 1028) { // 1027 & 1028 = WEAPON_COMBATKNIFE FIRE FUNC_PRIMARY
+            loadframenum = 0;
+        }
+
+        if (animnum == 1051 && !vr_throw_cancelled) {
+            // The length of the first part we want to keep
+            s32 firstPartLength = 0;
+
+            // The frame from which we resume the animation
+            s32 jumpToFrame = 14;
+
+            // Phase 1: Play the beginning normally (from 0 to 4)
+            if (framenum < firstPartLength) {
+                loadframenum = framenum;
+            }
+                // Phase 2: The jump! We skip directly to the end
+            else {
+                // Calculate how many frames have elapsed since the jump
+                s32 framesSinceJump = framenum - firstPartLength;
+
+                // Resume playback from our landing point
+                loadframenum = jumpToFrame + framesSinceJump;
+
+                // If the very last frame of the animation is reached, freeze it
+                if (loadframenum > 41) {
+                    loadframenum = 41;
+                }
+            }
+        } else if (animnum == 1051) {
+            loadframenum = 0;
+        }
+
+
+        if (animnum == 1062) { // WEAPON_GRENADE or WEAPON_NBOMB Hold trigger
+            if (loadframenum > 10) {
+                loadframenum = 10;
+            }
+        }
+
+        if (animnum == 1077 || animnum == 1078 || animnum == 1080) { //WEAPON_TIMEDMINE or WEAPON_PROXIMITYMINE or WEAPON_REMOTEMINE or WEAPON_ECMMINE Hold trigger
+            loadframenum = 0;
+        }
+
+    }
+    // -------------------------------------------
+#endif
 
 	for (i = 0; i < ANIM_FRAME_CACHE_SIZE; i++) {
 		if (g_AnimFrameAnimNums[i] == animnum && g_AnimFrameFrameNums[i] == loadframenum) {

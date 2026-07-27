@@ -1,4 +1,11 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_input.h"
+
+#include <math.h>
+#endif
+
 #include "constants.h"
 #include "game/acosfasinf.h"
 #include "game/bondgun.h"
@@ -17,12 +24,29 @@
 #include "data.h"
 #include "types.h"
 
+#ifdef PD_ENABLE_VR
+#include "game/sight.h"
+#include <video.h>
+#include <game/savebuffer.h>
+#include <game/game_1531a0.h>
+#include <game/options.h>
+#include <lib/vi.h>
+
+#include "../../port/vr/vr_log.h"
+
+#define LOGI(...) printf(__VA_ARGS__)
+#endif
+
 #define BOLTBEAMTICKMODE_MANUAL    0
 #define BOLTBEAMTICKMODE_AUTOMATIC 1
 
 struct casing g_Casings[20];
 struct boltbeam g_BoltBeams[8];
 struct lasersight g_LaserSights[MAX_PLAYERS];
+#ifdef PD_ENABLE_VR
+extern float vr_world_scale;
+extern inline f32 sightGetAdjustedX(const f32 x);
+#endif
 
 void beamCreate(struct beam *beam, s32 weaponnum, struct coord *from, struct coord *to)
 {
@@ -1071,8 +1095,13 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 	static u32 sp2 = 7000;
 	static u32 sp3 = 9000;
 #endif
+#ifdef PD_ENABLE_VR
+    static u32 spb = 23; // Point size enlargement amplitude based on distance
+    static u32 spi = 3; // Point size
+#else
 	static u32 spb = 24;
 	static u32 spi = 6;
+#endif
 
 	mainOverrideVariable("sp1", &sp1);
 	mainOverrideVariable("sp2", &sp2);
@@ -1135,8 +1164,10 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 
 			colours = gfxAllocateColours(2);
 
+#ifndef PD_ENABLE_VR
 			colours[0].word = PD_BE32(0xff00005f);
 			colours[1].word = PD_BE32(0xff00000f);
+#endif
 
 			gSPColor(gdl++, osVirtualToPhysical(colours), 2);
 
@@ -1162,6 +1193,33 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 					pos.z = (pos.z - campos.f[2]) * 5.0f;
 
 					f0 = sqrtf(pos.f[0] * pos.f[0] + pos.f[1] * pos.f[1] + pos.f[2] * pos.f[2]);
+
+#ifdef PD_ENABLE_VR
+                    // ↓ INSÉRER ICI — juste après le calcul de f0
+                    {
+                        f32 near_dist = 200.0f;   // transition commence très proche
+                        f32 far_dist  = 800.0f;   // déjà 100% opaque à partir d'ici
+                        f32 alpha_factor;
+                        u8 alpha_outer;
+                        u8 alpha_inner;
+
+                        if (f0 <= near_dist) {
+                            alpha_factor = 0.4f;
+                        } else if (f0 >= far_dist) {
+                            alpha_factor = 1.0f;
+                        } else {
+                            alpha_factor = 0.4f + 0.4f * (f0 - near_dist) / (far_dist - near_dist);  // interpolation de 40% à 100%
+                        }
+
+                        alpha_outer = (u8)(0xCC * alpha_factor);
+                        alpha_inner = (u8)(0x5F * alpha_factor);
+
+                        colours[0].word = PD_BE32((0xff0000 << 8) | alpha_outer);
+                        colours[1].word = PD_BE32((0xff0000 << 8) | alpha_inner);
+
+
+                    }
+#endif
 
 					spcc = sp1;
 
@@ -1245,6 +1303,72 @@ Gfx *lasersightRenderDot(Gfx *gdl)
 					gSPVertex(gdl++, osVirtualToPhysical(vertices), 4, 0);
 
 					gSPTri2(gdl++, 0, 1, 2, 2, 3, 0);
+
+#ifdef PD_ENABLE_VR
+                    // VR render 3 laser dot so we can see it better
+
+                    // Offset toward the camera (around 1cm = small value)
+                    f32 offset = 0.5f;
+
+                    f32 len = sqrtf(pos.f[0] * pos.f[0] + pos.f[1] * pos.f[1] + pos.f[2] * pos.f[2]);
+                    f32 nx = (len > 0.0f) ? -pos.f[0] / len * offset : 0.0f;
+                    f32 ny = (len > 0.0f) ? -pos.f[1] / len * offset : 0.0f;
+                    f32 nz = (len > 0.0f) ? -pos.f[2] / len * offset : 0.0f;
+
+                    // Quad 2: offset 1x toward the camera
+                    Vtx *vertices2 = gfxAllocateVertices(4);
+                    vertices2[0].colour = vertices2[1].colour = vertices2[2].colour = vertices2[3].colour = 0;
+                    vertices2[0].s = 0;   vertices2[0].t = 0;
+                    vertices2[1].s = 512; vertices2[1].t = 0;
+                    vertices2[2].s = 512; vertices2[2].t = 512;
+                    vertices2[3].s = 0;   vertices2[3].t = 512;
+
+                    vertices2[0].x = vertices[0].x + nx;
+                    vertices2[0].y = vertices[0].y + ny;
+                    vertices2[0].z = vertices[0].z + nz;
+
+                    vertices2[1].x = vertices[1].x + nx;
+                    vertices2[1].y = vertices[1].y + ny;
+                    vertices2[1].z = vertices[1].z + nz;
+
+                    vertices2[2].x = vertices[2].x + nx;
+                    vertices2[2].y = vertices[2].y + ny;
+                    vertices2[2].z = vertices[2].z + nz;
+
+                    vertices2[3].x = vertices[3].x + nx;
+                    vertices2[3].y = vertices[3].y + ny;
+                    vertices2[3].z = vertices[3].z + nz;
+
+                    gSPVertex(gdl++, osVirtualToPhysical(vertices2), 4, 0);
+                    gSPTri2(gdl++, 0, 1, 2, 2, 3, 0);
+
+                    // Quad 3 : offset 2x toward the camera
+                    Vtx *vertices3 = gfxAllocateVertices(4);
+                    vertices3[0].colour = vertices3[1].colour = vertices3[2].colour = vertices3[3].colour = 0;
+                    vertices3[0].s = 0;   vertices3[0].t = 0;
+                    vertices3[1].s = 512; vertices3[1].t = 0;
+                    vertices3[2].s = 512; vertices3[2].t = 512;
+                    vertices3[3].s = 0;   vertices3[3].t = 512;
+
+                    vertices3[0].x = vertices[0].x + nx * 2.0f;
+                    vertices3[0].y = vertices[0].y + ny * 2.0f;
+                    vertices3[0].z = vertices[0].z + nz * 2.0f;
+
+                    vertices3[1].x = vertices[1].x + nx * 2.0f;
+                    vertices3[1].y = vertices[1].y + ny * 2.0f;
+                    vertices3[1].z = vertices[1].z + nz * 2.0f;
+
+                    vertices3[2].x = vertices[2].x + nx * 2.0f;
+                    vertices3[2].y = vertices[2].y + ny * 2.0f;
+                    vertices3[2].z = vertices[2].z + nz * 2.0f;
+
+                    vertices3[3].x = vertices[3].x + nx * 2.0f;
+                    vertices3[3].y = vertices[3].y + ny * 2.0f;
+                    vertices3[3].z = vertices[3].z + nz * 2.0f;
+
+                    gSPVertex(gdl++, osVirtualToPhysical(vertices3), 4, 0);
+                    gSPTri2(gdl++, 0, 1, 2, 2, 3, 0);
+#endif
 				}
 			}
 		}
@@ -1332,17 +1456,35 @@ Gfx *lasersightRenderBeam(Gfx *gdl)
 			spcc.y = g_LaserSights[i].beamnear.y;
 			spcc.z = g_LaserSights[i].beamnear.z;
 
+#ifdef PD_ENABLE_VR
+            // VR fix laser beam
+            float scale5 = 5.0f;
+            if(vr_world_scale == 42.5f){
+                scale5 = 5.0f / 0.50;
+            }
+
+            spcc.x = (spcc.x - campos.x) * scale5;
+            spcc.y = (spcc.y - campos.y) * scale5;
+            spcc.z = (spcc.z - campos.z) * scale5;
+#else
 			spcc.x = (spcc.x - campos.x) * 5.0f;
 			spcc.y = (spcc.y - campos.y) * 5.0f;
 			spcc.z = (spcc.z - campos.z) * 5.0f;
+#endif
 
 			spc0.x = g_LaserSights[i].beamfar.x;
 			spc0.y = g_LaserSights[i].beamfar.y;
 			spc0.z = g_LaserSights[i].beamfar.z;
 
+#ifdef PD_ENABLE_VR
+            spc0.x = (spc0.x - campos.f[0]) * scale5;
+            spc0.y = (spc0.y - campos.f[1]) * scale5;
+            spc0.z = (spc0.z - campos.f[2]) * scale5;
+#else
 			spc0.x = (spc0.x - campos.f[0]) * 5.0f;
 			spc0.y = (spc0.y - campos.f[1]) * 5.0f;
 			spc0.z = (spc0.z - campos.f[2]) * 5.0f;
+#endif
 
 			spb4.x = spc0.f[0] - spcc.x;
 			spb4.y = spc0.f[1] - spcc.y;
@@ -1440,11 +1582,19 @@ void lasersightSetBeam(s32 id, s32 arg1, struct coord *near, struct coord *far)
 	g_LaserSights[i].unk28 = 0;
 }
 
+#ifdef PD_ENABLE_VR
+void lasersightSetDot(s32 handnum, struct coord *pos, struct coord *rot)
+{
+	s32 i;
+
+    if (lasersightExists(handnum, &i)) {
+#else
 void lasersightSetDot(s32 arg0, struct coord *pos, struct coord *rot)
 {
 	s32 i;
 
 	if (lasersightExists(arg0, &i)) {
+#endif
 		g_LaserSights[i].unk28 += 1.0f;
 
 		g_LaserSights[i].dotpos.x = pos->x;

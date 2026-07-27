@@ -1,4 +1,8 @@
 #include <ultra64.h>
+#ifdef PD_ENABLE_VR
+#include <game/quaternion.h>
+#include <game/camera.h>
+#endif
 #include "constants.h"
 #include "game/bondgrab.h"
 #include "game/bondmove.h"
@@ -912,7 +916,11 @@ void bgrabHandleActivate(void)
 		g_Vars.currentplayer->bondactivateorreload = 0;
 	} else {
 		g_Vars.currentplayer->bondactivateorreload = 0;
+#ifdef PD_ENABLE_VR
+		//bmoveSetMode(MOVEMODE_WALK); Removed for VR - disable B button for grab/ungrab.
+#else
 		bmoveSetMode(MOVEMODE_WALK);
+#endif
 	}
 }
 

@@ -19,6 +19,16 @@ extern s32 g_NetDedicatedMode;
 #include "../fast3d/gfx_sdlgpu.h"
 #include "rt_ext.h"
 
+#ifdef PD_ENABLE_VR
+// VR (upstream): eye sizing/aspect comes from OpenXR (docs/PORT_VR.md)
+#include "../vr/vr_openxr.h"
+#include "../vr/vr_log.h"
+
+extern float RENDER_SCALE;
+extern bool vr_restart_with_new_scale(float scale);
+static f32 *vidModeScales = NULL;
+#endif
+
 #ifdef PLATFORM_NSWITCH
 #define DEFAULT_VID_WIDTH 1280
 #define DEFAULT_VID_HEIGHT 720
@@ -121,7 +131,13 @@ static f64 accumDelta = 0.0;
 static f64 fpsTime = 0.0;
 static s32 fpsNumFrames = 0;
 
+#ifdef PD_ENABLE_VR
+// VR (upstream): non-static — vr_openxr.cpp re-inits the mode list after a
+// render-scale change
+s32 videoInitDisplayModes(void);
+#else
 static s32 videoInitDisplayModes(void);
+#endif
 static s32 videoVRRCap(void);
 static s32 videoEffectiveLimit(s32 userlimit);
 void optionsMenuInit();
@@ -191,9 +207,11 @@ s32 videoInit(void)
 		gfx_dlcache_set_cullmode(cm);
 	}
 
-#ifdef USE_SDLGPU
+#if defined(USE_SDLGPU) && !defined(PD_ENABLE_VR)
 	// Optional SDL_GPU (Vulkan) renderer. Probed before the window exists so
 	// a missing/broken Vulkan driver falls back to OpenGL cleanly.
+	// VR builds are OpenGL-only (GL_OVR_multiview2 stereo) — the CMake gate
+	// also forces USE_SDLGPU off there; this is belt-and-braces.
 	{
 		const char *rend = sysArgGetString("--renderer");
 		if (!rend || !*rend) {
@@ -264,6 +282,12 @@ s32 videoInit(void)
 	gfx_set_mipmap_filter((enum MipmapFilteringMode)texMipmapFilter);
 	videoSetAnisotropicFilter(texAnisotropicFilter);
 	optionsMenuInit();
+
+#ifdef PD_ENABLE_VR
+	// VR (upstream): force fullscreen OFF — the main window is hidden and the
+	// mirror window is a normal desktop window.
+	videoSetFullscreen(false);
+#endif
 
 	initDone = true;
 	return 0;
@@ -442,11 +466,27 @@ s32 videoGetCenterWindow(void)
 
 f32 videoGetAspect(void)
 {
+#ifdef PD_ENABLE_VR
+	// VR (upstream): the game-visible aspect is the eye buffer's, pinned by
+	// the OpenXR runtime (1.0f until the session reports it).
+	return XrAspect;
+#else
 	return gfx_current_dimensions.aspect_ratio;
+#endif
 }
 
 s32 videoGetDisplayModeIndex(void)
 {
+#ifdef PD_ENABLE_VR
+	// VR (upstream): no "Custom" row — scan all modes, -1 when unmatched
+	for (s32 i = 0; i < vidNumModes; ++i) {
+		if (vidModes[i].width == gfx_current_dimensions.width &&
+		    vidModes[i].height == gfx_current_dimensions.height) {
+			return i;
+		}
+	}
+	return -1;
+#else
 	for (s32 i = 1; i < vidNumModes; ++i) {
 		if (vidModes[i].width == gfx_current_dimensions.width &&
 		    vidModes[i].height == gfx_current_dimensions.height) {
@@ -455,6 +495,7 @@ s32 videoGetDisplayModeIndex(void)
 	}
 	// Current dimensions don't match any known mode, so return index 0, "Custom".
 	return 0;
+#endif
 }
 
 s32 videoGetMSAA(void)
@@ -537,8 +578,80 @@ s32 videoGetDisplayFPS(void)
 	return vidDisplayFPS;
 }
 
+#ifdef PD_ENABLE_VR
+s32 videoInitDisplayModes(void) // VR (upstream): non-static
+#else
 static s32 videoInitDisplayModes(void)
+#endif
 {
+#ifdef PD_ENABLE_VR
+	// VR (upstream, verbatim): the "resolution" list is internal-render-scale
+	// presets of the headset-recommended size, plus any non-duplicate SDL
+	// modes. Selecting a preset restarts the VR render at that scale.
+	if (!wmAPI->get_current_display_mode(&vidModeDefault.width, &vidModeDefault.height)) {
+		vidModeDefault.width = VrRecommendedW;
+		vidModeDefault.height = VrRecommendedH;
+		return false;
+	}
+
+	const s32 numBaseModes = wmAPI->get_num_display_modes();
+	if (!numBaseModes) {
+		return false;
+	}
+
+	const float customScales[] = { 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f };
+	const s32 numCustomModes = 1 + (s32)(sizeof(customScales) / sizeof(customScales[0]));
+
+	displaymode *modeList = sysMemZeroAlloc((numBaseModes + numCustomModes) * sizeof(displaymode));
+	if (!modeList) return false;
+
+	f32 *scaleList = sysMemZeroAlloc((numBaseModes + numCustomModes) * sizeof(f32));
+	if (!scaleList) { sysMemFree(modeList); return false; }
+
+	s32 numModes = 0;
+
+	// Custom modes scaled from the internal render resolution
+	for (s32 i = 0; i < (s32)(sizeof(customScales) / sizeof(customScales[0])); ++i) {
+		modeList[numModes].width  = (s32)(VrRecommendedW * customScales[i]) & ~1;
+		modeList[numModes].height = (s32)(VrRecommendedH * customScales[i]) & ~1;
+		scaleList[numModes] = customScales[i];
+		++numModes;
+	}
+
+	// SDL modes — skip those that duplicate a custom mode
+	s32 w = -1, h = w, neww = w, newh = w;
+	for (s32 i = 0; i < numBaseModes; ++i) {
+		wmAPI->get_display_mode(i, &neww, &newh);
+		if (neww == w && newh == h) continue;
+		w = neww;
+		h = newh;
+
+		s32 duplicate = false;
+		for (s32 j = 0; j < numModes; ++j) {
+			if (modeList[j].width == w && modeList[j].height == h) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (duplicate) continue;
+
+		modeList[numModes].width = w;
+		modeList[numModes].height = h;
+		scaleList[numModes] = 0.f;
+		++numModes;
+	}
+
+	modeList = sysMemRealloc(modeList, numModes * sizeof(displaymode));
+	scaleList = sysMemRealloc(scaleList, numModes * sizeof(f32));
+	if (!modeList || !scaleList) return false;
+
+	if (vidModeScales) sysMemFree(vidModeScales);
+	vidModes = modeList;
+	vidModeScales = scaleList;
+	vidNumModes = numModes;
+
+	return true;
+#else
 	if (!wmAPI->get_current_display_mode(&vidModeDefault.width, &vidModeDefault.height)) {
 		vidModeDefault.width = 640;
 		vidModeDefault.height = 480;
@@ -584,6 +697,7 @@ static s32 videoInitDisplayModes(void)
 	vidNumModes = numModes;
 
 	return true;
+#endif
 }
 
 s32 videoGetDisplayMode(displaymode *out, const s32 index)
@@ -604,6 +718,20 @@ void videoSetDisplayMode(const s32 index)
 {
 	const displaymode dm = vidModes[index];
 
+#ifdef PD_ENABLE_VR
+	// VR (upstream): scale presets restart the VR render at the new scale
+	vidWidth = dm.width;
+	vidHeight = dm.height;
+
+	if (vidModeScales && vidModeScales[index] > 0.f) {
+		RENDER_SCALE = vidModeScales[index];
+	} else {
+		RENDER_SCALE = 1.0f;
+	}
+
+	vr_log("videoSetDisplayMode: index=%d, %dx%d, scale=%.2f",
+	       index, vidWidth, vidHeight, RENDER_SCALE);
+#else
 	if (index == 0) {
 		// "Custom" video mode.
 		return;
@@ -611,6 +739,7 @@ void videoSetDisplayMode(const s32 index)
 
 	vidWidth = dm.width;
 	vidHeight = dm.height;
+#endif
 
 	s32 posX = 100;
 	s32 posY = 100;
@@ -627,6 +756,13 @@ void videoSetDisplayMode(const s32 index)
 			wmAPI->set_dimensions(vidWidth, vidHeight, posX, posY);
 		}
 	}
+
+#ifdef PD_ENABLE_VR
+	// Update RENDER_SCALE and restart the VR swapchain at the new size
+	if (vidModeScales && vidModeScales[index] > 0.f) {
+		vr_restart_with_new_scale(vidModeScales[index]);
+	}
+#endif
 }
 
 s32 videoGetTextureFilter2D(void)

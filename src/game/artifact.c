@@ -1,4 +1,9 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include <math.h> // VR (upstream)
+#endif
+
 #include "lib/sched.h"
 #include "constants.h"
 #include "game/camera.h"
@@ -732,6 +737,20 @@ Gfx *artifactsRenderGlaresForRoom(Gfx *gdl, s32 roomnum)
 
 					f24 *= viGetViewWidth() * (1.0f / 240.0f) / camGetPerspAspect();
 					f26 *= viGetViewHeight() * (1.0f / 240.0f);
+
+#ifdef PD_ENABLE_VR
+					{
+						// VR (upstream): normalize the glare size in pixels to make
+						// it independent of the FOV. 60 degrees is the reference FOV.
+						const float kFovRefDeg = 60.0f;
+						const float fovYDeg = viGetFovY();
+						const float corr = tanf(0.5f * kFovRefDeg * (float)M_PI / 180.0f)
+								/ tanf(0.5f * fovYDeg * (float)M_PI / 180.0f);
+
+						f24 *= corr;
+						f26 *= corr;
+					}
+#endif
 
 					if (brightness > 3.0f) {
 						f32 alpha = (light->colour & 0xf) * 17;

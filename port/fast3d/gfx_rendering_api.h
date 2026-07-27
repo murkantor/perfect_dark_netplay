@@ -12,7 +12,7 @@ struct GfxClipParameters {
     bool invert_y;
 };
 
-enum FilteringMode { FILTER_NONE, FILTER_LINEAR, FILTER_THREE_POINT };
+enum FilteringMode { FILTER_NONE, FILTER_LINEAR, FILTER_THREE_POINT, FILTER_TRILINEAR }; // FILTER_TRILINEAR: VR (upstream)
 enum MipmapFilteringMode { MIPMAP_DISABLED, MIPMAP_NEAREST, MIPMAP_LINEAR };
 
 struct GfxRenderingAPI {
@@ -115,6 +115,13 @@ struct GfxRenderingAPI {
 	// via gfx_retro_common.h. Runs from gfx_run's tail. Implemented by GL and
 	// SDL_GPU; NULL allowed — the dispatcher checks before calling.
 	void (*retro_filter)(int pixw, int pixh, int cmode, int clevels, int fx, float warp);
+
+	// --- PCVR (OpenXR) — docs/PORT_VR.md, upstream Alex-LeTux/perfect_dark_VR.
+	// Implemented by the GL backend only; NULL allowed — callers check first.
+	void (*set_eye_offsets)(float lx, float lfrustum_x, float lhud, float lfrustum_y,
+	                        float rx, float rfrustum_x, float rhud, float rfrustum_y);
+	bool (*is_multiview)(void);
+	void (*mirror_to_desktop)(uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h);
 };
 
 #endif

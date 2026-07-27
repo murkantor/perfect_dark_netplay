@@ -12,12 +12,20 @@ void func0f0d7364(void);
 void sightTick(bool sighton);
 s32 sightCalculateBoxBound(s32 arg0, s32 arg1, s32 arg2, s32 arg3);
 Gfx *sightDrawTargetBox(Gfx *gdl, struct trackedprop *trackedprop, s32 textid, s32 time);
+#ifdef PD_ENABLE_VR
+Gfx *sightDrawAimer(Gfx *gdl, f32 fx, f32 fy, s32 radius, s32 cornergap, u32 colour); // VR (upstream): subpixel aimer position
+#else
 Gfx *sightDrawAimer(Gfx *gdl, s32 x, s32 y, s32 radius, s32 cornergap, u32 colour);
+#endif
 Gfx *sightDrawDelayedAimer(Gfx *gdl, s32 x, s32 y, s32 radius, s32 cornergap, u32 colour);
 Gfx *sightDrawDefault(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawClassic(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawType2(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
+#ifdef PD_ENABLE_VR
+Gfx *sightDrawSkedarTriangle(Gfx *gdl, f32 x, f32 y, s32 dir, u32 colour); // VR (upstream)
+#else
 Gfx *sightDrawSkedarTriangle(Gfx *gdl, s32 x, s32 y, s32 dir, u32 colour);
+#endif
 Gfx *sightDrawSkedar(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawZoom(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);
 Gfx *sightDrawMaian(Gfx *gdl, bool sighton, f32 crossx, f32 crossy);

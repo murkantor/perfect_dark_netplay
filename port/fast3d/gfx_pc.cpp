@@ -57,7 +57,34 @@ uintptr_t gfxFramebuffer;
 #define RATIO_X (gfx_current_dimensions.width / (float)SCREEN_WIDTH)
 #define RATIO_Y (gfx_current_dimensions.height / (float)SCREEN_HEIGHT)
 
+#ifdef PD_ENABLE_VR
+// ============================================================================
+// VR STEREO globals (upstream Alex-LeTux/perfect_dark_VR, verbatim; docs/PORT_VR.md)
+// Deviations: upstream also included glad.h/<atomic> here — not needed, this
+// path only calls rapi + vr_* entry points, never GL directly.
+// ============================================================================
+#include "../vr/vr_openxr.h"
+#include "../vr/vr_log.h"
+
+extern "C" bool vr_is_initialized();
+void   vr_begin_eye_render();
+void   vr_end_eye_render();
+float* vr_get_eye_proj_mtx(int eye);
+void   vr_get_eye_view_offset(int eye, float* out_tx, float* out_ty, float* out_tz, float* out_tx_HUD);
+bool vr_dl_is_pause_or_menu = false;
+int vr_MpPause = 0;
+static float s_vr_proj_col_major[16] = {};
+extern "C" int vr_get_internal_render_width();
+extern "C" int vr_get_internal_render_height();
+extern "C" bool vr_end_frame_and_submit();
+extern float vr_get_horizontal_fov_offset_ratio(int eye);
+static float g_vr_internal_scale = 1.0f;
+extern "C" void gfx_sdl_get_mirror_dimensions(int* w, int* h);
+
+#define MAX_BUFFERED 1024 // VR (upstream)
+#else
 #define MAX_BUFFERED 256
+#endif
 #define MAX_LIGHTS 4
 #define MAX_VERTICES 128
 #define MAX_VERTEX_COLORS 64
@@ -1599,7 +1626,13 @@ static void gfx_sp_pop_matrix(uint32_t count) {
 }
 
 static float gfx_adjust_x_for_aspect_ratio(float x, float w = 1.f) {
+#ifdef PD_ENABLE_VR
+    // VR (upstream): no aspect correction here — the eye framebuffer's real
+    // aspect is handled by the XR projection matrix.
+    if (fbActive || vr_is_initialized()) {
+#else
     if (fbActive) {
+#endif
         return x;
     } else {
         return (rsp.aspect_ofs * w + x) * rsp.aspect_scale / gfx_current_dimensions.aspect_ratio;
@@ -2473,6 +2506,16 @@ static void gfx_sp_geometry_mode(uint32_t clear, uint32_t set) {
 }
 
 static inline void gfx_update_aspect_mode(void) {
+#ifdef PD_ENABLE_VR
+    // VR (upstream): the resolution/FOV mapping is already fully handled by
+    // gfx_adjust_viewport_or_scissor() (viewport) and shaders_build_xr_projection().
+    if (vr_is_initialized()) {
+        rsp.aspect_mode = 0;
+        rsp.aspect_scale = XrAspect;
+        rsp.aspect_ofs = 0.0f;
+        return;
+    }
+#endif
     const uint32_t side = rsp.aspect_mode & G_ASPECT_CENTER_EXT;
 
     rsp.aspect_scale = rsp.aspect_mode ? gfx_current_native_aspect : gfx_current_window_dimensions.aspect_ratio;
@@ -2501,6 +2544,42 @@ static void gfx_sp_extra_geometry_mode(uint32_t clear, uint32_t set) {
 }
 
 static void gfx_adjust_viewport_or_scissor(XYWidthHeight* area, bool preserve_aspect = false) {
+#ifdef PD_ENABLE_VR
+    if (vr_is_initialized()) {
+        // VR (upstream, verbatim): map the game's logical screen into the eye
+        // FBO with a uniform scale + centring. g_vr_internal_scale tracks the
+        // logical viewport width relative to SCREEN_WIDTH.
+        const float fboW = (float)vr_get_internal_render_width();
+        const float fboH = (float)vr_get_internal_render_height();
+        const float vrAspect = fboW / fboH;
+
+        const float refWidth  = (float)SCREEN_WIDTH  * g_vr_internal_scale;
+        const float refHeight = (float)SCREEN_HEIGHT * g_vr_internal_scale;
+
+        const float vrRatioX = fboW / refWidth;
+        const float vrRatioY = fboH / refHeight;
+        const float vrUniformRatio = std::max(vrRatioX, vrRatioY);
+
+        const float scaledW = refWidth  * vrUniformRatio;
+        const float scaledH = refHeight * vrUniformRatio;
+        const float offsetX = (fboW - scaledW) * 0.5f;
+        const float offsetY = (fboH - scaledH) * 0.5f;
+
+        area->width  = (int32_t)(area->width  * vrUniformRatio);
+        area->height = (int32_t)(area->height * vrUniformRatio);
+        area->x      = (int32_t)(area->x * vrUniformRatio + offsetX);
+        area->y      = (int32_t)(fboH - (area->y * vrUniformRatio + offsetY));
+
+        if (preserve_aspect) {
+            const float ratio = vrAspect / gfx_current_dimensions.aspect_ratio;
+            const float midx  = fboW * 0.5f;
+            area->x      = (int32_t)(midx + (area->x - midx) * ratio);
+            area->x     += (int32_t)(rsp.aspect_ofs * fboW * 0.5f);
+            area->width  = (int32_t)(area->width * ratio);
+        }
+        return;
+    }
+#endif
     // HACK: assume all target framebuffers have the same aspect
     // Use floor/ceil to ensure scissor fully contains the logical region
     // and prevents sub-pixel gaps at viewport edges
@@ -2539,12 +2618,33 @@ static void gfx_calc_and_set_viewport(const Vp_t* viewport) {
     float x = (viewport->vtrans[0] / 4.0f) - width / 2.0f;
     float y = ((viewport->vtrans[1] / 4.0f) + height / 2.0f);
 
+#ifdef PD_ENABLE_VR
+    // VR (upstream): remember the game's logical render scale for
+    // gfx_adjust_viewport_or_scissor / gfx_draw_rectangle.
+    if (SCREEN_WIDTH > 0 && width > 0.0f) {
+        g_vr_internal_scale = width / (float)SCREEN_WIDTH;
+    }
+#endif
+
     rdp.viewport.x = x;
     rdp.viewport.y = y;
     rdp.viewport.width = width;
     rdp.viewport.height = height;
 
-    gfx_adjust_viewport_or_scissor(&rdp.viewport);
+#ifdef PD_ENABLE_VR
+    if (vr_is_initialized()) {
+        // VR (upstream): the 3D viewport MUST always cover the entire eye FBO —
+        // the OpenXR projection matrix already maps the full FOV onto it, and
+        // resizing it by any other ratio reintroduces distortion.
+        rdp.viewport.x = 0;
+        rdp.viewport.y = 0;
+        rdp.viewport.width  = (int32_t)vr_get_internal_render_width();
+        rdp.viewport.height = (int32_t)vr_get_internal_render_height();
+    } else
+#endif
+    {
+        gfx_adjust_viewport_or_scissor(&rdp.viewport);
+    }
 
     rdp.viewport_or_scissor_changed = true;
 }
@@ -2605,6 +2705,18 @@ static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32
     float y = lry / 4.0f;
     float width = (lrx - ulx) / 4.0f;
     float height = (lry - uly) / 4.0f;
+
+#ifdef PD_ENABLE_VR
+    // VR (upstream): widen the scissor box according to the actual lens-offset
+    // asymmetry reported by the OpenXR runtime for each eye.
+    if (vr_is_initialized()) {
+        const float offsetRatioL = std::fabs(vr_get_horizontal_fov_offset_ratio(0));
+        const float offsetRatioR = std::fabs(vr_get_horizontal_fov_offset_ratio(1));
+        const float margin = std::max(offsetRatioL, offsetRatioR) + 0.15f; // +15% safety margin
+        x -= width * margin;
+        width += width * margin * 2.0f;
+    }
+#endif
 
     rdp.scissor.x = x;
     rdp.scissor.y = y;
@@ -2972,7 +3084,17 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     ur->w = 1.0f;
 
     // The coordinates for texture rectangle shall bypass the viewport setting
+#ifdef PD_ENABLE_VR
+    // VR (upstream): the bypass viewport tracks the game's logical render scale.
+    struct XYWidthHeight default_viewport = {
+            0,
+            (int16_t)(SCREEN_HEIGHT * g_vr_internal_scale),
+            (uint32_t)(SCREEN_WIDTH  * g_vr_internal_scale),
+            (uint32_t)(SCREEN_HEIGHT * g_vr_internal_scale)
+    };
+#else
     struct XYWidthHeight default_viewport = { 0, (int16_t)SCREEN_HEIGHT, (uint32_t)SCREEN_WIDTH, (uint32_t)SCREEN_HEIGHT };
+#endif
     struct XYWidthHeight viewport_saved = rdp.viewport;
     uint32_t geometry_mode_saved = rsp.geometry_mode;
 
@@ -3584,6 +3706,16 @@ static void gfx_run_dl(Gfx* cmd) {
         switch (opcode) {
                 // RSP commands:
             case G_NOOP:
+#ifdef PD_ENABLE_VR
+            {
+                // VR (upstream): tagged NOOP ('VR' << 16 | flag) marks
+                // pause/menu display lists for the stereo HUD path.
+                uint32_t tag_w1 = cmd->words.w1;
+                if ((tag_w1 >> 16) == 0x5652) {
+                    vr_dl_is_pause_or_menu = (tag_w1 & 0xFFFF) != 0;
+                }
+            }
+#endif
                 break;
             case G_MTX: {
                 gfx_sp_matrix(C0(16, 8), (const int32_t*)seg_addr(cmd->words.w1));
@@ -4174,6 +4306,86 @@ extern "C" void gfx_run(Gfx* commands) {
         return;
     }
     dropped_frame = false;
+
+#ifdef PD_ENABLE_VR
+    if (vr_is_initialized() && gfx_rapi->is_multiview && gfx_rapi->is_multiview()) {
+        // --- VR + MULTIVIEW PATH (upstream Alex-LeTux/perfect_dark_VR, verbatim).
+        // One geometry pass into the layered OpenXR swapchain; the per-eye
+        // divergence comes from set_eye_offsets consumed by the multiview
+        // vertex shader. The flat present/MSAA/retro path below never runs.
+        gfx_rapi->update_framebuffer_parameters(0,
+                (uint32_t)vr_get_internal_render_width(),
+                (uint32_t)vr_get_internal_render_height(),
+                1, false, true, true, true);
+        gfx_rapi->start_frame();
+        rdp.viewport_or_scissor_changed = true;
+        rendering_state.viewport = {};
+        rendering_state.scissor = {};
+
+        gfx_current_dimensions.width  = (uint32_t)vr_get_internal_render_width();
+        gfx_current_dimensions.height = (uint32_t)vr_get_internal_render_height();
+        gfx_current_dimensions.aspect_ratio =
+                (float)gfx_current_dimensions.width / (float)gfx_current_dimensions.height;
+        gfx_current_game_window_viewport = { 0, 0,
+                                             gfx_current_dimensions.width,
+                                             gfx_current_dimensions.height };
+
+        // VR aspect
+        gfx_update_aspect_mode();
+
+        // offsets + matrix
+        float tx0, ty0, tz0, tx_HUD0, tx1, ty1, tz1, tx_HUD1;
+        vr_get_eye_view_offset(0, &tx0, &ty0, &tz0, &tx_HUD0);
+        vr_get_eye_view_offset(1, &tx1, &ty1, &tz1, &tx_HUD1);
+
+        memcpy(s_vr_proj_col_major, vr_get_eye_proj_mtx(0), 16 * sizeof(float));
+
+        float offsets[8] = {
+                tx0 * vr_get_eye_proj_mtx(0)[0], vr_get_eye_proj_mtx(0)[8],
+                tx_HUD0 * vr_get_eye_proj_mtx(0)[0], vr_get_eye_proj_mtx(0)[9],
+                tx1 * vr_get_eye_proj_mtx(1)[0], vr_get_eye_proj_mtx(1)[8],
+                tx_HUD1 * vr_get_eye_proj_mtx(1)[0], vr_get_eye_proj_mtx(1)[9]
+        };
+
+        if (gfx_rapi->set_eye_offsets) {
+            gfx_rapi->set_eye_offsets(offsets[0], offsets[1], offsets[2], offsets[3],
+                                      offsets[4], offsets[5], offsets[6], offsets[7]);
+        }
+
+        // 1) Acquire + attach swapchain to the multiview FBO (binds + clears)
+        vr_begin_eye_render();
+
+        // 2) Tell the backend that "current FBO = index 0"
+        gfx_rapi->start_draw_to_framebuffer(0, 1.0f);
+
+        gfx_sp_reset();
+        buf_vbo_len = buf_vbo_num_tris = 0;
+        fbActive = 0;
+        rdp.textures_changed[0] = rdp.textures_changed[1] = true;
+        rdp.viewport_or_scissor_changed = true;
+
+        // 3) Render the game directly into the headset texture
+        gfx_run_dl(commands);
+        gfx_flush();
+
+        // 4) Release the swapchain image
+        vr_end_eye_render();
+
+        // 5) MIRROR: blit the left eye to the desktop back buffer
+        int mw = 0, mh = 0;
+        gfx_sdl_get_mirror_dimensions(&mw, &mh);
+        if (mw > 0 && mh > 0 && gfx_rapi->mirror_to_desktop) {
+            gfx_rapi->mirror_to_desktop(
+                    (uint32_t)vr_get_internal_render_width(),
+                    (uint32_t)vr_get_internal_render_height(),
+                    (uint32_t)mw, (uint32_t)mh);
+        }
+
+        gfx_rapi->end_frame();
+        gfx_wapi->swap_buffers_begin();
+        return;
+    }
+#endif
 
     gfx_rapi->update_framebuffer_parameters(0, gfx_current_window_dimensions.width,
                                             gfx_current_window_dimensions.height, 1, false, true, true,

@@ -2479,7 +2479,11 @@ struct player {
 	// These crouch fields are related to recovering after a fall - not actual crouching
 	/*0x0088*/ f32 sumcrouch;
 	/*0x008c*/ f32 crouchheight; // Negative, is Y offset to regular standing height
+#ifdef PD_ENABLE_VR
+	/*0x0090*/ f32 crouchtime240; // VR (upstream): float for smooth crouch progression. Not netplay-serialised.
+#else
 	/*0x0090*/ s32 crouchtime240; // Set to 60 when landing, counts down
+#endif
 	/*0x0094*/ f32 crouchfall; // -90 when slowing the descent, increments back to 0 while returning to stand
 
 	/*0x0098*/ s32 swaypos;
@@ -2774,12 +2778,20 @@ struct player {
 	/*0x19a0*/ f32 armourscale;
 	/*0x19a4*/ f32 speedgo;
 	/*0x19a8*/ s32 sighttimer240;
+#ifdef PD_ENABLE_VR
+	/*0x19ac*/ f32 crouchoffsetreal; // VR (upstream): float crouch offset. Not netplay-serialised (wire carries crouchofs).
+#else
 	/*0x19ac*/ s32 crouchoffsetreal;
+#endif
 	/*0x19b0*/ RoomNum floorroom;
 	/*0x19b2*/ u8 unk19b2;
 	/*0x19b3*/ u8 dostartnewlife;
 	/*0x19b4*/ f32 crouchoffsetsmall;
+#ifdef PD_ENABLE_VR
+	/*0x19b8*/ f32 crouchoffsetrealsmall; // VR (upstream): float. 0 = standing, -90 = squatting
+#else
 	/*0x19b8*/ s32 crouchoffsetrealsmall; // 0 = standing, -90 = squatting, can be between during transition
+#endif
 	/*0x19bc*/ f32 vv_height;     // 159 when Jo, regardless of crouch state
 	/*0x19c0*/ f32 vv_headheight; // 172 when Jo, regardless of crouch state
 	/*0x19c4*/ f32 vv_eyeheight;  // 159 when Jo, regardless of crouch state
@@ -5345,8 +5357,13 @@ struct movedata {
 	/*0x58*/ bool zooming;
 	/*0x5c*/ f32 zoomoutfovpersec;
 	/*0x60*/ f32 zoominfovpersec;
+#ifdef PD_ENABLE_VR
+	/*0x64*/ f32 crouchdown; // VR (upstream): float crouch input. Not netplay-serialised.
+	/*0x68*/ f32 crouchup;   // VR (upstream)
+#else
 	/*0x64*/ s32 crouchdown;
 	/*0x68*/ s32 crouchup;
+#endif
 	/*0x6c*/ bool rleanleft;
 	/*0x70*/ bool rleanright;
 	/*0x74*/ bool detonating;

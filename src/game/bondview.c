@@ -25,6 +25,13 @@
 #include "video.h"
 #endif
 
+#ifdef PD_ENABLE_VR
+//VR
+extern int VrSmallW;
+extern int VrSmallH;
+extern float XrAspect;
+#endif
+
 #ifdef AVOID_UB
 char var800a41c0[26];
 #else
@@ -40,7 +47,12 @@ u8 var800a8b58nb[0x1c0];
 s32 var8007f840 = 0;
 u8 var8007f844 = 0;
 u8 var8007f848 = 0;
+#ifdef PD_ENABLE_VR
+//s32 g_IrBinocularRadius = PAL ? 102 : 90;
+s32 g_IrBinocularRadius = PAL ? 204 : 180; // VR Fix
+#else
 s32 g_IrBinocularRadius = PAL ? 102 : 90;
+#endif
 s32 var8007f850 = 3;
 u32 var8007f854 = 0x00000000;
 u32 var8007f858 = 0xb8000000;
@@ -575,6 +587,21 @@ f32 bview0f142d74(s32 arg0, f32 arg1, f32 arg2, f32 arg3)
 	f32 result;
 	f32 value = arg2;
 
+#ifdef PD_ENABLE_VR
+//    if (arg0 < 0 || arg0 >= 0x80) { // Romoved for VR - Fix eyespy
+//        return 0.01f;
+//    }
+
+
+	value += arg0 * arg1;
+
+	if (arg3 > value * value) {
+//        result = sqrtf(arg3 - value * value) * 0.00625f;
+        result = sqrtf(arg3 - value * value) * 0.003125f ; // VR Fix
+	} else {
+		result = 0.01f;
+	}
+#else
 	if (arg0 < 0 || arg0 >= 0x80) {
 		return 0.01f;
 	}
@@ -586,6 +613,7 @@ f32 bview0f142d74(s32 arg0, f32 arg1, f32 arg2, f32 arg3)
 	} else {
 		result = 0.01f;
 	}
+#endif
 
 	return result;
 }
@@ -842,7 +870,12 @@ Gfx *bviewDrawFisheye(Gfx *gdl, u32 colour, u32 alpha, s32 shuttertime60, s8 sta
 			f32 f2;
 
 			if (sqhalfheight > f20 * f20) {
+#ifdef PD_ENABLE_VR
+//                f2 = sqrtf(sqhalfheight - f20 * f20) * (1.0f / 160.0f);
+                f2 = sqrtf(sqhalfheight - f20 * f20) * (1.0f / 320.0f); // VR Fix
+#else
 				f2 = sqrtf(sqhalfheight - f20 * f20) * (1.0f / 160.0f);
+#endif
 			} else {
 				f2 = 0.01f;
 			}
@@ -997,7 +1030,11 @@ Gfx *bviewDrawEyespyMetrics(Gfx *gdl)
 	s32 scale = 1;
 	f32 palscale = viewwidth > SCREEN_WIDTH_LO ? 1.4f : 1.0f;
 #else
+#ifdef PD_ENABLE_VR
+    s32 scale = viewwidth > VrSmallW ? 2 : 1; // VR
+#else
 	s32 scale = viewwidth > SCREEN_WIDTH_LO ? 2 : 1;
+#endif
 #endif
 #if VERSION >= VERSION_NTSC_1_0
 	bool vsplit = false;
@@ -2393,7 +2430,11 @@ Gfx *bviewDrawIrLens(Gfx *gdl)
 			// Rendering a line that overlaps the semicircle
 			// in the middle of the screen
 			f32 f0 = a0;
+#ifdef PD_ENABLE_VR
+            s32 semicirclewidth = sqrtf(sqinnerradius - (s32) (f0 * f0)) * (viewwidth / (f32) VrSmallW); // VR
+#else
 			s32 semicirclewidth = sqrtf(sqinnerradius - (s32) (f0 * f0)) * (viewwidth / (f32) SCREEN_WIDTH_LO);
+#endif
 			s32 semicircleright = viewcentrex + semicirclewidth;
 			s32 rightsidewidth = viewwidth - semicircleright;
 			// if playernum is 1 or 3, shift to the right by viewwidth
@@ -2578,7 +2619,12 @@ Gfx *bviewDrawHorizonScanner(Gfx *gdl)
 	s32 turnangle = atan2f(-lookx, lookz) * 180.0f / M_PI;
 	f32 fovy;
 	char arrows[12];
+#ifdef PD_ENABLE_VR
+//    s32 tmplensheight = 130;
+    s32 tmplensheight = 260; // VR Fix
+#else
 	s32 tmplensheight = 130;
+#endif
 	s32 lenstop;
 	s32 lensheight;
 	s32 liney;
@@ -2827,7 +2873,11 @@ Gfx *bviewDrawIrBinoculars(Gfx *gdl)
 		}
 
 		if (sqytocentre < sqradius) {
+#ifdef PD_ENABLE_VR
+            s32 xoffset = (viewwidth / (f32) VrSmallW) * sqrtf(sqradius - sqytocentre); // VR
+#else
 			s32 xoffset = (viewwidth / (f32) SCREEN_WIDTH_LO) * sqrtf(sqradius - sqytocentre);
+#endif
 
 			// Left side
 			if (leftx - xoffset > viewleft) {

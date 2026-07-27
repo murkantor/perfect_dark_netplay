@@ -36,6 +36,7 @@ set(ROMID "ntsc-final" CACHE STRING "Which ROM to build an executable for: ntsc-
 option(FORCE_CROSSCOMPILE "Force cross compiling" NO)
 option(DEDICATED_SERVER "Build a headless dedicated server (no SDL/OpenGL/audio/input; never a client)" OFF)
 option(USE_SDLGPU "Build the SDL_GPU (Vulkan) rendering backend in addition to OpenGL (desktop clients only; needs glslang)" ON)
+option(USE_VR "Build the PCVR (OpenXR) exe — a verbatim port of Alex-LeTux/perfect_dark_VR; requires a headset at runtime and the OpenGL renderer (docs/PORT_VR.md)" OFF)
 # Static shader-toolchain link defaults ON for MinGW/Windows so a release
 # build only needs SDL3/zlib1/libgcc/libwinpthread next to the exe (MSYS2
 # ships the .a archives). Other platforms default OFF — distro static
@@ -308,6 +309,11 @@ endif()
 # or --renderer sdlgpu; OpenGL stays the default either way.
 if(DEDICATED_SERVER OR NINTENDO_SWITCH)
   set(USE_SDLGPU OFF)
+  set(USE_VR OFF)
+endif()
+if(USE_VR)
+  # VR is OpenGL-only (GL_OVR_multiview2 stereo); don't build the SDL_GPU backend in
+  set(USE_SDLGPU OFF)
 endif()
 if(USE_SDLGPU)
   if(USE_SDLGPU_STATIC)
@@ -461,6 +467,15 @@ if(PD_ENABLE_RAPHNET)
   list(APPEND LIBS hidapi::hidapi)
 endif()
 
+# PCVR (OpenXR) — docs/PORT_VR.md. Uses the MSYS2 MinGW-native loader
+# (pacman -S mingw-w64-x86_64-openxr-sdk); upstream's vendored MSVC
+# openxr_loader.lib is not linkable by GCC.
+if(USE_VR)
+  find_package(OpenXR REQUIRED)
+  add_definitions(-DPD_ENABLE_VR=1)
+  list(APPEND LIBS OpenXR::openxr_loader)
+endif()
+
 # Sources
 
 file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")
@@ -469,6 +484,13 @@ file(GLOB_RECURSE SRC_PORT_CXX "${CMAKE_SOURCE_DIR}/port/*.cpp")
 # Exclude vendored Lua from the main target; it is built as its own library
 # (pd_lua) below so its sources are not compiled with the game's flags.
 list(FILTER SRC_PORT EXCLUDE REGEX "/port/lua/")
+
+# port/vr compiles only into VR builds (-DUSE_VR=ON). Game-code hooks are
+# compile-gated on PD_ENABLE_VR, so flat builds contain zero VR code.
+if(NOT USE_VR)
+  list(FILTER SRC_PORT EXCLUDE REGEX "/port/vr/")
+  list(FILTER SRC_PORT_CXX EXCLUDE REGEX "/port/vr/")
+endif()
 
 file(GLOB_RECURSE SRC_GAME "${CMAKE_SOURCE_DIR}/src/game/*.c")
 

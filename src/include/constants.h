@@ -3892,6 +3892,35 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 // These constants are used when the game references 320 or 240 regardless of region.
 // They are sometimes used for things like scissor dimensions, despite never rendering
 // to these dimensions.
+#ifdef PD_ENABLE_VR
+// VR (upstream Alex-LeTux/perfect_dark_VR, verbatim): the whole-project resolution
+// regime the VR fork retuned every menu/HUD constant against. SCREEN_320/240 and
+// the FBALLOC sizes are doubled, SCREEN_WIDTH/HEIGHT_* are inert placeholders
+// (real eye-buffer sizing comes from vr_openxr.cpp VrSmallW/VrSmallH at runtime),
+// and the world renders square (SCREEN_ASPECT 1.0). Do not "fix" these values
+// independently of the upstream fork — VR feel depends on them.
+#include <stdint.h>
+extern int32_t g_internalRenderWidth;
+extern int32_t g_internalRenderHeight;
+
+#define SCREEN_320 640
+#define SCREEN_240 480
+
+#define FBALLOC_WIDTH_LO  640
+#define FBALLOC_HEIGHT_LO 440
+#define FBALLOC_WIDTH_HI  1280
+#define FBALLOC_HEIGHT_HI 440
+#define FBALLOC_HEIGHT    440
+
+// VR: now set in vr_openxr.cpp (VrSmallW / VrSmallH)
+#define SCREEN_WIDTH_LO  10
+#define SCREEN_HEIGHT_LO 10
+#define SCREEN_WIDTH_HI  10
+#define SCREEN_HEIGHT_HI 10
+
+#define SCREEN_ASPECT 1.0f // VR
+
+#else // !PD_ENABLE_VR
 #define SCREEN_320 320
 #define SCREEN_240 240
 
@@ -3924,6 +3953,7 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #endif
 
 #define SCREEN_ASPECT ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO)
+#endif // PD_ENABLE_VR
 
 #define SCREENRATIO_NORMAL 0
 #define SCREENRATIO_16_9   1

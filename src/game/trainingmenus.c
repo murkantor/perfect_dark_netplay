@@ -28,6 +28,12 @@
 
 #define NUM_BIO_LOCATIONS 14
 
+#ifdef PD_ENABLE_VR
+//VR
+extern int VrSmallW;
+extern int VrSmallH;
+#endif
+
 struct menudialogdef g_BioProfileMenuDialog;
 struct menudialogdef g_BioTextMenuDialog;
 struct menudialogdef g_HangarLocationDetailsMenuDialog;
@@ -1619,7 +1625,11 @@ MenuDialogHandlerResult ciCharacterProfileMenuDialog(s32 operation, struct menud
 		}
 
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+		x = (float)x * ((f32)VrSmallW / (f32)VrSmallH) / videoGetAspect(); // VR
+#else
 		x = (float)x * ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO) / videoGetAspect();
+#endif
 #endif
 
 		menuConfigureModel(&g_Menus[g_MpPlayerNum].menumodel, x, y, 0, 0, 0, 0, scale,
@@ -1636,7 +1646,11 @@ MenuDialogHandlerResult ciCharacterProfileMenuDialog(s32 operation, struct menud
 		break;
 	case MENUOP_TICK:
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+		x = (float)x * ((f32)VrSmallW / (f32)VrSmallH) / videoGetAspect(); // VR
+#else
 		x = (float)x * ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO) / videoGetAspect();
+#endif
 		g_Menus[g_MpPlayerNum].menumodel.newposx = x;
 #endif
 
@@ -2006,7 +2020,11 @@ MenuDialogHandlerResult dtTrainingDetailsMenuDialog(s32 operation, struct menudi
 		}
 #endif
 
+#ifdef PD_ENABLE_VR
+		g_Menus[g_MpPlayerNum].menumodel.newposx *= ((f32)VrSmallW / (f32)VrSmallH) / videoGetAspect(); // VR
+#else
 		g_Menus[g_MpPlayerNum].menumodel.newposx *= ((f32)SCREEN_WIDTH_LO / (f32)SCREEN_HEIGHT_LO) / videoGetAspect();
+#endif
 		g_Menus[g_MpPlayerNum].menumodel.curposx = g_Menus[g_MpPlayerNum].menumodel.newposx;
 #endif
 

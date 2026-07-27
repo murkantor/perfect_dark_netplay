@@ -1,4 +1,9 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include <math.h>
+#endif
+
 #include "constants.h"
 #include "../lib/naudio/n_sndp.h"
 #include "game/camdraw.h"
@@ -56,6 +61,13 @@
 #define BLUR_OFS 10
 #else
 #define BLUR_OFS 30
+#endif
+
+#ifdef PD_ENABLE_VR
+//VR
+extern int VrSmallW;
+extern int VrSmallH;
+extern float XrAspect;
 #endif
 
 #if VERSION >= VERSION_PAL_FINAL
@@ -2585,14 +2597,24 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 				s32 x1 = g_MenuScissorX1;
 				s32 x2 = g_MenuScissorX2;
 #else
+#ifdef PD_ENABLE_VR
+                s32 halfScreenWidth = VrSmallW >> 1;
+                f32 scale = XrAspect / videoGetAspect(); // VR
+#else
 				s32 halfScreenWidth = SCREEN_WIDTH_LO >> 1;
 				f32 scale = SCREEN_ASPECT / videoGetAspect();
+#endif
 				f32 width = (g_MenuScissorX2 - g_MenuScissorX1) * scale;
 				f32 center = (g_MenuScissorX1 + g_MenuScissorX2) * 0.5f;
 				center = ((center - halfScreenWidth) * scale) + halfScreenWidth;
 
+#ifdef PD_ENABLE_VR
+                s32 x1 = (s32)(center - width * 0.2f); // VR
+                s32 x2 = (s32)(center + width * 0.2f);
+#else
 				s32 x1 = (s32)(center - width * 0.5f);
 				s32 x2 = (s32)(center + width * 0.5f);
+#endif
 #endif
 
 				f32 aspect = (f32) (x2 - x1) / (f32) (g_MenuScissorY2 - g_MenuScissorY1);
@@ -2605,11 +2627,26 @@ Gfx *menuRenderModel(Gfx *gdl, struct menumodel *menumodel, s32 modeltype)
 
 				gdl = func0f0d49c8(gdl);
 
+#ifdef PD_ENABLE_VR
+                // VR---------------------------------
+                viSetFovAspectAndSize(
+                        g_Vars.currentplayer->fovy +50, aspect,
+                        g_Vars.currentplayer->viewwidth, g_Vars.currentplayer->viewheight);
+
+
+                gSPMatrix(gdl++, osVirtualToPhysical(camGetPerspectiveMtxL()),
+                          G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
+
+                gdl = vi0000af00(gdl, var800a2048[g_MpPlayerNum]);
+                gdl = vi0000aca4(gdl, znear, zfar);
+                //------------------------------------
+#else
 				viSetViewPosition(x1 * g_ScaleX, g_MenuScissorY1);
 				viSetFovAspectAndSize(g_Vars.currentplayer->fovy, aspect, (x2 - x1) * g_ScaleX, g_MenuScissorY2 - g_MenuScissorY1);
 
 				gdl = vi0000af00(gdl, var800a2048[g_MpPlayerNum]);
 				gdl = vi0000aca4(gdl, znear, zfar);
+#endif
 			}
 		}
 
@@ -5058,8 +5095,13 @@ void menuProcessInput(void)
 			inputs.mousescroll = inputKeyPressed(VK_MOUSE_WHEEL_DN) - inputKeyPressed(VK_MOUSE_WHEEL_UP);
 			inputs.mousemoved = inputMouseGetPosition(&inputs.mousex, &inputs.mousey) || inputs.mousescroll;
 			// aspect correct the X
+#ifdef PD_ENABLE_VR
+            const f32 cx = ((f32)inputs.mousex - (f32)(VrSmallW / 2)) * (videoGetAspect() / XrAspect);
+            inputs.mousex = (f32)(VrSmallW / 2) + cx;
+#else
 			const f32 cx = ((f32)inputs.mousex - (f32)(SCREEN_WIDTH_LO / 2)) * (videoGetAspect() / SCREEN_ASPECT);
 			inputs.mousex = (f32)(SCREEN_WIDTH_LO / 2) + cx;
+#endif
 		}
 		if (dialog && inputs.mousemoved) {
 			g_MenuUsingMouse = true;
@@ -5703,6 +5745,10 @@ Gfx *menuRenderBackgroundLayer2(Gfx *gdl, u8 bg, f32 frac)
 
 Gfx *menuRender(Gfx *gdl)
 {
+#ifdef PD_ENABLE_VR
+    // VR HACK : On prévient le moteur de rendu
+    gDPNoOpTag(gdl++, 0x56520001);
+#endif
 	static u32 usepiece = 1;
 
 	g_MpPlayerNum = 0;
@@ -6068,6 +6114,11 @@ Gfx *menuRender(Gfx *gdl)
 	gdl = func0f0d49c8(gdl);
 
 	g_ScaleX = 1;
+
+#ifdef PD_ENABLE_VR
+    // VR HACK: We notify that the menu is finished,
+    gDPNoOpTag(gdl++, 0x56520000);
+#endif
 
 	return gdl;
 }

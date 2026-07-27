@@ -22,12 +22,14 @@
 #include "lib/str.h"
 #include "data.h"
 #include "types.h"
+#ifndef PD_ENABLE_VR
 #ifndef PLATFORM_N64
 #include "input.h"
 #include "console.h"
 #define MENU_KEYBOARD_ROWS 6
 #else
 #define MENU_KEYBOARD_ROWS 5
+#endif
 #endif
 
 u8 g_MpSelectedPlayersForStats[MAX_PLAYERS];
@@ -615,6 +617,7 @@ Gfx *menuitemListRender(Gfx *gdl, struct menurendercontext *context)
 							height = 0;
 						}
 
+#ifndef PD_ENABLE_VR
 						// reuse the label color flag here
 						if (context->item->flags & MENUITEMFLAG_LABEL_CUSTOMCOLOUR) {
 							u32 savedunk04 = sp15c.list.unk04;
@@ -623,6 +626,7 @@ Gfx *menuitemListRender(Gfx *gdl, struct menurendercontext *context)
 							colour = sp15c.list.unk04;
 							sp15c.list.unk04 = savedunk04;
 						}
+#endif
 
 						gdl = textRenderProjected(gdl, &x, &y, text2, chars, font, colour, context->width - left + context->x, height, sp128, 0);
 
@@ -1190,7 +1194,11 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 	gdl = text0f153838(gdl);
 
 	// Render horizontal grid lines
+#ifdef PD_ENABLE_VR
+	for (row = 0; row < 6; row++) {
+#else
 	for (row = 0; row < MENU_KEYBOARD_ROWS + 1; row++) {
+#endif
 		gdl = menugfxDrawFilledRect(gdl, context->x + 4, context->y + row * 11 + 13,
 				context->x + 124, context->y + row * 11 + 14, 0x00ffff7f, 0x00ffff7f);
 	}
@@ -1207,11 +1215,13 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 				context->x + col * 12 + 5, context->y + rowspan * 11 + 14, 0x00ffff7f, 0x00ffff7f);
 	}
 
+#ifndef PD_ENABLE_VR
 #if MENU_KEYBOARD_ROWS > 5
 	gdl = menugfxDrawFilledRect(gdl, context->x + 4, context->y + 5 * 11 + 13,
 			context->x + 5, context->y + 6 * 11 + 14, 0x00ffff7f, 0x00ffff7f);
 	gdl = menugfxDrawFilledRect(gdl, context->x + 10 * 12 + 4, context->y + 5 * 11 + 13,
 			context->x + 10 * 12 + 5, context->y + 6 * 11 + 14, 0x00ffff7f, 0x00ffff7f);
+#endif
 #endif
 
 	gdl = text0f153628(gdl);
@@ -1220,7 +1230,11 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 	y = context->y + 2;
 
 	for (col = 0; col < 10; col++) {
+#ifdef PD_ENABLE_VR
+		for (row = 0; row < 5; row++) {
+#else
 		for (row = 0; row < MENU_KEYBOARD_ROWS; row++) {
+#endif
 			if (context->dialog->transitionfrac < 0) {
 				textcolour = g_MenuColours[context->dialog->type].item_unfocused;
 			} else {
@@ -1315,7 +1329,7 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 								g_MenuWave1Colours[context->dialog->type].item_disabled);
 					}
 
-#ifndef PLATFORM_N64
+#if !defined(PLATFORM_N64) && !defined(PD_ENABLE_VR)
 					// Dim the Caps button if keyboard typing is enabled
 					if (index == 1 && g_MenuKeyboardPlayer == g_MpPlayerNum) {
 						textcolour = colourBlend(
@@ -1336,6 +1350,9 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 								g_MenuWave1Colours[context->dialog->type].item_unfocused);
 					}
 				}
+#ifdef PD_ENABLE_VR
+			} else {
+#else
 			} else if (row == 5) {
 #ifndef PLATFORM_N64
 				if (col == 0) {
@@ -1354,6 +1371,7 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 				}
 #endif
 			} else {
+#endif
 				// Alpha-numeric cell
 				label[0] = g_KeyboardKeys[row][col];
 
@@ -1394,9 +1412,13 @@ Gfx *menuitemKeyboardRender(Gfx *gdl, struct menurendercontext *context)
 			if (data->col == 0) {
 				x2 += 12;
 			}
+#ifdef PD_ENABLE_VR
+		}
+#else
 		} else if (data->row == 5) {
 			x2 = context->x + 9 * 12 + 16;
 		}
+#endif
 
 		gdl = menugfxDrawLine(gdl, x1, y1, x2, y1 + 1, -1, -1); // top
 		gdl = menugfxDrawLine(gdl, x2, y1, x2 + 1, y2 + 1, -1, -1); // right
@@ -1438,7 +1460,11 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 			const s32 dleft = dialog->x + 4;
 			const s32 dright = dleft + 12 * 10;
 			const s32 dtop = menuitemGetTop(item, dialog) + 12;
+#ifdef PD_ENABLE_VR
+			const s32 dbottom = dtop + 11 * 5;
+#else
 			const s32 dbottom = dtop + 11 * 6;
+#endif
 			const s32 mx = inputs->mousex;
 			const s32 my = inputs->mousey;
 			if (mx > dleft && mx < dright && my > dtop && my < dbottom) {
@@ -1454,9 +1480,13 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 					} else {
 						kb->col = 8;
 					}
+#ifdef PD_ENABLE_VR
+				}
+#else
 				} else if (kb->row == 5) {
 					kb->col = 0;
 				}
+#endif
 			}
 		}
 #endif
@@ -1483,6 +1513,15 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 		if (inputs->updown) {
 			kb->row += inputs->updown;
 
+#ifdef PD_ENABLE_VR
+			if (kb->row < 0) {
+				kb->row = 4;
+			}
+
+			if (kb->row > 4) {
+				kb->row = 0;
+			}
+#else
 			if (kb->row < 0) {
 				kb->row = MENU_KEYBOARD_ROWS - 1;
 			}
@@ -1490,6 +1529,7 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 			if (kb->row > MENU_KEYBOARD_ROWS - 1) {
 				kb->row = 0;
 			}
+#endif
 
 			// If moving onto row 4, bump column to a valid one
 			if (kb->row == 4) {
@@ -1511,9 +1551,11 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 			}
 		}
 
+#ifndef PD_ENABLE_VR
 		if (kb->row == 5) {
 			kb->col = 0;
 		}
+#endif
 
 		if (prevcol != kb->col || prevrow != kb->row) {
 			menuPlaySound(MENUSOUND_KEYBOARDFOCUS);
@@ -1534,8 +1576,10 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 
 				item->handler(MENUOP_SET, item, &handlerdata);
 
+#ifndef PD_ENABLE_VR
 				inputs->start = false;
-#ifndef PLATFORM_N64
+#endif
+#if !defined(PLATFORM_N64) && !defined(PD_ENABLE_VR)
 				// On PC, Enter fires both inputs->start (just consumed
 				// here) AND queues a VK_RETURN that the OSK text-input
 				// path below would pick up — running the accept flow a
@@ -1556,8 +1600,10 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 			inputs->start = false;
 		}
 
+#ifndef PD_ENABLE_VR
 		u8 maxlen = item->param == 0 ? 10 : item->param;
-#ifndef PLATFORM_N64
+#endif
+#if !defined(PLATFORM_N64) && !defined(PD_ENABLE_VR)
 		if (g_MenuKeyboardPlayer != g_MpPlayerNum && inputKeyJustPressed(VK_A + ('i' - 'a'))) {
 			inputClearLastKey();
 			inputClearLastTextChar();
@@ -1633,6 +1679,7 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 						inputs->select = false;
 					}
 				}
+#ifndef PD_ENABLE_VR
 			} else if (kb->row == 5) {
 #ifndef PLATFORM_N64
 				if (!conIsOpen()) {
@@ -1648,6 +1695,7 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 					}
 				}
 #endif
+#endif
 			} else {
 				// Pressed A on number or letter
 				s32 appended = false;
@@ -1655,7 +1703,11 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 				s32 textwidth;
 				s32 textheight;
 
+#ifdef PD_ENABLE_VR
+				if (kb->string[9] == '\0') {
+#else
 				if (kb->string[maxlen-1] == '\0') {
+#endif
 					// String is not full
 					i = 0;
 
@@ -1691,7 +1743,11 @@ bool menuitemKeyboardTick(struct menuitem *item, struct menuinputs *inputs, u32 
 		// Handle deleting
 		if (delete && kb->string[0] != '\0') {
 			s32 deleted = false;
+#ifdef PD_ENABLE_VR
+			s32 i = 10;
+#else
 			s32 i = maxlen;
+#endif
 
 			menuPlaySound(MENUSOUND_FOCUS);
 
@@ -2606,6 +2662,38 @@ bool menuitemSliderTick(struct menuitem *item, struct menudialog *dialog, struct
 
 	if ((tickflags & MENUTICKFLAG_ITEMISFOCUSED)) {
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+		if (g_MenuUsingMouse && inputs->select) {
+			// handle mouse
+			struct menudialog *dialog = g_Menus[g_MpPlayerNum].curdialog;
+			if (dialog) {
+				const s32 left = dialog->x + dialog->width - 82;
+				const s32 right = dialog->x + dialog->width - 7;
+				const s32 size = right - left;
+				const s32 delta = inputs->mousex - left;
+				if (delta >= -8 && delta <= size + 8) {
+					index = (delta / (f32)size) * item->param3;
+					if (index < 0) {
+						index = 0;
+					}
+					if (index > item->param3) {
+						index = item->param3;
+					}
+					if (item->handler) {
+						if ((item->flags & MENUITEMFLAG_SLIDER_DEFERRED) &&
+							(tickflags & MENUTICKFLAG_DIALOGISDIMMED)) {
+							deferredindex = index;
+						} else {
+							item->handler(MENUOP_GET, item, &handlerdata);
+							handlerdata.slider.value = index;
+							item->handler(MENUOP_SET, item, &handlerdata);
+						}
+					}
+					return true;
+				}
+			}
+		}
+#else
 		if (g_AllowMouseHeld && g_MenuUsingMouse && (inputs->select || inputs->mouseheld)) {
 			// handle mouse
 			struct menudialog *dialog = g_Menus[g_MpPlayerNum].curdialog;
@@ -2640,6 +2728,7 @@ bool menuitemSliderTick(struct menuitem *item, struct menudialog *dialog, struct
 			}
 		}
 #endif
+#endif
 
 		if (tickflags & MENUTICKFLAG_DIALOGISDIMMED) {
 			if (item->handler) {
@@ -2658,7 +2747,7 @@ bool menuitemSliderTick(struct menuitem *item, struct menudialog *dialog, struct
 				index = 0;
 			}
 
-#ifndef PLATFORM_N64
+#if !defined(PLATFORM_N64) && !defined(PD_ENABLE_VR)
 			if (g_MenuUsingMouse && inputs->mousescroll) {
 				if ((item->flags & MENUITEMFLAG_SLIDER_FAST) == 0) {
 					index += -inputs->mousescroll;
@@ -2752,8 +2841,12 @@ bool menuitemSliderTick(struct menuitem *item, struct menudialog *dialog, struct
 				}
 			}
 
+#ifdef PD_ENABLE_VR
+			if (inputs->select) {
+#else
 			if (inputs->select || g_MouseEndDeferredSlider) {
 				g_MouseEndDeferredSlider = false;
+#endif
 				if (item->flags & MENUITEMFLAG_SLIDER_DEFERRED) {
 					deferredindex = -1;
 					if (item->handler) {

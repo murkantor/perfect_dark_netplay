@@ -70,7 +70,33 @@ enum virtkey {
 	VK_JOY3_BEGIN = VK_JOY2_BEGIN + INPUT_MAX_CONTROLLER_BUTTONS,
 	VK_JOY4_BEGIN = VK_JOY3_BEGIN + INPUT_MAX_CONTROLLER_BUTTONS,
 
+#ifdef PD_ENABLE_VR
+	/* VR controller buttons (upstream Alex-LeTux/perfect_dark_VR, verbatim).
+	 * Extends VK_TOTAL_COUNT, which feeds the key-bind save format — VR builds
+	 * only, so the flat exe's bind format is unchanged. */
+	VK_VR_BEGIN = VK_JOY_BEGIN + INPUT_MAX_CONTROLLERS * INPUT_MAX_CONTROLLER_BUTTONS,
+
+	// Left Hand (index 0)
+	VK_VR_LEFT_TRIGGER = VK_VR_BEGIN,
+	VK_VR_LEFT_GRIP,
+	VK_VR_LEFT_X,
+	VK_VR_LEFT_Y,
+	VK_VR_LEFT_MENU,
+	VK_VR_LEFT_THUMBSTICK_CLICK,
+
+	// Right Hand (index 1)
+	VK_VR_RIGHT_TRIGGER,
+	VK_VR_RIGHT_GRIP,
+	VK_VR_RIGHT_A,
+	VK_VR_RIGHT_B,
+	VK_VR_RIGHT_THUMBSTICK_CLICK,
+
+	VK_VR_END,
+
+	VK_TOTAL_COUNT = VK_VR_END,
+#else
 	VK_TOTAL_COUNT = VK_JOY_BEGIN + INPUT_MAX_CONTROLLERS * INPUT_MAX_CONTROLLER_BUTTONS,
+#endif
 };
 
 enum keymod {
@@ -287,6 +313,11 @@ u32 inputGetKeyModState(void);
 
 // /padtest console command body (SDL3 gamepad extras debug aid)
 void inputPadTest(const char *arg);
+
+#ifdef PD_ENABLE_VR
+// setup default VR bindings for player cidx (VR, upstream)
+void inputSetupVRBindings(s32 cidx);
+#endif
 
 // /gyro console command body (gyro aim live control)
 void inputGyroCommand(const char *arg);

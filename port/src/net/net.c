@@ -108,8 +108,17 @@ static void netRestoreLocalProfile(struct mpplayerconfig *cfg)
 	// Guard a snapshot that was itself taken from a poisoned profile (e.g. a
 	// force-closed session left NA in the array): never seat the local player
 	// with dead controls.
+#ifdef PD_ENABLE_VR
+	// VR DEVIATION (netplay): the fallback restores CONTROLMODE_12 (the mode the
+	// VR-1 input path in input.c / vrInputVrControlModeActive drives) instead of
+	// CONTROLMODE_11, which VR does not drive — upstream is single-player and
+	// cannot hit this (netRestoreLocalProfile only runs on a net seat).
+	cfg->controlmode = (g_NetLocalProfileBackup.controlmode == CONTROLMODE_NA)
+			? CONTROLMODE_12 : g_NetLocalProfileBackup.controlmode; // VR
+#else
 	cfg->controlmode = (g_NetLocalProfileBackup.controlmode == CONTROLMODE_NA)
 			? CONTROLMODE_11 : g_NetLocalProfileBackup.controlmode;
+#endif
 	cfg->options = g_NetLocalProfileBackup.options;
 	// The port's LOCAL player always reads pad 0 — keyboard/mouse and the
 	// first gamepad both land there (input.c). A non-zero contpad1 in the

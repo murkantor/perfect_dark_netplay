@@ -1,4 +1,9 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_input.h"
+#endif
+
 #include "constants.h"
 #include "../lib/naudio/n_sndp.h"
 #include "game/bondmove.h"
@@ -40,6 +45,11 @@
 #include "lib/lib_317f0.h"
 #include "data.h"
 #include "types.h"
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_log.h"
+#endif
+
 #ifndef PLATFORM_N64
 #include "net/net.h"
 #include "net/demo.h"
@@ -58,6 +68,11 @@ s32 g_ChaosWireframeChrs = 0;
 // bright wall colour (0..255 RGB), synced to the renderer in bgTickPortals.
 s32 g_ChaosIpodAd = 0;
 u8 g_ChaosIpodWall[3] = { 0, 217, 140 };
+#endif
+
+#ifdef PD_ENABLE_VR
+//VR
+extern bool g_DisableGrabViaB;
 #endif
 
 s16 *g_RoomPropListChunkIndexes;
@@ -643,6 +658,11 @@ void propDetach(struct prop *prop)
 	}
 }
 
+#ifdef PD_ENABLE_VR
+// VR CHR rendering optimization for standalone
+extern int weaponnum;
+#endif
+
 Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass)
 {
 	switch (prop->type) {
@@ -687,7 +707,84 @@ Gfx *propRender(Gfx *gdl, struct prop *prop, bool xlupass)
 			break;
 		}
 #endif
+#ifdef PD_ENABLE_VR
+		{
+			bool shouldrender = true;
+
+			// VR disable if aiming with FARSIGHT
+			if(weaponnum != WEAPON_FARSIGHT && !get_button_state(0, "grip")) {
+
+				// VR: upstream UB guard - the pawn-less local player (net
+				// spectator / headless / mid-respawn) would null-deref below.
+				if (prop->z < 2000 || g_Vars.currentplayer == NULL || g_Vars.currentplayer->prop == NULL) {
+					shouldrender = true;
+				}
+				else {
+					struct prop *playerprop = g_Vars.currentplayer->prop;
+					struct coord testpos;
+					f32 radius = 30.0f;  // Test radius (adjust based on character size)
+					bool visible = false;
+
+					// Test 1: Center chr
+					if (cdTestLos03(&playerprop->pos, playerprop->rooms,
+									&prop->pos,
+									CDTYPE_BG,
+									GEOFLAG_BLOCK_SHOOT)) {
+						visible = true;
+					}
+
+					// Test 2: Point on the left
+					if (!visible) {
+						testpos.x = prop->pos.x + radius;
+						testpos.y = prop->pos.y;
+						testpos.z = prop->pos.z;
+						if (cdTestLos03(&playerprop->pos, playerprop->rooms,
+										&testpos,
+										CDTYPE_BG,
+										GEOFLAG_BLOCK_SHOOT)) {
+							visible = true;
+						}
+					}
+
+					// Test 3: Point on the right
+					if (!visible) {
+						testpos.x = prop->pos.x - radius;
+						testpos.y = prop->pos.y;
+						testpos.z = prop->pos.z;
+						if (cdTestLos03(&playerprop->pos, playerprop->rooms,
+										&testpos,
+										CDTYPE_BG,
+										GEOFLAG_BLOCK_SHOOT)) {
+							visible = true;
+						}
+					}
+
+					// Test 4: head chr (important!)
+					if (!visible) {
+						testpos.x = prop->pos.x;
+						testpos.y = prop->pos.y + 50.0f;  // Height of a standing chr
+						testpos.z = prop->pos.z;
+						if (cdTestLos03(&playerprop->pos, playerprop->rooms,
+										&testpos,
+										CDTYPE_BG,
+										GEOFLAG_BLOCK_SHOOT)) {
+							visible = true;
+						}
+					}
+
+					shouldrender = visible;
+				}
+
+				if (shouldrender) {
+					gdl = chrRender(prop, gdl, xlupass);
+				}
+			}else {
+				gdl = chrRender(prop, gdl, xlupass);
+			}
+		}
+#else
 		gdl = chrRender(prop, gdl, xlupass);
+#endif
 		break;
 	case PROPTYPE_PLAYER:
 		gdl = playerRender(prop, gdl, xlupass);
@@ -1468,7 +1565,23 @@ struct prop *propFindAimingAt(s32 handnum, bool isshooting, u32 context)
 	mtx4TransformVec(camGetProjectionMtxF(), &gunpos2d, &gunpos3d);
 	mtx4RotateVec(camGetProjectionMtxF(), &gundir2d, &gundir3d);
 
+#ifdef PD_ENABLE_VR
+	{
+		struct hand *hand = &g_Vars.currentplayer->hands[handnum];
+		gunpos3d.x = hand->muzzlepos.x;
+		gunpos3d.y = hand->muzzlepos.y;
+		gunpos3d.z = hand->muzzlepos.z;
+
+		struct prop *result = shotCalculateHits(handnum, isshooting, &gunpos2d, &gundir2d,
+												&gunpos3d, &gundir3d, handnum,
+												4294836224, PLAYERCOUNT() >= 2);
+
+
+		return result;
+	}
+#else
 	return shotCalculateHits(handnum, isshooting, &gunpos2d, &gundir2d, &gunpos3d, &gundir3d, 0, 4294836224, PLAYERCOUNT() >= 2);
+#endif
 }
 
 void shotCreate(s32 handnum, bool isshooting, bool dorandom, s32 numshots, bool cheap)
@@ -1484,7 +1597,18 @@ void shotCreate(s32 handnum, bool isshooting, bool dorandom, s32 numshots, bool 
 		mtx4TransformVec(camGetProjectionMtxF(), &gunpos2d, &gunpos3d);
 		mtx4RotateVec(camGetProjectionMtxF(), &gundir2d, &gundir3d);
 
+#ifdef PD_ENABLE_VR
+		{
+			struct hand *hand = &g_Vars.currentplayer->hands[handnum];
+			gunpos3d.x = hand->muzzlepos.x;
+			gunpos3d.y = hand->muzzlepos.y;
+			gunpos3d.z = hand->muzzlepos.z;
+
+			shotCalculateHits(handnum, isshooting, &gunpos2d, &gundir2d, &gunpos3d, &gundir3d, handnum, 4294836224, cheap);
+		}
+#else
 		shotCalculateHits(handnum, isshooting, &gunpos2d, &gundir2d, &gunpos3d, &gundir3d, 0, 4294836224, cheap);
+#endif
 
 		if (numshots <= 1) {
 			bgunSetLastShootInfo(&gunpos3d, &gundir3d, handnum);
@@ -2106,6 +2230,13 @@ bool currentPlayerInteract(bool eyespy)
 		switch (prop->type) {
 		case PROPTYPE_OBJ:
 		case PROPTYPE_WEAPON:
+#ifdef PD_ENABLE_VR
+			if (g_DisableGrabViaB) { // VR disable reload using grip
+				if (g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) { // VR enable reload using B when close to grabable obj.
+					bgunReloadIfPossible(HAND_RIGHT);
+				}
+			}
+#endif
 			op = propobjInteract(prop);
 			break;
 		case PROPTYPE_DOOR:
@@ -2118,6 +2249,19 @@ bool currentPlayerInteract(bool eyespy)
 				break;
 			}
 #endif
+#ifdef PD_ENABLE_VR
+			if (g_DisableGrabViaB) {          // VR disable open door using grip button.
+				op = propdoorInteract(prop);
+#ifndef PLATFORM_N64
+				// Same client door prediction as the flat branch below, kept paired
+				// with the local interact: if VR suppressed the toggle we must not
+				// ask the host to open the door either.
+				if (g_NetMode == NETMODE_CLIENT) {
+					netmsgClcDoorActivateWrite(&g_NetMsgRel, prop);
+				}
+#endif
+			}
+#else
 			op = propdoorInteract(prop);
 #ifndef PLATFORM_N64
 			if (g_NetMode == NETMODE_CLIENT) {
@@ -2125,6 +2269,7 @@ bool currentPlayerInteract(bool eyespy)
 				// the same one reliably, with no position/timing guessing.
 				netmsgClcDoorActivateWrite(&g_NetMsgRel, prop);
 			}
+#endif
 #endif
 			break;
 		case PROPTYPE_CHR:

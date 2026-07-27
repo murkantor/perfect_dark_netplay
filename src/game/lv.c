@@ -1,4 +1,10 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_input.h"
+
+#include <game/quaternion.h>
+#endif
 #include "constants.h"
 #include "bss.h"
 #include "data.h"
@@ -105,6 +111,14 @@
 #include "net/netmsg.h"
 #include "spectator.h"
 #include "video.h"
+#endif
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
+extern int vr_get_internal_render_width();
+extern int vr_get_internal_render_height();
 #endif
 
 struct sndstate *g_MiscSfxAudioHandles[3];
@@ -1207,7 +1221,11 @@ Gfx *lvRenderFPS(Gfx *gdl)
 {
 	const f32 fps = videoGetAverageFPS();
 	const u8 a = 160;
+#ifdef PD_ENABLE_VR
+	s32 x = 200 , y = 150 ; // VR
+#else
 	s32 x = 27, y = 13;
+#endif
 	u32 color;
 	char buffer[16];
 
@@ -1638,6 +1656,56 @@ Gfx *lvRender(Gfx *gdl)
 				bgCalculateGlaresForVisibleRooms();
 #endif
 
+#ifdef PD_ENABLE_VR
+				struct hand *hand;
+				s32 h;
+				for (h = 0; h < 2; h++) { // VR
+					hand = &player->hands[h];
+
+					// Calculate lookingatprop
+					if (PLAYERCOUNT() == 1
+							|| g_Vars.coopplayernum >= 0
+							|| g_Vars.antiplayernum >= 0
+							|| (weaponHasFlag(bgunGetWeaponNum(h), WEAPONFLAG_AIMTRACK) &&
+								bmoveIsInSightAimMode())) { // VR
+						g_Vars.currentplayer->lookingatprop.prop = propFindAimingAt(h, false,
+																					FINDPROPCONTEXT_QUERY);  // VR
+
+						if (g_Vars.currentplayer->lookingatprop.prop) {
+							if (g_Vars.currentplayer->lookingatprop.prop->type == PROPTYPE_CHR
+									||
+									g_Vars.currentplayer->lookingatprop.prop->type == PROPTYPE_PLAYER) {
+								chr = g_Vars.currentplayer->lookingatprop.prop->chr;
+
+								if ((chr->hidden & CHRHFLAG_CLOAKED) &&
+										!USINGDEVICE(DEVICE_IRSCANNER)) {
+									g_Vars.currentplayer->lookingatprop.prop = NULL;
+								}
+							} else if (
+									g_Vars.currentplayer->lookingatprop.prop->type == PROPTYPE_OBJ
+									|| g_Vars.currentplayer->lookingatprop.prop->type ==
+									   PROPTYPE_WEAPON
+									|| g_Vars.currentplayer->lookingatprop.prop->type ==
+									   PROPTYPE_DOOR) {
+								struct defaultobj *obj = g_Vars.currentplayer->lookingatprop.prop->obj;
+
+								if ((obj->flags3 & OBJFLAG3_REACTTOSIGHT) == 0) {
+									if (g_Vars.stagenum != STAGE_CITRAINING
+											|| (obj->modelnum != MODEL_TARGET
+												&& obj->modelnum != MODEL_CIHUB
+												&& obj->modelnum != MODEL_COMHUB)) {
+										g_Vars.currentplayer->lookingatprop.prop = NULL;
+									}
+								}
+							} else {
+								g_Vars.currentplayer->lookingatprop.prop = NULL;
+							}
+						}
+					} else {
+						g_Vars.currentplayer->lookingatprop.prop = NULL;
+					}
+				}
+#else
 				// Calculate lookingatprop
 				if (PLAYERCOUNT() == 1
 						|| g_Vars.coopplayernum >= 0
@@ -1673,6 +1741,7 @@ Gfx *lvRender(Gfx *gdl)
 				} else {
 					g_Vars.currentplayer->lookingatprop.prop = NULL;
 				}
+#endif
 
 				if (gsetHasFunctionFlags(&g_Vars.currentplayer->hands[0].gset, FUNCFLAG_THREATDETECTOR)) {
 					lvFindThreats();
@@ -1756,6 +1825,44 @@ Gfx *lvRender(Gfx *gdl)
 					g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
 				}
 
+#ifdef PD_ENABLE_VR
+				// VR DEVIATION (netplay): this per-player loop body also runs for
+				// REMOTE pawns (lv.c clears forcesingleplayer under g_NetMode), but
+				// upstream's VR reload arm is single-player: it drops the wire-driven
+				// HAND_LEFT reload and reads the LOCAL headset's Y button, so a held Y
+				// would reload whichever remote pawn is being iterated, and a remote
+				// client's dual-wield left-hand reload request would be consumed
+				// without ever running server-side. Remote pawns therefore take our
+				// original both-hands wire-driven path; the local VR player keeps
+				// upstream's behaviour verbatim. Upstream is single-player and cannot
+				// hit this (isremote is false for the only player).
+				if (g_Vars.currentplayer->isremote) {
+					if (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_RELOAD) {
+						if (g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) {
+							bgunReloadIfPossible(HAND_RIGHT);
+						}
+						if (g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) {
+							bgunReloadIfPossible(HAND_LEFT);
+						}
+						g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
+					}
+				} else {
+					if (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_RELOAD) {
+						if (g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) {
+							bgunReloadIfPossible(HAND_RIGHT);
+						}
+						//if (g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) { Removed for VR
+						//		bgunReloadIfPossible(HAND_LEFT);
+						//}
+						g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
+					}
+
+					if (get_button_state(0, "y") && g_Vars.currentplayer->hands[HAND_LEFT].state != HANDSTATE_RELOAD) {	// VR BUTTON Y RELOAD LEFT HAND
+						bgunReloadIfPossible(HAND_LEFT);
+						g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
+					}
+				}
+#else
 				if (g_Vars.currentplayer->bondactivateorreload & JO_ACTION_RELOAD) {
 					if (g_Vars.currentplayer->hands[HAND_RIGHT].state != HANDSTATE_RELOAD) {
 						bgunReloadIfPossible(HAND_RIGHT);
@@ -1765,6 +1872,7 @@ Gfx *lvRender(Gfx *gdl)
 					}
 					g_Vars.currentplayer->bondactivateorreload = (g_Vars.currentplayer->bondactivateorreload & ~JO_ACTION_RELOAD);
 				}
+#endif
 
 				propsTestForPickup();
 
@@ -1780,6 +1888,9 @@ Gfx *lvRender(Gfx *gdl)
 				}
 
 				if (var80075d60 == 2) {
+#ifdef PD_ENABLE_VR
+					gSPClipRatio(gdl, FRUSTRATIO_6); // VR
+#endif
 					gdl = playerRenderHud(gdl);
 
 #ifdef DEBUG

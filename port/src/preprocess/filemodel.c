@@ -9,6 +9,14 @@
 #include "preprocess/common.h"
 #include "preprocess/gbi.h"
 
+#ifdef PD_ENABLE_VR
+u32 g_left_arm_node_ofs = 0;
+u32 g_right_arm_node_ofs = 0;
+extern int weaponnum;
+extern bool g_VrCopyWepFilemodel;
+extern s32 handnum;
+#endif
+
 enum contenttype {
 	/* 0*/ CT_MODELDEF,
 	/* 1*/ CT_NODE,
@@ -625,6 +633,12 @@ static u32 convertContent(u8 *dst, u8 *src, u32 src_file_len)
 				if (num_parts) {
 					dstpos = ALIGN8(dstpos);
 				}
+#ifdef PD_ENABLE_VR
+                if (num_parts >= 2) {  // VR
+                    g_left_arm_node_ofs = PD_BE32(src_parts[0]) & 0x00ffffff;
+                    g_right_arm_node_ofs = PD_BE32(src_parts[1]) & 0x00ffffff;
+                }
+#endif
 				break;
 			}
 		case CT_VTXCOL:
@@ -918,6 +932,32 @@ static u8 *relinkPointers(u8 *dst, u8 *src)
 				dst_gundl->ptr_xlugdl = (resolvePointer(PD_BE32(src_gundl->ptr_xlugdl)));
 				dst_gundl->ptr_vertices = (resolvePointer(PD_BE32(src_gundl->ptr_vertices)));
 				
+#ifdef PD_ENABLE_VR
+                // VR
+                struct marker *parent = findMarker(marker->parent_src_offset);
+                struct marker *gp = parent ? findMarker(parent->parent_src_offset) : NULL;
+                if (gp) {
+                    // Left hand
+                    if (gp->src_offset == g_left_arm_node_ofs && weaponnum == WEAPON_UNARMED) {
+                        dst_gundl->ptr_opagdl = 0;
+                        dst_gundl->ptr_xlugdl = 0;
+                    }
+                    // right hand
+                    if (gp->src_offset == g_right_arm_node_ofs && weaponnum == WEAPON_LASER) {
+                        dst_gundl->ptr_opagdl = 0;
+                        dst_gundl->ptr_xlugdl = 0;
+                    }
+                    // left hand for VrCopyWep
+                    if (gp->src_offset == g_left_arm_node_ofs && g_VrCopyWepFilemodel == true) {
+                        dst_gundl->ptr_opagdl = 0;
+                        dst_gundl->ptr_xlugdl = 0;
+                    }
+
+
+                }
+                //--------------------------------------------
+#endif
+
 				gbiConvertVtx(dst, dst_gundl->ptr_vertices & 0x00ffffff, dst_gundl->numvertices);
 
 				gbiSetVtx(PD_BE32(src_gundl->ptr_vertices), dst_gundl->ptr_vertices);
@@ -1094,6 +1134,12 @@ u8 *preprocessModelFile(u8 *data, u32 size, u32 *outSize)
 
 u8 *preprocessGunFile(u8 *data, u32 size, u32 *outSize)
 {
+#ifdef PD_ENABLE_VR
+//    sysLogPrintf(LOG_NOTE, ">>> HANDS preprocessGunFile called, size=%u", size);
+//    sysLogPrintf(LOG_NOTE, ">>> weaponnum %d", weaponnum);
+    g_left_arm_node_ofs = 0; // VR
+    g_right_arm_node_ofs = 0;
+#endif
 	gbiReset();
 
 	u32 newSizeEstimated = romdataFileGetEstimatedSize(size, LOADTYPE_MODEL);
@@ -1112,3 +1158,18 @@ u8 *preprocessGunFile(u8 *data, u32 size, u32 *outSize)
 
 	return 0;
 }
+
+#ifdef PD_ENABLE_VR
+/*
+// VR
+void fileModelSaveArmOffsets(u32 *left, u32 *right) {
+    *left  = g_left_arm_node_ofs;
+    *right = g_right_arm_node_ofs;
+}
+// VR
+void fileModelRestoreArmOffsets(u32 left, u32 right) {
+    g_left_arm_node_ofs  = left;
+    g_right_arm_node_ofs = right;
+}
+*/
+#endif

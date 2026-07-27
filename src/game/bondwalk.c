@@ -1,4 +1,10 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include <math.h>
+#include "../../port/vr/vr_input.h"
+#endif
+
 #include "constants.h"
 #include "game/bondmove.h"
 #include "game/bondwalk.h"
@@ -17,6 +23,13 @@
 #include "game/bondhead.h"
 #include "game/playermgr.h"
 #include "game/propobj.h"
+
+#ifdef PD_ENABLE_VR
+#include "game/camera.h"  //VR
+
+#include "game/quaternion.h"
+#endif
+
 #include "bss.h"
 #include "lib/model.h"
 #include "lib/snd.h"
@@ -243,6 +256,303 @@ static void bwalkUpdateRemote(void)
 	}
 }
 #endif
+
+#ifdef PD_ENABLE_VR
+
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
+
+
+// Original vectors (initialized only once)
+const struct coord original_look = {0.0f, 0.0f, 1.0f };
+const struct coord original_up = {0.0f, -1.0f, 0.0f };
+XrQuaternionf vr_joy_rot_Q = { 0, 0, 0, 1 };
+float vr_joyAccum = 0.0f;
+float VrYawRot = 0.0f;
+
+extern bool vr_is_duel;
+extern float vr_player_angle;
+static f32 sVrEyeheightClamped = 150.0f; // default for starting game
+
+extern void vr_align_with_game_angle(float target_game_angle);
+static bool vr_hoverbike_can_mount = false;
+
+VrEyeheightMode sVrEyeheightMode = VR_EYEHEIGHT_STAND;
+
+extern bool VrSeatedMode;
+
+bool is_grabbing_mode = false;
+bool is_hoverbike_mode = false;
+
+void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q) {
+    float qx = q->x, qy = q->y, qz = q->z, qw = q->w;
+    float vx = v->x, vy = v->y, vz = v->z;
+
+    // q * v: quaternion * vector multiplication (as a pure quaternion)
+    float t0 = qw * vx + qy * vz - qz * vy;
+    float t1 = qw * vy + qz * vx - qx * vz;
+    float t2 = qw * vz + qx * vy - qy * vx;
+    float t3 = -qx * vx - qy * vy - qz * vz;
+
+    // (q * v) * q^-1: multiplication by the conjugate
+    v->x = t0 * qw - t3 * qx - t1 * qz + t2 * qy;
+    v->y = t1 * qw - t3 * qy - t2 * qx + t0 * qz;
+    v->z = t2 * qw - t3 * qz - t0 * qy + t1 * qx;
+}
+
+
+#define VR_JOY_TURN_SPEED   (120.0f / 360.0f / 60.0f) // continuous turn speed (deg/frame @60hz)
+#define VR_SNAP_ANGLE_DEG   45.0f    // snap turn amplitude (30 or 45 degrees is common)
+#define VR_SNAP_ACTIVATE    0.9f     // trigger threshold
+#define VR_SNAP_DEACTIVATE  0.0001f     // re-arm threshold (hysteresis)
+static bool vr_snapArmed = true;
+bool VrUseSnapTurn = false;   // true = snap turn, false = continuous turn
+
+void joy_for_vr(void) {
+    XrVector2f rightThumbstick;
+
+    if (get_2d_input(1, "thumbstick", &rightThumbstick)) {
+
+        if (VrUseSnapTurn && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB) {
+            // --- SNAP TURN MODE ---
+
+            // Re-arm as soon as the stick returns close to center
+            if (fabsf(rightThumbstick.x) < VR_SNAP_DEACTIVATE) {
+                vr_snapArmed = true;
+            }
+
+            // Trigger a snap if armed and threshold exceeded
+            if (vr_snapArmed && fabsf(rightThumbstick.x) > VR_SNAP_ACTIVATE) {
+                float direction = (rightThumbstick.x > 0.0f) ? 1.0f : -1.0f;
+                vr_joyAccum -= direction * (VR_SNAP_ANGLE_DEG / 360.0f);
+                vr_snapArmed = false; // lock until stick returns to center
+            }
+
+        } else {
+            // --- CONTINUOUS ROTATION MODE ---
+
+            if (fabsf(rightThumbstick.x) > 0.1f) {
+                vr_joyAccum -= rightThumbstick.x * VR_JOY_TURN_SPEED * g_Vars.lvupdate60freal;
+            }
+
+            // Keep snap re-armed to avoid a "ghost snap" if switching back later
+            vr_snapArmed = true;
+        }
+    }
+
+    float totalAngle = vr_joyAccum * 3.14159265f * 2.0f;
+    vr_joy_rot_Q.x = 0.0f;
+    vr_joy_rot_Q.y = sinf(totalAngle * 0.5f);
+    vr_joy_rot_Q.z = 0.0f;
+    vr_joy_rot_Q.w = cosf(totalAngle * 0.5f);
+}
+
+
+
+static struct coord lastVRHeadPos = { 0.0f, 0.0f, 0.0f };
+
+void vr_player_pos(void) {
+
+    if(g_Vars.currentplayer->isdead == false
+       && g_Vars.tickmode == TICKMODE_NORMAL
+       && !vr_is_duel
+            ) {
+
+        // Variables to store the new position
+        struct coord newPos;
+        struct coord delta;
+        RoomNum rooms[8];
+        f32 radius, ymax, ymin;
+        s32 collisionResult;
+        s32 types;
+
+
+        // Calculate the DISPLACEMENT (delta) from the previous frame
+        float deltaX = gHeadPos.x - lastVRHeadPos.x;
+        float deltaY = gHeadPos.y - lastVRHeadPos.y;
+        float deltaZ = gHeadPos.z - lastVRHeadPos.z;
+
+        // Transform the VR movement according to the joystick rotation
+        delta.x = deltaX;
+        delta.y = deltaY;
+        delta.z = deltaZ;
+        vr_rotate_vector_by_quaternion(&delta, &vr_joy_rot_Q);
+
+        deltaX = delta.x;
+        deltaY = delta.y;
+        deltaZ = delta.z;
+
+        // Calculate the proposed new position
+        newPos.x = g_Vars.currentplayer->prop->pos.x + deltaX;
+        newPos.y = g_Vars.currentplayer->prop->pos.y + deltaY;
+        newPos.z = g_Vars.currentplayer->prop->pos.z + deltaZ;
+
+        // Get the player's collision radius
+        playerGetBbox(g_Vars.currentplayer->prop, &radius, &ymax, &ymin);
+
+        // Determine the collision types to check
+        types = g_Vars.bondcollisions ? CDTYPE_ALL : CDTYPE_BG;
+
+        // Get the rooms for the new position
+        func0f065e74(&g_Vars.currentplayer->prop->pos, g_Vars.currentplayer->prop->rooms, &newPos,
+                     rooms);
+        bmoveFindEnteredRoomsByPos(g_Vars.currentplayer, &newPos, rooms);
+
+        // Temporarily disable player collision to avoid self-collision
+        propSetPerimEnabled(g_Vars.currentplayer->prop, false);
+
+        // Check cylindrical collision for the new position
+        collisionResult = cdExamCylMove02(
+                &g_Vars.currentplayer->prop->pos,     // Current position
+                &newPos,                              // Destination position
+                radius,                               // Cylinder radius
+                rooms,                                // Rooms to check
+                types,                                           // Collision types
+                true,                                 // Check collisions
+                ymax - g_Vars.currentplayer->prop->pos.y,   // Maximum height
+                ymin - g_Vars.currentplayer->prop->pos.y    // Minimum height
+        );
+
+        // Re-enable player collision
+        propSetPerimEnabled(g_Vars.currentplayer->prop, true);
+
+        // Apply the movement ONLY if there is no collision
+        if (collisionResult == CDRESULT_NOCOLLISION) {
+            // No collision - apply full movement
+            g_Vars.currentplayer->prop->pos.x += deltaX;
+            g_Vars.currentplayer->prop->pos.y += deltaY;
+            g_Vars.currentplayer->prop->pos.z += deltaZ;
+
+            g_Vars.currentplayer->bond2.unk10.x += deltaX;
+            g_Vars.currentplayer->bond2.unk10.y += deltaY;
+            g_Vars.currentplayer->bond2.unk10.z += deltaZ;
+
+        } else {
+            // Collision detected
+            //vr_log("Collision detected");
+        }
+
+        // Save the current position
+        lastVRHeadPos.x = gHeadPos.x;
+        lastVRHeadPos.y = gHeadPos.y;
+        lastVRHeadPos.z = gHeadPos.z;
+
+    }else{
+        lastVRHeadPos.x = gHeadPos.x;
+        lastVRHeadPos.y = gHeadPos.y;
+        lastVRHeadPos.z = gHeadPos.z;
+
+    }
+}
+
+
+void vr_player_rot(void) {
+
+
+    if(g_Vars.currentplayer->isdead == false
+       && g_Vars.tickmode == TICKMODE_NORMAL
+       && g_Vars.currentplayer->bondmovemode != MOVEMODE_BIKE
+       && g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB
+       && !vr_is_duel
+       && !is_grabbing_mode
+       && !is_hoverbike_mode
+            ) {
+
+        joy_for_vr();
+
+        struct coord look = original_look;
+        struct coord up = original_up;
+
+        vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
+        vr_rotate_vector_by_quaternion(&up, &vr_HMD_rot_Q);
+
+        vr_rotate_vector_by_quaternion(&look, &vr_joy_rot_Q);
+        vr_rotate_vector_by_quaternion(&up, &vr_joy_rot_Q);
+
+        g_Vars.currentplayer->bond2.unk1c.x = look.x;
+        g_Vars.currentplayer->bond2.unk1c.y = -look.y;
+        g_Vars.currentplayer->bond2.unk1c.z = look.z;
+
+        g_Vars.currentplayer->bond2.unk28.x = up.x;
+        g_Vars.currentplayer->bond2.unk28.y = -up.y;
+        g_Vars.currentplayer->bond2.unk28.z = up.z;
+
+        VrYawRot = atan2f(g_Vars.currentplayer->bond2.unk1c.x,
+                          g_Vars.currentplayer->bond2.unk1c.z);
+
+
+        g_Vars.currentplayer->vv_theta = -VrYawRot * 180.0f / M_PI;
+
+
+
+
+// Not needed anymore ?
+//    float horiz = sqrtf(g_Vars.currentplayer->bond2.unk1c.x * g_Vars.currentplayer->bond2.unk1c.x +
+//    		g_Vars.currentplayer->bond2.unk1c.z * g_Vars.currentplayer->bond2.unk1c.z);
+//    float pitchRad = atan2f(-g_Vars.currentplayer->bond2.unk1c.y, horiz);
+//    g_Vars.currentplayer->vv_verta = pitchRad * 180.0f / M_PI;
+
+    }
+}
+
+
+void vr_special_rot_mode(void) {
+    // Hoverbike
+    is_hoverbike_mode =
+            (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE);
+    // Flying crate / stretcher...
+    is_grabbing_mode =
+            (g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB);
+
+    if(!is_hoverbike_mode && !is_grabbing_mode) return;
+
+    if (is_hoverbike_mode && vr_hoverbike_can_mount) {
+        vr_align_with_game_angle(0.0f);
+        vr_hoverbike_can_mount = false;
+    }
+    else if (is_hoverbike_mode || is_grabbing_mode) {
+
+        joy_for_vr();
+
+        // Build the quaternion that represents the vehicle's orientation (yaw only)
+        // bond2.unk00 = vehicle forward horizontal, e.g. {-sin(angle), 0, cos(angle)}
+        float veh_yaw = atan2f(g_Vars.currentplayer->bond2.unk00.x,
+                               g_Vars.currentplayer->bond2.unk00.z);
+
+        XrQuaternionf vehQuat;
+        vehQuat.x = 0.0f;
+        vehQuat.y = sinf(veh_yaw * 0.5f);
+        vehQuat.z = 0.0f;
+        vehQuat.w = cosf(veh_yaw * 0.5f);
+
+        // Exact same pipeline as vr_player_rot, but with vehQuat instead of vr_joy_rot_Q
+        struct coord look = original_look;  // {0, 0, 1}
+        struct coord up   = original_up;    // {0, -1, 0}
+
+        vr_rotate_vector_by_quaternion(&look, &vr_HMD_rot_Q);
+        vr_rotate_vector_by_quaternion(&up,   &vr_HMD_rot_Q);
+
+        vr_rotate_vector_by_quaternion(&look, &vehQuat);
+        vr_rotate_vector_by_quaternion(&up,   &vehQuat);
+
+        g_Vars.currentplayer->bond2.unk1c.x =  look.x;
+        g_Vars.currentplayer->bond2.unk1c.y = -look.y;
+        g_Vars.currentplayer->bond2.unk1c.z =  look.z;
+
+        g_Vars.currentplayer->bond2.unk28.x =  up.x;
+        g_Vars.currentplayer->bond2.unk28.y = -up.y;
+        g_Vars.currentplayer->bond2.unk28.z =  up.z;
+
+    }else if (!is_hoverbike_mode) {
+        vr_hoverbike_can_mount = true;
+    }
+
+}
+
+//------------------------------------------------------------------------------------------
+
+#endif /* PD_ENABLE_VR */
 
 void bwalkInit(void)
 {
@@ -594,6 +904,13 @@ bool bwalkCalculateNewPosition(struct coord *vel, f32 rotateamount, bool apply, 
 			propSetPerimEnabled(g_Vars.currentplayer->tank, true);
 		}
 	}
+
+#ifdef PD_ENABLE_VR
+	// VR DEVIATION (netplay): headset yaw may only drive the local pawn's angle, never a remote player's — upstream is single-player and cannot hit this.
+	if (!g_Vars.currentplayer->isremote) {
+		vr_player_rot(); // VR
+	}
+#endif
 
 	if (result == CDRESULT_NOCOLLISION && apply) {
 		f32 angle = g_Vars.currentplayer->vv_theta + (rotateamount * 360) / M_BADTAU;
@@ -1464,6 +1781,131 @@ void bwalkUpdateVertical(void)
 		}
 	}
 
+#ifdef PD_ENABLE_VR
+    g_Vars.currentplayer->crouchheight = g_Vars.currentplayer->sumcrouch * (PAL ? 0.064599990844727f : 0.054400026798248f);
+    g_Vars.currentplayer->vv_height =
+            (g_Vars.currentplayer->headpos.y / g_Vars.currentplayer->standheight)
+            * g_Vars.currentplayer->vv_eyeheight;
+
+
+    if(!VrSeatedMode) {
+// VR Height
+        float VrMaxHeight = g_Vars.currentplayer->vv_height +
+                            g_Vars.currentplayer->vv_eyeheight * 0.0062893079593778f;
+
+// Linear remapping: real world → game
+        float refHeight = (gStandingHeadHeight > 0.0f) ? gStandingHeadHeight : VrMaxHeight;
+        eyeheight = (gHeadPos.y / refHeight) * VrMaxHeight;
+
+// Safety clamp (floor/ceiling)
+        if (eyeheight > VrMaxHeight) eyeheight = VrMaxHeight;
+        if (eyeheight < 0.0f) eyeheight = 0.0f;
+
+// --- VR EYEHEIGHT DIVIDER TOGGLE (thumbstick click) ---
+        {
+
+            static bool sPrevThumbstickClick = false;
+
+            bool curThumbstickClick = get_button_state(0, "thumbstick_click");
+
+            // Rising edge detection: only switch when the button is pressed
+            if (curThumbstickClick && !sPrevThumbstickClick) {
+                switch (sVrEyeheightMode) {
+                    case VR_EYEHEIGHT_STAND:
+                        sVrEyeheightMode = VR_EYEHEIGHT_DUCK;
+                        break;
+                    case VR_EYEHEIGHT_DUCK:
+                        sVrEyeheightMode = VR_EYEHEIGHT_SQUAT;
+                        break;
+                    case VR_EYEHEIGHT_SQUAT:
+                    default:
+                        sVrEyeheightMode = VR_EYEHEIGHT_STAND;
+                        break;
+                }
+            }
+            sPrevThumbstickClick = curThumbstickClick;
+
+
+            switch (sVrEyeheightMode) {
+                case VR_EYEHEIGHT_DUCK:
+                    eyeheight = eyeheight / 1.3f;
+                    break;
+                case VR_EYEHEIGHT_SQUAT:
+                    eyeheight = eyeheight / 1.6f;
+                    break;
+                case VR_EYEHEIGHT_STAND:
+                default:
+                    break;
+            }
+        }
+
+// --- VR CEILING CHECK ---
+        {
+            f32 targetCors = eyeheight
+                             - g_Vars.currentplayer->vv_height
+                             - g_Vars.currentplayer->crouchheight
+                               * g_Vars.currentplayer->vv_eyeheight * 0.0062893079593778f;
+
+            f32 prevCrouchOffsetReal = g_Vars.currentplayer->crouchoffsetreal;
+            f32 prevCrouchOffsetSmall = g_Vars.currentplayer->crouchoffsetsmall;
+            f32 prevCrouchOffsetRealSmall = g_Vars.currentplayer->crouchoffsetrealsmall;
+
+            g_Vars.currentplayer->crouchoffsetreal = targetCors;
+            g_Vars.currentplayer->crouchoffsetsmall = targetCors;
+            g_Vars.currentplayer->crouchoffsetrealsmall = targetCors;
+
+            bool canStand = bwalkCanMoveUpwards(0);
+
+            g_Vars.currentplayer->crouchoffsetreal = prevCrouchOffsetReal;
+            g_Vars.currentplayer->crouchoffsetsmall = prevCrouchOffsetSmall;
+            g_Vars.currentplayer->crouchoffsetrealsmall = prevCrouchOffsetRealSmall;
+
+            if (canStand) {
+                sVrEyeheightClamped = eyeheight;
+            } else {
+                eyeheight = sVrEyeheightClamped;
+            }
+        }
+        // --- END VR CEILING CHECK ---
+    }
+    else{
+        eyeheight = g_Vars.currentplayer->vv_height +
+                    g_Vars.currentplayer->crouchoffsetrealsmall +
+                    g_Vars.currentplayer->crouchheight *
+                    g_Vars.currentplayer->vv_eyeheight * 0.0062893079593778f;
+
+
+        static bool sPrevThumbstickClick = false;
+
+        bool curThumbstickClick = get_button_state(0, "thumbstick_click");
+
+        // Rising edge detection: only switch when the button is pressed
+        if (curThumbstickClick && !sPrevThumbstickClick) {
+            switch (sVrEyeheightMode) {
+                case VR_EYEHEIGHT_STAND:
+                    sVrEyeheightMode = VR_EYEHEIGHT_DUCK;
+                    break;
+                case VR_EYEHEIGHT_DUCK:
+                    sVrEyeheightMode = VR_EYEHEIGHT_SQUAT;
+                    break;
+                case VR_EYEHEIGHT_SQUAT:
+                default:
+                    sVrEyeheightMode = VR_EYEHEIGHT_STAND;
+                    break;
+            }
+        }
+        sPrevThumbstickClick = curThumbstickClick;
+
+        if (eyeheight < 30) {
+            eyeheight = 30;
+        }
+    }
+
+
+    newpos.x = g_Vars.currentplayer->prop->pos.x;
+    newpos.y = g_Vars.currentplayer->vv_manground + eyeheight;
+    newpos.z = g_Vars.currentplayer->prop->pos.z;
+#else
 	{
 		g_Vars.currentplayer->crouchheight = g_Vars.currentplayer->sumcrouch * (PAL ? 0.064599990844727f : 0.054400026798248f);
 		g_Vars.currentplayer->vv_height =
@@ -1483,6 +1925,7 @@ void bwalkUpdateVertical(void)
 		newpos.y = g_Vars.currentplayer->vv_manground + eyeheight;
 		newpos.z = g_Vars.currentplayer->prop->pos.z;
 	}
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	if (newpos.y < g_Vars.currentplayer->vv_ground + 10) {
@@ -1795,6 +2238,29 @@ void bwalkApplyMoveData(struct movedata *data)
 		}
 
 #ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+
+/*        if (data->rleanleft) { // Removed for VR
+            bwalkSetSwayTarget(-1);
+        }
+        else if (data->rleanright) {
+            bwalkSetSwayTarget(1);
+        }
+        else if (fabsf(data->analoglean)) {
+            bwalkSetSwayTargetf(data->analoglean);
+        }
+        else {
+            bwalkSetSwayTarget(0);
+        }*/
+
+
+        if (fabsf(data->analoglean)) {
+            bwalkSetSwayTargetf(data->analoglean);
+        }
+        else {
+			bwalkSetSwayTarget(0);
+		}
+#else
 		if (data->rleanleft) {
 			bwalkSetSwayTarget(-1);
 		} else if (data->rleanright) {
@@ -1804,6 +2270,7 @@ void bwalkApplyMoveData(struct movedata *data)
 		} else {
 			bwalkSetSwayTarget(0);
 		}
+#endif /* PD_ENABLE_VR */
 #else
 		if (data->rleanleft) {
 			bwalkSetSwayTarget(-1);
@@ -2228,6 +2695,13 @@ void bwalkTick(void)
 	bwalk0f0c69b8();
 
 	bwalkUpdateVertical();
+
+#ifdef PD_ENABLE_VR
+	// VR DEVIATION (netplay): roomscale HMD translation may only move the local pawn, not the wire-driven remote pawns — upstream is single-player and cannot hit this.
+	if (!g_Vars.currentplayer->isremote) {
+		vr_player_pos();
+	}
+#endif
 
 #if VERSION >= VERSION_NTSC_1_0
 	{

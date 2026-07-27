@@ -1,4 +1,8 @@
 #include <ultra64.h>
+#ifdef PD_ENABLE_VR
+#include <game/options.h>
+#include <game/quaternion.h>
+#endif
 #include "constants.h"
 #include "game/title.h"
 #include "game/bondgun.h"
@@ -33,6 +37,11 @@
 #include "string.h"
 #ifndef PLATFORM_N64
 #include "video.h"
+#endif
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
 #endif
 
 #ifdef PLATFORM_N64
@@ -112,6 +121,35 @@ Lights1 var800624f8jf = gdSPDefLights1(0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 Lights1 var80062510jf = gdSPDefLights1(0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7f);
 #endif
 
+#ifdef PD_ENABLE_VR
+void titleApplyVRRotationToLookAt(Mtxf* outMtx)
+{
+    struct coord forward = { 0.0f, 0.0f, -1.0f };
+    struct coord rotatedForward;
+    struct coord rotatedUp;
+    struct coord eyePos = { 0.0f, 0.0f, 4000.0f };
+    struct coord baseUp = { 0.0f, 1.0f, 0.0f };
+    float dist = 4000.0f;
+
+    f32 hmdQuat[4] = { vr_HMD_rot_Q.w, vr_HMD_rot_Q.x, vr_HMD_rot_Q.y, vr_HMD_rot_Q.z };
+    Mtxf hmdRotMtx;
+    quaternionToMtx(hmdQuat, &hmdRotMtx);
+
+    mtx4RotateVec(&hmdRotMtx, &forward, &rotatedForward);
+    mtx4RotateVec(&hmdRotMtx, &baseUp, &rotatedUp);
+
+    struct coord lookAtPoint;
+    lookAtPoint.x = eyePos.x + rotatedForward.x * dist;
+    lookAtPoint.y = eyePos.y + rotatedForward.y * dist;
+    lookAtPoint.z = eyePos.z + rotatedForward.z * dist;
+
+    mtx00016ae4(outMtx,
+                eyePos.x, eyePos.y, eyePos.z,
+                lookAtPoint.x, lookAtPoint.y, lookAtPoint.z,
+                rotatedUp.x, rotatedUp.y, rotatedUp.z);
+}
+#endif
+
 char *mpPlayerGetWeaponOfChoiceName(u32 playernum, u32 slot)
 {
 	char *name;
@@ -179,7 +217,12 @@ void titleExitLegal(void)
 
 void titleTickLegal(void)
 {
+#ifdef PD_ENABLE_VR
+    //viSetFovY(60);
+    viSetFovY(110); // VR
+#else
 	viSetFovY(60);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -207,6 +250,9 @@ void titleExitCheckControllers(void)
 
 void titleTickCheckControllers(void)
 {
+#ifdef PD_ENABLE_VR
+    viSetFovY(110); // VR
+#endif
 	g_TitleTimer++;
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -327,6 +373,9 @@ struct legalelement g_LegalElements[] = {
 
 Gfx *titleRenderLegal(Gfx *gdl)
 {
+#ifdef PD_ENABLE_VR
+    viSetFovY(110); // VR
+#endif
 #if VERSION >= VERSION_PAL_BETA
 	s32 prevx = 0;
 #endif
@@ -697,7 +746,12 @@ void titleExitPdLogo(void)
 
 void titleTickPdLogo(void)
 {
+#ifdef PD_ENABLE_VR
+    //viSetFovY(46);
+    viSetFovY(110); // VR
+#else
 	viSetFovY(46);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -1395,6 +1449,10 @@ Gfx *titleRenderPdLogo(Gfx *gdl)
 
 	mtx00016ae4(&sp2b0, 0.0f, 0.0f, 4000.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
 
+#ifdef PD_ENABLE_VR
+    titleApplyVRRotationToLookAt(&sp2b0);  // VR
+#endif
+
 	model = g_PdLogoUseCombinedModel == true ? g_TitleModel : g_TitleModelNLogo2;
 
 	mtx4LoadYRotation(g_PdLogoYRotCur, &sp1e8);
@@ -1689,7 +1747,12 @@ void titleExitRarePresents(void)
 
 void titleTickRarePresents(void)
 {
+#ifdef PD_ENABLE_VR
+    //viSetFovY(60);
+    viSetFovY(110); // VR
+#else
 	viSetFovY(60);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -1841,7 +1904,12 @@ void titleExitNintendoLogo(void)
  */
 void titleTickNintendoLogo(void)
 {
+#ifdef PD_ENABLE_VR
+    //viSetFovY(60);
+    viSetFovY(110); // VR
+#else
 	viSetFovY(60);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -1939,6 +2007,10 @@ Gfx *titleRenderNintendoLogo(Gfx *gdl)
 				/* look */ 0.0f, 0.0f, 0.0f,
 				/* up   */ 0.0f, 1.0f, 0.0f);
 
+#ifdef PD_ENABLE_VR
+        titleApplyVRRotationToLookAt(&sp108); // VR
+#endif
+
 		mtx4MultMtx4InPlace(&sp108, &spa8);
 		mtx4Copy(&spa8, &sp108);
 		renderdata.unk00 = &sp108;
@@ -2011,7 +2083,12 @@ void titleExitRareLogo(void)
  */
 void titleTickRareLogo(void)
 {
+#ifdef PD_ENABLE_VR
+    //viSetFovY(60);
+    viSetFovY(110); // VR
+#else
 	viSetFovY(60);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -2135,6 +2212,10 @@ Gfx *titleRenderRareLogo(Gfx *gdl)
 				/* pos  */ 0, 0, 4000,
 				/* look */ 0, 0, 0,
 				/* up   */ 0, 1, 0);
+
+#ifdef PD_ENABLE_VR
+        titleApplyVRRotationToLookAt(&sp118); // VR
+#endif
 
 		mtx4MultMtx4InPlace(&sp118, &spc0);
 		mtx4Copy(&spc0, &sp118);
@@ -2282,7 +2363,12 @@ void titleExitNoController(void)
 
 void titleTickNoController(void)
 {
+#ifdef PD_ENABLE_VR
+    //viSetFovY(60);
+    viSetFovY(110); // VR
+#else
 	viSetFovY(60);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(false);
@@ -2405,7 +2491,12 @@ void titleExitNoExpansion(void)
 #if VERSION >= VERSION_JPN_FINAL
 void titleTickNoExpansion(void)
 {
+#ifdef PD_ENABLE_VR
+		//viSetFovY(60);
+		viSetFovY(110); // VR
+#else
 	viSetFovY(60);
+#endif
 	viSetAspect(TITLE_ASPECT);
 	viSetZRange(100, 10000);
 	viSetUseZBuf(0);
@@ -2485,6 +2576,9 @@ s32 titleGetMode(void)
 
 void titleTick(void)
 {
+#ifdef PD_ENABLE_VR
+    viSetFovY(110); // VR
+#endif
 #ifdef PLATFORM_N64
 #if PAL
 	viSetAspect(576.0f / g_TitleViewHeight * 1.1904761791229f);
@@ -2738,6 +2832,9 @@ void func0f01adb8(void)
 
 void titleTickOld(void)
 {
+#ifdef PD_ENABLE_VR
+    viSetFovY(110); // VR
+#endif
 	if (titleIsKeepingMode()) {
 		joy00014810(false);
 

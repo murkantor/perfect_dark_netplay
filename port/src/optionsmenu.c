@@ -20,7 +20,11 @@
 #include "cpak.h"
 #endif
 
+#ifdef PD_ENABLE_VR
+s32 g_ExtMenuPlayer = 0; // VR (upstream): non-static — read by the VR menu code
+#else
 static s32 g_ExtMenuPlayer = 0;
+#endif
 static struct menudialogdef *g_ExtNextDialog = NULL;
 
 static s32 g_BindIndex = 0;
@@ -534,13 +538,19 @@ struct menudialogdef g_ExtendedStickMenuDialog = {
 static MenuItemHandlerResult menuhandlerVibration(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN:
+		return true;  // VR hide (upstream): haptics are always-on VR controller feedback
+#endif
 	case MENUOP_GETSLIDER:
 		data->slider.value = inputRumbleGetStrength(g_ExtMenuPlayer) * 10.f + 0.5f;
 		break;
 	case MENUOP_SET:
 		inputRumbleSetStrength(g_ExtMenuPlayer, (f32)data->slider.value / 10.f);
 		break;
-	case MENUOP_CHECKHIDDEN:
+#ifndef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN: // VR: unconditionally hidden above (upstream)
+#endif
 	case MENUOP_CHECKDISABLED:
 		if (!inputRumbleSupported(g_ExtMenuPlayer)) {
 			return true;
@@ -819,6 +829,10 @@ struct menudialogdef g_ExtendedControllerMenuDialog = {
 static MenuItemHandlerResult menuhandlerFullScreen(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN:
+		return true;  // VR hide (upstream): the main window is hidden
+#endif
 	case MENUOP_GET:
 		return videoGetFullscreen();
 	case MENUOP_SET:
@@ -837,6 +851,10 @@ static MenuItemHandlerResult menuhandlerFullScreenMode(s32 operation, struct men
 	};
 
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN:
+		return true;  // VR hide (upstream)
+#endif
 	case MENUOP_GETOPTIONCOUNT:
 		data->dropdown.value = ARRAYCOUNT(opts);
 		break;
@@ -855,6 +873,10 @@ static MenuItemHandlerResult menuhandlerFullScreenMode(s32 operation, struct men
 static MenuItemHandlerResult menuhandlerCenterWindow(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN:
+		return true;  // VR hide (upstream)
+#endif
 	case MENUOP_GET:
 		return videoGetCenterWindow();
 	case MENUOP_SET:
@@ -1057,17 +1079,25 @@ static MenuItemHandlerResult menuhandlerResolution(s32 operation, struct menuite
 		break;
 	case MENUOP_GETOPTIONTEXT:
 		videoGetDisplayMode(&mode, data->dropdown.value);
+#ifdef PD_ENABLE_VR
+		// VR (upstream): no "Custom" row — every entry is a real mode/scale
+		snprintf(resstring, sizeof(resstring), "%dx%d", mode.width, mode.height);
+#else
 		if (mode.width == 0 && mode.height == 0) {
 			return (intptr_t)rescustom;
 		} else {
 			snprintf(resstring, sizeof(resstring), "%dx%d", mode.width, mode.height);
 		}
+#endif
 		return (intptr_t)resstring;
 	case MENUOP_SET:
 		videoSetDisplayMode(data->dropdown.value);
 		break;
 	case MENUOP_GETSELECTEDINDEX:
 		data->dropdown.value = videoGetDisplayModeIndex();
+#ifdef PD_ENABLE_VR
+		if (data->dropdown.value < 0) data->dropdown.value = 0; // VR (upstream)
+#endif
 	}
 
 	return 0;
@@ -1286,6 +1316,10 @@ static MenuItemHandlerResult menuhandlerCenterHUD(s32 operation, struct menuitem
 	};
 
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN:
+		return true;  // VR hide (upstream): the eye aspect is fixed by the HMD
+#endif
 	case MENUOP_GETOPTIONCOUNT:
 		data->dropdown.value = ARRAYCOUNT(opts);
 		break;
@@ -1734,6 +1768,13 @@ struct menudialogdef g_ExtendedAudioMenuDialog = {
 static MenuItemHandlerResult menuhandlerUseKeyReloads(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	switch (operation) {
+#ifdef PD_ENABLE_VR
+	case MENUOP_CHECKHIDDEN:
+		// VR (upstream): force Use Key Reloads on and hide the row — VR manual
+		// reloads ride the usereloads path
+		g_PlayerExtCfg[g_ExtMenuPlayer].usereloads = true;
+		return true;
+#endif
 	case MENUOP_CHECKDISABLED:
 		return !g_PlayerExtCfg[g_ExtMenuPlayer].extcontrols;
 	case MENUOP_GET:
@@ -2073,6 +2114,10 @@ struct menudialogdef g_ExtendedGameCrosshairColourMenuDialog = {
 };
 
 struct menuitem g_ExtendedGameMenuItems[] = {
+#ifndef PD_ENABLE_VR
+	// VR (upstream) hides these rows: crouch is roomscale/thumbstick, FOV
+	// comes from the HMD, sway/Gun FOV don't apply to motion-aimed weapons
+	// (Gun FOV is a port-only row, hidden here for the same reason).
 	{
 		MENUITEMTYPE_DROPDOWN,
 		0,
@@ -2105,6 +2150,7 @@ struct menuitem g_ExtendedGameMenuItems[] = {
 		20,
 		menuhandlerCrosshairSway,
 	},
+#endif
 	{
 		MENUITEMTYPE_SLIDER,
 		0,
@@ -2457,8 +2503,15 @@ static MenuItemHandlerResult menuhandlerOpenControllerMenu(s32 operation, struct
 static MenuItemHandlerResult menuhandlerOpenGameMenu(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	if (operation == MENUOP_SET) {
+#ifdef PD_ENABLE_VR
+		// VR (upstream): no player selection — open player 1's menu directly
+		g_ExtMenuPlayer = 0;
+		sprintf(g_ExtendedGameMenuTitle, "Player %d Game Options", g_ExtMenuPlayer + 1);
+		menuPushDialog(&g_ExtendedGameMenuDialog);
+#else
 		g_ExtNextDialog = &g_ExtendedGameMenuDialog;
 		menuPushDialog(&g_ExtendedSelectPlayerMenuDialog);
+#endif
 	}
 	return 0;
 }
@@ -3383,6 +3436,9 @@ struct menuitem g_ExtendedMenuItems[] = {
 		0,
 		(void *)&g_ExtendedVideoMenuDialog,
 	},
+#ifndef PD_ENABLE_VR
+	// VR (upstream) hides these rows: mouse/controller are replaced by the VR
+	// controllers, and upstream's audio settings live in the VR menu
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3407,6 +3463,7 @@ struct menuitem g_ExtendedMenuItems[] = {
 		0,
 		menuhandlerOpenControllerMenu,
 	},
+#endif
 #ifdef PD_ENABLE_CPAK
 	{
 		MENUITEMTYPE_SELECTABLE,
@@ -3425,6 +3482,8 @@ struct menuitem g_ExtendedMenuItems[] = {
 		0,
 		menuhandlerOpenGameMenu,
 	},
+#ifndef PD_ENABLE_VR
+	// VR (upstream) hides key bindings: VR controller bindings are fixed
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,
@@ -3433,6 +3492,7 @@ struct menuitem g_ExtendedMenuItems[] = {
 		0,
 		menuhandlerOpenBindsMenu,
 	},
+#endif
 	{
 		MENUITEMTYPE_SELECTABLE,
 		0,

@@ -15,8 +15,15 @@
 #include "gfx_sdlgpu.h"
 #endif
 
+#ifdef PD_ENABLE_VR
+// VR (upstream): non-static — vr_openxr.cpp binds OpenXR to this window's
+// GL context, and gfx_opengl's mirror blit switches contexts.
+SDL_Window* wnd;
+SDL_GLContext ctx;
+#else
 static SDL_Window* wnd;
 static SDL_GLContext ctx;
+#endif
 static int sdl_to_lus_table[512];
 static bool vsync_enabled = true;
 // SDL_GPU backend: the window is created without a GL context and the
@@ -41,6 +48,39 @@ static void (*on_fullscreen_changed_callback)(bool is_now_fullscreen);
 static int target_fps = 120; // above 60 since vsync is enabled by default
 static uint64_t previous_time;
 static uint64_t qpc_freq;
+
+#ifdef PD_ENABLE_VR
+// ============================================================================
+// VR (upstream gfx_sdl2.cpp, ported to SDL3; docs/PORT_VR.md). Deviation: the
+// ImGui mirror toolbar and splash are NOT ported — mirror settings come from
+// config / the console instead, and the waiting window is a plain SDL window.
+// ============================================================================
+#include "../vr/vr_log.h"
+
+extern "C" bool vrWaitForRuntime(int waitSeconds);
+extern uint32_t VrRecommendedW;
+extern uint32_t VrRecommendedH;
+extern int32_t g_internalRenderWidth;
+extern int32_t g_internalRenderHeight;
+
+// --- VR mirror window ---
+SDL_Window*    mirror_wnd  = nullptr;
+SDL_GLContext  mirror_ctx  = nullptr;
+int mirror_width  = 916;
+int mirror_height = 960;
+
+static int  mirror_eye_index = 0;
+static bool mirror_sbs = false;  // false = one eye, true = side by side
+static bool mirror_is_43 = false; // false = 1:1 VR, true = 4:3
+
+// Deviation: default ON — upstream defaults OFF and enables via its ImGui
+// toolbar, which is not ported.
+bool mirror_enabled = true;
+static int  mirror_saved_w = 916;
+static int  mirror_saved_h = 960;
+
+extern "C" void mirror_apply_size(bool enabled);
+#endif
 
 #define FRAME_INTERVAL_US_NUMERATOR 1000000
 #define FRAME_INTERVAL_US_DENOMINATOR (target_fps)
@@ -116,6 +156,16 @@ static void gfx_sdl_get_active_window_refresh_rate(uint32_t* refresh_rate) {
 static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
     window_width = set->width;
     window_height = set->height;
+
+#ifdef PD_ENABLE_VR
+    // VR (upstream): the (hidden) main window hosts the GL/OpenXR context at
+    // the headset-recommended eye size; vr_configure_resolution() ran in main.
+    if (VrRecommendedW > 0 && VrRecommendedH > 0) {
+        window_width = (int)VrRecommendedW;
+        window_height = (int)VrRecommendedH;
+    }
+    sysLogPrintf(LOG_NOTE, "SDL: VR window size: %dx%d", window_width, window_height);
+#endif
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         sysFatalError("Could not init SDL:\n%s", SDL_GetError());
@@ -266,10 +316,44 @@ static void gfx_sdl_init(const struct GfxWindowInitSettings *set) {
 
     if (!wm_use_gpu) {
         SDL_GL_MakeCurrent(wnd, ctx);
+#ifdef PD_ENABLE_VR
+        SDL_GL_SetSwapInterval(0); // VR (upstream): vsync OFF — OpenXR paces frames
+#else
         SDL_GL_SetSwapInterval(1);
+#endif
     }
 
+#ifdef PD_ENABLE_VR
+    // VR (upstream): hide the main window — it only hosts the GL/OpenXR
+    // context. The desktop view is the mirror window, sharing the GL context
+    // so it can sample the swapchain texture array.
+    SDL_HideWindow(wnd);
+
+    if (!wm_use_gpu) {
+        SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+
+        mirror_wnd = SDL_CreateWindow(
+                "Perfect Dark VR - Mirror",
+                mirror_width, mirror_height,
+                SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+
+        if (mirror_wnd) {
+            mirror_ctx = SDL_GL_CreateContext(mirror_wnd);
+            if (!mirror_ctx) {
+                sysLogPrintf(LOG_WARNING, "SDL: could not create mirror GL context: %s", SDL_GetError());
+                SDL_DestroyWindow(mirror_wnd);
+                mirror_wnd = nullptr;
+            } else {
+                // Switch back to the main context for VR rendering
+                SDL_GL_MakeCurrent(wnd, ctx);
+                SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
+                sysLogPrintf(LOG_NOTE, "SDL: mirror window created (%dx%d)", mirror_width, mirror_height);
+            }
+        }
+    }
+#else
     SDL_ShowWindow(wnd);
+#endif
 
     qpc_freq = SDL_GetPerformanceFrequency();
 }
@@ -378,12 +462,52 @@ static void gfx_sdl_handle_events(void) {
             // dragged to a monitor with a different scale factor: the pixel
             // size of a high-pixel-density window changes with it
             case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+#ifdef PD_ENABLE_VR
+                if (mirror_wnd && event.window.windowID == SDL_GetWindowID(mirror_wnd)) {
+                    // VR (upstream): keep the mirror window at the eye aspect
+                    if (event.type == SDL_EVENT_WINDOW_RESIZED) {
+                        int new_w = event.window.data1;
+                        int new_h = event.window.data2;
+
+                        float target_ratio;
+                        if (mirror_sbs) {
+                            target_ratio = 2.0f;        // two 1:1 eyes side by side
+                        } else if (mirror_is_43) {
+                            target_ratio = 4.0f / 3.0f;
+                        } else {
+                            target_ratio = 1.0f;        // 1:1 VR
+                        }
+
+                        float current_ratio = (float)new_w / (float)new_h;
+                        int corrected_w = new_w;
+                        int corrected_h = new_h;
+
+                        if (current_ratio > target_ratio) {
+                            corrected_w = (int)(new_h * target_ratio);
+                        } else {
+                            corrected_h = (int)(new_w / target_ratio);
+                        }
+                        if (corrected_w != new_w || corrected_h != new_h) {
+                            SDL_SetWindowSize(mirror_wnd, corrected_w, corrected_h);
+                        }
+
+                        SDL_GetWindowSizeInPixels(mirror_wnd, &mirror_width, &mirror_height);
+                    }
+                    break;
+                }
+#endif
                 SDL_GetWindowSizeInPixels(wnd, &window_width, &window_height);
                 if (!fullscreen_state) {
                     maximized_state = (SDL_GetWindowFlags(wnd) & SDL_WINDOW_MAXIMIZED) ? true : false;
                 }
                 break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+#ifdef PD_ENABLE_VR
+                if (mirror_wnd && event.window.windowID == SDL_GetWindowID(mirror_wnd)) {
+                    // VR (upstream): closing the mirror window quits
+                    exit(0);
+                }
+#endif
                 if (event.window.windowID == SDL_GetWindowID(wnd)) {
                     // We listen specifically for main window close because closing main window
                     // on macOS does not trigger SDL_Quit.
@@ -432,10 +556,111 @@ static inline void sync_framerate_with_timer(void) {
     previous_time = t;
 }
 
+#ifdef PD_ENABLE_VR
+extern "C" void gfx_sdl_get_mirror_dimensions(int* w, int* h) { // VR
+    if (mirror_wnd && mirror_enabled) {
+        SDL_GetWindowSizeInPixels(mirror_wnd, w, h);
+    } else {
+        *w = 0;
+        *h = 0;
+    }
+}
+
+extern "C" int gfx_sdl_get_mirror_eye() { // VR
+    return mirror_eye_index;
+}
+
+extern "C" bool gfx_sdl_is_mirror_enabled() {
+    return mirror_enabled;
+}
+
+extern "C" bool gfx_sdl_is_mirror_sbs() {
+    return mirror_sbs;
+}
+
+extern "C" void mirror_apply_size(bool enabled) {
+    if (!mirror_wnd) {
+        return;
+    }
+    if (enabled) {
+        // Restore the saved size
+        SDL_SetWindowSize(mirror_wnd, mirror_saved_w, mirror_saved_h);
+        SDL_SetWindowResizable(mirror_wnd, true);
+        SDL_ShowWindow(mirror_wnd);
+    } else {
+        // Deviation: upstream collapses to a logo + ImGui toolbar strip; with
+        // the toolbar unported we simply hide the window.
+        mirror_saved_w = mirror_width;
+        mirror_saved_h = mirror_height;
+        SDL_HideWindow(mirror_wnd);
+    }
+}
+
+// /vrmirror console + config entry point: 0 off, 1 left eye, 2 right eye, 3 SbS.
+// Replaces upstream's ImGui toolbar controls.
+extern "C" void gfx_sdl_set_mirror_mode(int mode) {
+    bool was_sbs = mirror_sbs;
+    mirror_enabled = mode != 0;
+    mirror_sbs = mode == 3;
+    if (mode == 1) {
+        mirror_eye_index = 0;
+    } else if (mode == 2) {
+        mirror_eye_index = 1;
+    }
+    if (mirror_wnd) {
+        if (mirror_sbs && !was_sbs) {
+            mirror_saved_w = mirror_width;
+            mirror_saved_h = mirror_height;
+            SDL_SetWindowSize(mirror_wnd, mirror_height * 2, mirror_height);
+        } else if (!mirror_sbs && was_sbs) {
+            SDL_SetWindowSize(mirror_wnd, mirror_saved_w, mirror_saved_h);
+        }
+    }
+    mirror_apply_size(mirror_enabled);
+}
+
+extern "C" void vrShowWaitingWindow(const char *bmpPath) {
+    // Deviation: upstream shows an ImGui splash with a logo (not ported).
+    // Pump a minimal window until the OpenXR runtime answers; closing quits.
+    (void)bmpPath;
+    if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
+        SDL_Init(SDL_INIT_VIDEO);
+    }
+    SDL_Window *waitWnd = SDL_CreateWindow(
+            "Perfect Dark VR - waiting for VR runtime... (close to quit)",
+            480, 120, 0);
+    bool runtimeReady = false;
+    while (!runtimeReady) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT ||
+                event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                exit(0);
+            }
+        }
+        runtimeReady = vrWaitForRuntime(1);
+    }
+    if (waitWnd) {
+        SDL_DestroyWindow(waitWnd);
+    }
+}
+#endif // PD_ENABLE_VR
+
 static void gfx_sdl_swap_buffers_begin(void) {
     if (target_fps) {
         sync_framerate_with_timer();
     }
+#ifdef PD_ENABLE_VR
+    if (!wm_use_gpu && mirror_wnd && mirror_ctx) {
+        // VR (upstream, toolbar dropped): present the mirror window; the main
+        // window is hidden and never swapped.
+        SDL_GL_MakeCurrent(mirror_wnd, mirror_ctx);
+        SDL_GL_SetSwapInterval(0);
+        SDL_GL_SwapWindow(mirror_wnd);
+        SDL_GL_MakeCurrent(wnd, ctx);
+        return;
+    }
+#endif
     if (!wm_use_gpu) {
         // SDL_GPU presents in the renderer's end_frame (command-buffer
         // submit); only the frame-pacing sleep above is shared
@@ -521,6 +746,14 @@ static void gfx_sdl_set_taskbar_progress(int state, float value) {
 }
 
 int gfx_sdl_get_display_mode(int modenum, int *out_w, int *out_h) {
+#ifdef PD_ENABLE_VR
+    // VR (upstream): the "resolution" is the eye render size
+    if (g_internalRenderWidth > 0 && g_internalRenderHeight > 0) {
+        *out_w = g_internalRenderWidth;
+        *out_h = g_internalRenderHeight;
+        return 1;
+    }
+#endif
     const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
     int count = 0;
     SDL_DisplayMode **modes = SDL_GetFullscreenDisplayModes(display_in_use, &count);
@@ -537,6 +770,14 @@ int gfx_sdl_get_display_mode(int modenum, int *out_w, int *out_h) {
 }
 
 int gfx_sdl_get_current_display_mode(int *out_w, int *out_h) {
+#ifdef PD_ENABLE_VR
+    // VR (upstream): the "resolution" is the eye render size
+    if (g_internalRenderWidth > 0 && g_internalRenderHeight > 0) {
+        *out_w = g_internalRenderWidth;
+        *out_h = g_internalRenderHeight;
+        return 1;
+    }
+#endif
     const SDL_DisplayID display_in_use = SDL_GetDisplayForWindow(wnd);
     const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(display_in_use);
     if (mode) {

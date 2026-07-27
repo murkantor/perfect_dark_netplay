@@ -1,4 +1,9 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_input.h"
+#endif
+
 #include "constants.h"
 #include "game/activemenu.h"
 #include "game/bondbike.h"
@@ -48,6 +53,23 @@
 #include "utils.h"
 #include "net/net.h"
 #include "net/netmsg.h"
+
+#ifdef PD_ENABLE_VR
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
+#define LOGI(...) printf(__VA_ARGS__)
+
+extern XrQuaternionf vr_joy_rot_Q;
+extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
+static bool Prev_VR_BUTTON_X = false;
+extern VrEyeheightMode sVrEyeheightMode;
+
+static bool sPrevGripState = false;
+bool g_DisableGrabViaB = true;
+bool VrSeatedMode = false;
+extern bool vr_grip_for_unarmed;
+#endif
 
 // Chaos "Gormless" (docs/PORT_CHAOS.md, pd.gormless): flip movement AND look —
 // forward/back, strafe left/right, look left/right, look up/down all
@@ -1816,6 +1838,36 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						srmask = R_JPAD | R_CBUTTONS;
 					}
 
+#ifdef PD_ENABLE_VR
+					if (controlmode == CONTROLMODE_12 || controlmode == CONTROLMODE_14 ||
+						controlmode == CONTROLMODE_PC) {
+
+						if (controlmode == CONTROLMODE_12 || controlmode == CONTROLMODE_14 || controlmode == CONTROLMODE_PC) {
+							// Handle side stepping
+							if (allowc1buttons) {
+								movedata.digitalstepleft = 0;
+								movedata.digitalstepright = 0;
+								for (i = 0; i < numsamples; i++) {
+									if (joyGetButtonsOnSample(i, contpad1, c1allowedbuttons & slmask)) {
+										movedata.digitalstepleft++;
+									}
+									if (joyGetButtonsOnSample(i, contpad1, c1allowedbuttons & srmask)) {
+										movedata.digitalstepright++;
+									}
+								}
+							}
+
+
+							movedata.digitalstepforward = (c1buttons & sumask);
+							movedata.digitalstepback = (c1buttons & sdmask);
+							movedata.canlookahead =
+									(controlmode == CONTROLMODE_PC) && (c2stickx || c2sticky);
+							movedata.cannaturalpitch = true;
+							movedata.speedvertadown = 0;
+							movedata.speedvertaup = 0;
+							movedata.cannaturalturn = true;
+						}
+#else
 					if (controlmode == CONTROLMODE_12 || controlmode == CONTROLMODE_14 || controlmode == CONTROLMODE_PC) {
 						// Handle side stepping
 						if (g_Vars.currentplayer->insightaimmode == false) {
@@ -1842,6 +1894,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						movedata.speedvertadown = 0;
 						movedata.speedvertaup = 0;
 						movedata.cannaturalturn = !g_Vars.currentplayer->insightaimmode;
+#endif
 
 #ifndef PLATFORM_N64
 						if (controlmode == CONTROLMODE_PC) {
@@ -2079,6 +2132,23 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 							}
 						}
 					}
+
+#ifdef PD_ENABLE_VR
+					// VR Grab using grip button
+					bool gripState = get_button_state(0, "grip");
+					if (gripState && !sPrevGripState) {
+						if (g_Vars.currentplayer->bondmovemode != MOVEMODE_GRAB) {
+							g_DisableGrabViaB = false;
+							currentPlayerInteract(false);
+							g_DisableGrabViaB = true;
+						}
+					} else if (!gripState && sPrevGripState) {
+						if (g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB) {
+							bmoveSetMode(MOVEMODE_WALK);
+						}
+					}
+					sPrevGripState = gripState;
+#endif
 
 #ifndef PLATFORM_N64
 					if (controlmode == CONTROLMODE_PC && allowc1buttons) {
@@ -2759,6 +2829,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				// Calculate new verta
 				newverta = g_Vars.currentplayer->vv_verta + (g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal + g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal);
 
+#ifndef PD_ENABLE_VR // Removed for VR (upstream comments this snap-to-lookahead block out)
 				if (g_Vars.currentplayer->vv_verta > lookahead && newverta > lookahead) {
 					g_Vars.currentplayer->vv_verta = newverta;
 				} else if (g_Vars.currentplayer->vv_verta < lookahead && newverta < lookahead) {
@@ -2771,6 +2842,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						g_Vars.currentplayer->docentreupdown = false;
 					}
 				}
+#endif
 			}
 		} else {
 			if (movedata.cannaturalpitch) {
@@ -2810,7 +2882,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				bmoveUpdateSpeedVerta(0);
 			}
 
+#ifndef PD_ENABLE_VR // Removed for VR (upstream)
 			g_Vars.currentplayer->vv_verta += g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal * 3.5f;
+#endif
 		}
 	}
 
@@ -3106,6 +3180,34 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 
 	bmoveProcessInput(allowc1x, allowc1y, allowc1buttons, ignorec2);
 
+#ifdef PD_ENABLE_VR
+	// VR DEVIATION (netplay): headset height may only drive the LOCAL pawn's
+	// crouch — upstream is single-player and cannot hit this. bmoveTick also
+	// runs for remote pawns, where bmoveProcessInput just applied crouchpos
+	// from the wire; without this gate the block below would overwrite it with
+	// the host's own head height. Body preserved verbatim (re-indented only).
+	if (!g_Vars.currentplayer->isremote) {
+		// VR
+		if(!VrSeatedMode){
+			if (gHeadPos.y < gStandingHeadHeight / 1.6f || sVrEyeheightMode == VR_EYEHEIGHT_SQUAT) {
+				g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
+			} else if (gHeadPos.y < gStandingHeadHeight / 1.3f  || sVrEyeheightMode == VR_EYEHEIGHT_DUCK) {
+				g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
+			} else {
+				g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
+			}
+		}else{
+			if (sVrEyeheightMode == VR_EYEHEIGHT_SQUAT) {
+				g_Vars.currentplayer->crouchpos = CROUCHPOS_SQUAT;
+			} else if (sVrEyeheightMode == VR_EYEHEIGHT_DUCK) {
+				g_Vars.currentplayer->crouchpos = CROUCHPOS_DUCK;
+			} else {
+				g_Vars.currentplayer->crouchpos = CROUCHPOS_STAND;
+			}
+		}
+	}
+#endif
+
 	if (g_Vars.currentplayer->bondmovemode == MOVEMODE_BIKE) {
 		bbikeTick();
 	} else if (g_Vars.currentplayer->bondmovemode == MOVEMODE_GRAB) {
@@ -3176,6 +3278,7 @@ void bmoveTick(bool allowc1x, bool allowc1y, bool allowc1buttons, bool ignorec2)
 
 void bmoveUpdateVerta(void)
 {
+#ifndef PD_ENABLE_VR // Removed for VR (upstream comments the ±180 wrap loops out)
 	while (g_Vars.currentplayer->vv_verta < -180) {
 		g_Vars.currentplayer->vv_verta += 360;
 	}
@@ -3183,6 +3286,7 @@ void bmoveUpdateVerta(void)
 	while (g_Vars.currentplayer->vv_verta >= 180) {
 		g_Vars.currentplayer->vv_verta -= 360;
 	}
+#endif
 
 	if (g_Vars.currentplayer->vv_verta > 90) {
 		g_Vars.currentplayer->vv_verta = 90;

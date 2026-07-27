@@ -1,4 +1,10 @@
 #include <ultra64.h>
+
+#ifdef PD_ENABLE_VR
+#include <math.h>
+#include "../../port/vr/vr_input.h"
+#endif
+
 #include "constants.h"
 #include "../lib/naudio/n_sndp.h"
 #include "game/bondmove.h"
@@ -79,6 +85,118 @@ static inline bool bgunAudioHandleReal(struct sndstate *handle)
 #include "net/netprop.h"
 #include "mpsetups.h"
 #endif
+
+#ifdef PD_ENABLE_VR
+
+#include "../../port/vr/vr_openxr.h"
+#include "../../port/vr/vr_log.h"
+
+
+#include <game/bg.h>
+#include <stdlib.h>
+#include <string.h>
+#include <system.h>
+
+#define LOGI(...) printf(__VA_ARGS__)
+#include <malloc.h>
+
+// VR global -----------------------------------------
+extern XrQuaternionf vr_joy_rot_Q;
+extern XrQuaternionf vr_HMD_rot_Q;
+extern float vr_ctrl_velocity[2][3]; // [ctrlIndex][x,y,z] en m/s
+extern void vr_rotate_vector_by_quaternion(struct coord* v, const XrQuaternionf* q);
+int vr_invert_hands = false;
+bool vr_leftHasWeapon = false;
+static bool leftTrig = false;
+static bool vr_prevLeftTrig = false;
+bool vr_set_motion_triggered = false;
+extern int vr_button_R_grip;
+extern int vr_button_L_grip;
+int weaponnum = 0;
+int handnum = 0;
+struct coord velocity = { 0, 0, 0 };
+
+// VR Left crosshair HUD -------------------------
+float vr_LeftCrossX = 0.0f;
+float vr_LeftCrossY = 0.0f;
+bool vr_LeftCrossValid = false;
+#define CLAMP(x, min, max) ((x) < (min) ? (min) : ((x) > (max) ? (max) : (x)))
+
+// VR UNARMED ---------------------------------------
+static struct guncmd vr_hand_grip_anim[2] = {
+        { GUNCMD_PLAYANIMATION, 0, 1002, 20000 },
+        { GUNCMD_END }
+};
+bool vr_is_R_fist = false;
+bool vr_is_L_fist = false;
+bool vr_grip_for_unarmed = false;
+
+// VR COMBATKNIFE ----------------------------------
+static struct guncmd vr_knife_sec_anim[2] = {
+        { GUNCMD_PLAYANIMATION, 0, 1029, 20000 },
+        { GUNCMD_END }
+};
+static struct guncmd vr_knife_sec_anim_revers[2] = {
+        { GUNCMD_PLAYANIMATION, 0, 1029, -10000 },
+        { GUNCMD_END }
+};
+static struct guncmd vr_knife_sec_anim_throw[2] = {
+        { GUNCMD_PLAYANIMATION, 0, 1051, 10000 },
+        { GUNCMD_END }
+};
+
+bool vr_R_func_secondary_knife = false;
+bool vr_R_knife_sec_anim_run = false;
+bool vr_R_trigger = false;
+
+bool vr_L_func_secondary_knife = false;
+bool vr_L_knife_sec_anim_run = false;
+bool vr_L_trigger = false;
+
+// VR Trow Grenade / Mine etc -----------------------------------------
+#define VR_THROW_HISTORY_FRAMES 15
+#define VR_THROW_HISTORY_MAX    64
+
+typedef struct {
+    float vx, vy, vz;
+    float vr_magnitude;
+    uint32_t frame60;
+} vr_ThrowSample;
+
+static vr_ThrowSample gThrowHistory[2][VR_THROW_HISTORY_MAX]; // [ctrlIdx][sample]
+static int vr_ThrowHistoryIdx[2] = {0, 0};
+static int vr_ThrowHistoryCount[2] = {0, 0};
+bool vr_throw_cancelled = false;
+bool VrMotionThrowing = true;
+
+// VR Laser Dot ------------------------------------------------------
+static f32 old_dotposX[2];
+static f32 old_dotposY[2];
+static f32 old_dotposZ[2];
+static bool old_dotpos_init[2] = { false, false };
+bool show_laser_dot[2]  = { false, false };
+bool VrlaserDotForALL = false;
+
+// VR enable manual reloading ----------------------------------------
+bool VrManualReloading = false;
+
+// VrDebug Manual Reloading -------------------------------------------
+bool VRDebugMtxPos = false;
+int axis = 0;
+float offsetX = 0.0f;
+float offsetY = 0.0f;
+float offsetZ = 0.0f;
+static float sSnapRotOffsetX = 0.0f;  // pitch correction
+static float sSnapRotOffsetY = 0.0f;  // yaw correction
+static float sSnapRotOffsetZ = 0.0f;  // roll correction
+static int   sSnapRotAxis    = 0;
+//-------------------------------------------------------------------
+void vrRecoilNotifyShotFired(int handnum);
+extern bool VrWeaponRecoil;
+bool VR_FUNC_SECONDARY = false; // For vr_input.cpp / recoil
+//-----------
+
+#endif /* PD_ENABLE_VR */
 
 #define GUNLOADSTATE_FLUX     0
 #define GUNLOADSTATE_MODEL    1
@@ -304,6 +422,2127 @@ static struct sndstate *bgunPlayGunSound(s16 soundnum, struct sndstate **handle_
 	return sndStart(var80095200, soundnum, handle_out, -1, -1, -1, -1, -1);
 }
 #endif
+
+#ifdef PD_ENABLE_VR
+
+
+
+
+
+
+
+
+
+// VR--------------------------
+
+bool VrTwoHandsGun(s32 weaponnum) {
+    switch (weaponnum) {
+        case WEAPON_CALLISTO:
+        case WEAPON_RCP120:
+        case WEAPON_DRAGON:
+        case WEAPON_K7AVENGER:
+        case WEAPON_AR34:
+        case WEAPON_SUPERDRAGON:
+        case WEAPON_SHOTGUN:
+        case WEAPON_SNIPERRIFLE:
+        case WEAPON_FARSIGHT:
+        case WEAPON_DEVASTATOR:
+        case WEAPON_ROCKETLAUNCHER:
+        case WEAPON_SLAYER:
+        case WEAPON_REAPER:
+        case WEAPON_LAPTOPGUN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool vrLaserDotAllowed(s32 weaponnum)
+{
+    switch (weaponnum) {
+        // Weapons without hands / gadgets / explosives = no laser dot
+        case WEAPON_UNARMED:
+        case WEAPON_NONE:
+        case WEAPON_COMBATKNIFE:
+        case WEAPON_GRENADE:
+        case WEAPON_NBOMB:
+        case WEAPON_TIMEDMINE:
+        case WEAPON_PROXIMITYMINE:
+        case WEAPON_REMOTEMINE:
+        case WEAPON_ECMMINE:
+        case WEAPON_HORIZONSCANNER:
+        case WEAPON_DATAUPLINK:
+        case WEAPON_RTRACKER:
+        case WEAPON_PRESIDENTSCANNER:
+        case WEAPON_DOORDECODER:
+        case WEAPON_AUTOSURGEON:
+        case WEAPON_COMMSRIDER:
+        case WEAPON_TRACERBUG:
+        case WEAPON_TARGETAMPLIFIER:
+        case WEAPON_CLOAKINGDEVICE:
+        case WEAPON_COMBATBOOST:
+        case WEAPON_EXPLOSIVES:
+        case WEAPON_SKEDARBOMB:
+            return false;
+        default:
+            return true;
+    }
+}
+
+
+
+#define VR_MAX_GUN_PARTS 64
+static s32 s_gunMovableMtxIndices[VR_MAX_GUN_PARTS];
+static s32 s_gunMovableCount = 0;
+static bool s_vrPartHidden[VR_MAX_GUN_PARTS] = {false};
+static bool MtxReplacePart = false;
+
+void vrHideGunParts(Mtxf *matrices)
+{
+    for (s32 i = 0; i < s_gunMovableCount; i++) {
+        if (!s_vrPartHidden[i]) continue;
+
+        s32 mtxindex = s_gunMovableMtxIndices[i];
+        Mtxf *mtx = &matrices[mtxindex];
+
+        // Scale is zero on all three axes → geometry is invisible
+        // Overwrite the three rotation/scale columns
+        mtx->m[0][0] = 0.0f; mtx->m[0][1] = 0.0f; mtx->m[0][2] = 0.0f;
+        mtx->m[1][0] = 0.0f; mtx->m[1][1] = 0.0f; mtx->m[1][2] = 0.0f;
+        mtx->m[2][0] = 0.0f; mtx->m[2][1] = 0.0f; mtx->m[2][2] = 0.0f;
+        // m[3] = translation : We can also move it very far away as a backup
+        mtx->m[3][0] = 99999.0f;
+    }
+}
+
+
+
+s32 HideAll[] = { -1};
+
+s32 LeftHandMtx[] = {
+        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
+        -1 // End of the list
+};
+
+
+s32 LeftHandAndMagMtx[] = {
+        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
+        42, // Magazine Lhand
+        -1 // End of the list
+};
+
+s32 RightHandAndMagMtx[] = {
+        38, // Magazine Rhand
+        1,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, // Rhand
+        -1 // End of the list
+};
+
+s32 LeftHandAndSlideMtx[] = {
+        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
+        37, // slide
+        -1 // End of the list
+};
+
+s32 LeftHandAndRightMagMtx[] = {
+        17, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32, //Lhand
+        38, // Magazine Rhand
+        -1 // End of the list
+};
+
+s32 RightMagMtx[] = {
+        38, // Magazine Rhand
+        -1 // End of the list
+};
+
+s32 LeftMagMtx[] = {
+        42, // Magazine Rhand
+        -1 // End of the list
+};
+
+void vrHideAllExcept(const s32 *keepList)
+{
+    for (s32 i = 0; i < s_gunMovableCount; i++) {
+        s32 mtxindex = s_gunMovableMtxIndices[i];
+        bool keep = false;
+        for (s32 k = 0; keepList[k] != -1; k++) {
+            if (mtxindex == keepList[k]) {
+                keep = true;
+                break;
+            }
+        }
+        // If manual reloading is disabled, force the hiding of matrix 38
+        if (!VrManualReloading && mtxindex == 38) {
+            keep = false;
+        }
+        s_vrPartHidden[i] = !keep;
+    }
+}
+
+
+void vrHideOnly(const s32 *hideList)
+{
+    for (s32 i = 0; i < s_gunMovableCount; i++) {
+        s32 mtxindex = s_gunMovableMtxIndices[i];
+
+        bool hide = false;
+        for (s32 k = 0; hideList[k] != -1; k++) {
+            if (mtxindex == hideList[k]) {
+                hide = true;
+                break;
+            }
+        }
+        s_vrPartHidden[i] = hide;
+    }
+}
+
+static s32 sHandMtxIndices[VR_MAX_GUN_PARTS];
+static s32 sHandMtxCount = 0;
+
+
+void vrBuildHandIndexList(struct modeldef *handmodeldef) {
+    sHandMtxCount = 0;
+    if (!handmodeldef) return;
+
+    struct modelnode *node = handmodeldef->rootnode;
+    while (node) {
+        u32 type = node->type & 0xff;
+        if (type == MODELNODETYPE_POSITION || type == MODELNODETYPE_POSITIONHELD) {
+            s32 idx = modelFindNodeMtxIndex(node, 0);
+
+            // SAFETY GUARD: never exceed VR_MAX_GUN_PARTS
+            if (idx >= 0 && sHandMtxCount < VR_MAX_GUN_PARTS) {
+                sHandMtxIndices[sHandMtxCount++] = idx;
+            }
+        }
+        if (node->child) node = node->child;
+        else { while (node) { if (node->next) { node = node->next; break; } node = node->parent; } }
+    }
+}
+
+static bool isHandIndex(s32 mtxindex) {
+    for (s32 i = 0; i < sHandMtxCount; i++)
+        if (sHandMtxIndices[i] == mtxindex) return true;
+    return false;
+}
+
+void vrBuildMtxPartsList(struct hand *hand, struct modeldef *modeldef, bool filterHands) {
+    s_gunMovableCount = 0;
+    if (!modeldef) return;
+
+    struct modelnode *node = modeldef->rootnode;
+    while (node) {
+        u32 type = node->type & 0xff;
+        if (type == MODELNODETYPE_POSITION || type == MODELNODETYPE_POSITIONHELD) {
+            s32 mtxindex = modelFindNodeMtxIndex(node, 0);
+            if (mtxindex >= 0 && (!filterHands || !isHandIndex(mtxindex))) {
+                bool dup = false;
+                for (s32 i = 0; i < s_gunMovableCount; i++)
+                    if (s_gunMovableMtxIndices[i] == mtxindex) { dup = true; break; }
+
+                // SAFETY GUARD: never exceed VR_MAX_GUN_PARTS
+                if (!dup && s_gunMovableCount < VR_MAX_GUN_PARTS) {
+                    s_gunMovableMtxIndices[s_gunMovableCount++] = mtxindex;
+                }
+            }
+        }
+        if (node->child) node = node->child;
+        else { while (node) { if (node->next) { node = node->next; break; } node = node->parent; } }
+    }
+}
+
+
+Mtxf vr_sp234, vr_sp284, vr_sp2c4, vr_sp164, vr_sp124;
+// VR moves the left hand position during the animation to match the real hand position
+void vrApplyReloadOffset(Mtxf *mtx, float ox, float oy, float oz)
+{
+    mtx->m[3][0] += mtx->m[0][0] * ox + mtx->m[1][0] * oy + mtx->m[2][0] * oz;
+    mtx->m[3][1] += mtx->m[0][1] * ox + mtx->m[1][1] * oy + mtx->m[2][1] * oz;
+    mtx->m[3][2] += mtx->m[0][2] * ox + mtx->m[1][2] * oy + mtx->m[2][2] * oz;
+}
+
+
+// Global VrCopyWep / VrCopyHand variables - The unarmed left hand
+// It is a copy of the right hand, but we hide the right hand and display the left hand instead.
+// What is defined as the right hand in the original game actually contains
+// both the left and right hands, but the left hand is simply hidden. It appears during reloading.
+
+struct model g_VrCopyWepModel;
+struct modeldef *g_VrCopyWepModeldef = NULL;
+bool g_VrCopyWepFilemodel = false;
+bool g_VrCopyWepReadyToRender = false;
+Mtxf g_VrCopyWepSp2c4;
+struct model g_VrCopyHandModel;
+struct modeldef *g_VrCopyHandModeldef = NULL;
+static bool vrSwitchCopyGun = true;
+static bool vrSwitchGun = true;
+static float VrCopyScale = 0.0f;
+
+// Persistent real pointer (sysMemAlloc), separate from g_VrCopyWepModel.matrices
+// which is reassigned every frame to a gfxAllocate buffer for rendering.
+static Mtxf *g_VrCopyWepMatricesAlloc = NULL;
+static u32  *g_VrCopyWepRwdatasAlloc  = NULL;
+static u32  *g_VrCopyHandRwdatasAlloc = NULL;
+//----------------------------------------------------------
+
+
+#define VR_MAG_R_MTX_INDEX 38
+#ifndef M_PI_2f
+#define M_PI_2f 1.5707963267948966f
+#endif
+
+static void quaternionConjugate_XR(const XrQuaternionf *q, XrQuaternionf *out)
+{
+    out->x = -q->x;
+    out->y = -q->y;
+    out->z = -q->z;
+    out->w =  q->w;
+}
+
+static void quaternionMul_XR(const XrQuaternionf *a, const XrQuaternionf *b, XrQuaternionf *out)
+{
+    out->x = a->w * b->x + a->x * b->w + a->y * b->z - a->z * b->y;
+    out->y = a->w * b->y - a->x * b->z + a->y * b->w + a->z * b->x;
+    out->z = a->w * b->z + a->x * b->y - a->y * b->x + a->z * b->w;
+    out->w = a->w * b->w - a->x * b->x - a->y * b->y - a->z * b->z;
+}
+
+
+static struct coord gVrBeltPosForDetection = {0};
+
+static void vrPlaceRightMagOnBelt(void)
+{
+    if (!g_VrCopyWepModeldef || !g_VrCopyWepModel.matrices)
+        return;
+
+    if (g_VrCopyWepModeldef->nummatrices <= VR_MAG_R_MTX_INDEX) // VR: upstream UB guard
+        return;
+
+    Mtxf *magMtx = &g_VrCopyWepModel.matrices[VR_MAG_R_MTX_INDEX];
+
+    // 1) Total head-to-world quaternion: qTotal = vr_joy_rot_Q ⊗ vr_HMD_rot_Q
+    XrQuaternionf qJoy  = vr_joy_rot_Q;
+    XrQuaternionf qHead = vr_HMD_rot_Q;
+    XrQuaternionf qTotal;
+    quaternionMul_XR(&qJoy, &qHead, &qTotal);
+
+    XrQuaternionf qTotalInv;
+    quaternionConjugate_XR(&qTotal, &qTotalInv);
+
+    // 2) World forward direction from qTotal
+    struct coord fwd_world = { 0.0f, 0.0f, 1.0f };
+    vr_rotate_vector_by_quaternion(&fwd_world, &qTotal); // [file:2]
+
+    // Pure yaw (headset + joystick)
+    float yaw = atan2f(fwd_world.x, fwd_world.z);
+
+    // 3) Yaw-only quaternion in WORLD space
+    XrQuaternionf qYaw;
+    qYaw.x = 0.0f;
+    qYaw.y = sinf(yaw * 0.5f);
+    qYaw.z = 0.0f;
+    qYaw.w = cosf(yaw * 0.5f);
+
+    // 4) Local rotation (HEAD space) = qTotal^-1 ⊗ qYaw
+    XrQuaternionf qLocal;
+    quaternionMul_XR(&qTotalInv, &qYaw, &qLocal);
+
+    // Local axes (in HEAD space), before scaling
+    struct coord right = { 1.0f, 0.0f, 0.0f };
+    struct coord up    = { 0.0f, 1.0f, 0.0f };
+    struct coord fwd   = { 0.0f, 0.0f,-1.0f };
+
+    vr_rotate_vector_by_quaternion(&right, &qLocal);
+    vr_rotate_vector_by_quaternion(&up,    &qLocal);
+    vr_rotate_vector_by_quaternion(&fwd,   &qLocal);
+
+    // Correction: 90° around local Y
+    float angle = M_PI_2f;
+    XrQuaternionf qCorrection = {
+            .x = 0.0f,
+            .y = sinf(angle * 0.5f),
+            .z = 0.0f,
+            .w = cosf(angle * 0.5f)
+    };
+
+    XrQuaternionf qLocalCorrected;
+    quaternionMul_XR(&qLocal, &qCorrection, &qLocalCorrected);
+
+    vr_rotate_vector_by_quaternion(&right, &qLocalCorrected);
+    vr_rotate_vector_by_quaternion(&up,    &qLocalCorrected);
+    vr_rotate_vector_by_quaternion(&fwd,   &qLocalCorrected);
+
+
+    // 5) Belt offset (in the reference "body" coordinate system)
+    struct coord belt_body = {
+            0.0f,   // Left / Right
+            -25.0f,  // Down
+            3.0f    // Forward / backward
+    };
+
+    // World : yaw‑only
+    struct coord belt_world = belt_body;
+    vr_rotate_vector_by_quaternion(&belt_world, &qYaw);
+
+    // Local (head) : qTotal^-1 * belt_world
+    struct coord belt_head = belt_world;
+    vr_rotate_vector_by_quaternion(&belt_head, &qTotalInv);
+    gVrBeltPosForDetection = belt_head;
+    // 6) Écrire la rotation unitaire (axes normalisés, scale = 1)
+    magMtx->m[0][0] = right.x;  magMtx->m[0][1] = right.y;  magMtx->m[0][2] = right.z;
+    magMtx->m[1][0] = up.x;     magMtx->m[1][1] = up.y;     magMtx->m[1][2] = up.z;
+    magMtx->m[2][0] = fwd.x;    magMtx->m[2][1] = fwd.y;    magMtx->m[2][2] = fwd.z;
+
+    // 7) Apply scale
+    mtx00015f04(0.10000001f, magMtx);
+
+    // 8) Translation = belt offset in HEAD space
+    magMtx->m[3][0] = belt_head.x;
+    magMtx->m[3][1] = belt_head.y;
+    magMtx->m[3][2] = belt_head.z;
+
+    magMtx->m[0][3] = 0.0f;
+    magMtx->m[1][3] = 0.0f;
+    magMtx->m[2][3] = 0.0f;
+    magMtx->m[3][3] = 1.0f;
+
+}
+
+static void rotvec(float *vx, float *vy, float *vz,
+                   float qw, float qx, float qy, float qz)
+{
+    float tx = 2.0f*(qy*(*vz) - qz*(*vy));
+    float ty = 2.0f*(qz*(*vx) - qx*(*vz));
+    float tz = 2.0f*(qx*(*vy) - qy*(*vx));
+    *vx += qw*tx + qy*tz - qz*ty;
+    *vy += qw*ty + qz*tx - qx*tz;
+    *vz += qw*tz + qx*ty - qy*tx;
+}
+
+static void apply_wrist_rot(struct hand *hand, Mtxf *armMtx, Mtxf *handMtx,
+                            float sign, const float t, float bg_scale) {
+
+
+    float pivotX = handMtx->m[3][0];
+    float pivotY = handMtx->m[3][1];
+    float pivotZ = handMtx->m[3][2];
+    float armTx  = armMtx->m[3][0];
+    float armTy  = armMtx->m[3][1];
+    float armTz  = armMtx->m[3][2];
+
+    float dax = pivotX - armTx;
+    float day = pivotY - armTy;
+    float daz = pivotZ - armTz;
+    float clen = sqrtf(dax*dax + day*day + daz*daz);
+    if (clen < 0.0001f) return;
+
+    float cx = dax / clen;
+    float cy = day / clen;
+    float cz = daz / clen;
+
+    float tvx = (hand->posrotmtx.m[3][0] * bg_scale) - armTx;
+    float tvy = (hand->posrotmtx.m[3][1] * bg_scale) - armTy;
+    float tvz = (hand->posrotmtx.m[3][2] * bg_scale) - armTz;
+    float tvlen = sqrtf(tvx*tvx + tvy*tvy + tvz*tvz);
+    if (tvlen < 0.0001f) return;
+    tvx /= tvlen;
+    tvy /= tvlen;
+    tvz /= tvlen;
+
+    float dot = cx*tvx + cy*tvy + cz*tvz;
+    if (dot < -1.0f) dot = -1.0f;
+    if (dot >  1.0f) dot =  1.0f;
+    if (dot > 0.9999f) return;
+
+    float ax = cy*tvz - cz*tvy;
+    float ay = cz*tvx - cx*tvz;
+    float az = cx*tvy - cy*tvx;
+    float alen = sqrtf(ax*ax + ay*ay + az*az);
+    if (alen < 0.0001f) return;
+    ax /= alen; ay /= alen; az /= alen;
+
+    float partAngle = acosf(dot) * t;
+    float s  = sign * sinf(partAngle * 0.5f);
+    float qw = cosf(partAngle * 0.5f);
+    float qx = ax * s;
+    float qy = ay * s;
+    float qz = az * s;
+
+    rotvec(&armMtx->m[0][0], &armMtx->m[0][1], &armMtx->m[0][2], qw, qx, qy, qz);
+    rotvec(&armMtx->m[1][0], &armMtx->m[1][1], &armMtx->m[1][2], qw, qx, qy, qz);
+    rotvec(&armMtx->m[2][0], &armMtx->m[2][1], &armMtx->m[2][2], qw, qx, qy, qz);
+    rotvec(&dax, &day, &daz, qw, qx, qy, qz);
+
+    armMtx->m[3][0] = pivotX - dax;
+    armMtx->m[3][1] = pivotY - day;
+    armMtx->m[3][2] = pivotZ - daz;
+    handMtx->m[3][0] = pivotX;
+    handMtx->m[3][1] = pivotY;
+    handMtx->m[3][2] = pivotZ;
+
+}
+
+void vr_wrist_rot(struct hand *hand, struct modeldef *modeldef, Mtxf *matrices, float bg_scale) {
+
+    const float t = 2.0f;
+    bool grip = false;
+    if(VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)){
+        grip = get_button_state(0, "grip");
+    }
+
+    float leftT    = grip ?  1.0f : t;     // less movement with grip
+    if (hand->state == HANDSTATE_RELOAD){
+        leftT = 0.0f;
+    }
+    // Right Hand and arm
+    apply_wrist_rot(hand, &matrices[1], &matrices[2], 1.0f, t, bg_scale);
+    // Left Hand and arm
+    apply_wrist_rot(hand, &matrices[17], &matrices[18], 1.0f, leftT, bg_scale);
+}
+
+
+
+// Size = number of matrices in the model
+#define VR_RELOAD_SNAP_MAX_MATRICES 64
+
+static Mtxf sVrReloadMtxSnapA[VR_RELOAD_SNAP_MAX_MATRICES]; // no anim
+static Mtxf sVrReloadMtxSnapB[VR_RELOAD_SNAP_MAX_MATRICES]; // anim frame N
+static int  sVrReloadSnapCount = 0;   // = gVrCopyWepModeldef->nummatrices
+static float sVrReloadTransT   = 0.0f; // 0.0 = A, 1.0 = B
+static float sVrReloadTransSpd = 0.08f; // transition speed
+static bool  sVrReloadTransActive = false;
+static Mtxf g_VrLeftHandFreeSp2c4; // Free left hand position (before snap)
+
+static void mtxfLerp(const Mtxf *a, const Mtxf *b, float t, Mtxf *out)
+{
+    float it = 1.0f - t;
+    // rotation/scale
+    out->m[0][0] = a->m[0][0]*it + b->m[0][0]*t;
+    out->m[0][1] = a->m[0][1]*it + b->m[0][1]*t;
+    out->m[0][2] = a->m[0][2]*it + b->m[0][2]*t;
+    out->m[1][0] = a->m[1][0]*it + b->m[1][0]*t;
+    out->m[1][1] = a->m[1][1]*it + b->m[1][1]*t;
+    out->m[1][2] = a->m[1][2]*it + b->m[1][2]*t;
+    out->m[2][0] = a->m[2][0]*it + b->m[2][0]*t;
+    out->m[2][1] = a->m[2][1]*it + b->m[2][1]*t;
+    out->m[2][2] = a->m[2][2]*it + b->m[2][2]*t;
+    // Translation
+    out->m[3][0] = a->m[3][0]*it + b->m[3][0]*t;
+    out->m[3][1] = a->m[3][1]*it + b->m[3][1]*t;
+    out->m[3][2] = a->m[3][2]*it + b->m[3][2]*t;
+
+    out->m[0][3] = a->m[0][3];
+    out->m[1][3] = a->m[1][3];
+    out->m[2][3] = a->m[2][3];
+    out->m[3][3] = a->m[3][3];
+}
+
+
+
+#define VR_RELOAD_MAX_ZONES 3
+
+// Description of the snap configuration for a weapon + zone
+typedef struct VrReloadZoneConfig {
+    // --- Zone detection ---
+    float zoneOffX;         // Zone offset relative to the right hand
+    float zoneOffY;
+    float zoneOffZ;
+    float zoneRadius;       // 0.0f => zone inactive
+
+    // --- Snap configuration ---
+    bool  valid;
+    float ox, oy, oz;       // Left hand base offset (resting position)
+
+    float oxDeltaMax;       // MAX relative offset from ox
+    float oxDeltaMin;       // MIN relative offset from ox
+    float oyDeltaMax;       // MAX relative offset from oy
+    float oyDeltaMin;       // MIN relative offset from oy
+    float ozDeltaMax;       // MAX relative offset from oz
+    float ozDeltaMin;       // MIN relative offset from oz
+
+    float deltaOXScale;     // Interpolation factor on X (0.0f = no movement)
+    float deltaOYScale;     // Interpolation factor on Y
+    float deltaOZScale;     // Interpolation factor on Z
+    int mainDelatScale;     // Main movement axis
+
+    const s32 *partsToShowId; // Hand/weapon parts to display
+
+    float rot[3][3];        // Relative L->R matrix
+    float animFrameStart;   // Starting frame (magazine inserted position)
+    float animFrameEnd;     // Ending frame (magazine removed position)
+
+    float snapOffsetX;      // Relative L->R matrix
+    float snapOffsetY;      // Starting frame (magazine inserted position)
+    float snapOffsetZ;      // Ending frame (magazine removed position)
+    bool holdSnap;
+
+    int sound1;             // Reload sound 1
+    int sound2;             // Reload sound 2
+} VrReloadZoneConfig;
+
+
+extern float gVrReloadPullLocalX;
+extern float gVrReloadPullLocalY;
+extern float gVrReloadPullLocalZ;
+
+// Inline helper to read the correct axis
+static float vrGetReloadPull(int axis) {
+    if (axis == 0) return gVrReloadPullLocalX;
+    if (axis == 1) return gVrReloadPullLocalY;
+    return gVrReloadPullLocalZ;
+}
+
+bool VrGrabMagBelt = false;
+bool  VrInReloadLoop   = false;
+static bool  VrReloadGrip     = false;
+static bool  VrTwoHandGrip     = false;
+static bool  sVrSnapReload    = false;
+static bool  VrReloadDisable  = false;
+static bool  sVrSnap          = false;
+static bool  sVrPrevGrip      = false;
+static bool  VrInReloadZone   = false;
+static bool sVrForceSnapRecapture = false;
+static int ReloadZone = 0;
+static float sReloadPullBase  = 0.0f;
+static float sReloadYDistBase = 0.0f;
+
+// Current snap offsets
+static float RELOAD_SNAP_OX        = 0.0f;
+static float RELOAD_SNAP_OY        = 0.0f;
+static float RELOAD_SNAP_OZ        = 0.0f;
+static float RELOAD_SNAP_OX_MAX    = 0.0f;
+static float RELOAD_SNAP_OX_MIN    = 0.0f;
+static float RELOAD_SNAP_OY_MAX    = 0.0f;
+static float RELOAD_SNAP_OY_MIN    = 0.0f;
+static float RELOAD_SNAP_OZ_MAX    = 0.0f;
+static float RELOAD_SNAP_OZ_MIN    = 0.0f;
+static float RELOAD_DELTA_OX_SCALE = 0.0f;
+static float RELOAD_DELTA_OY_SCALE = 2.0f;
+static float RELOAD_DELTA_OZ_SCALE = 0.8f;
+static float RELOAD_ANIM_FRAME_START = 0.0f;
+static float RELOAD_ANIM_FRAME_END   = 0.0f;
+
+
+static float VrReloadSnapRot[3][3] = {
+        { 1.0f, 0.0f, 0.0f },
+        { 0.0f, 1.0f, 0.0f },
+        { 0.0f, 0.0f, 1.0f },
+};
+
+void VrSetReloadSnapRot(
+        float a00, float a01, float a02,
+        float a10, float a11, float a12,
+        float a20, float a21, float a22)
+{
+    VrReloadSnapRot[0][0] = a00;
+    VrReloadSnapRot[0][1] = a01;
+    VrReloadSnapRot[0][2] = a02;
+    VrReloadSnapRot[1][0] = a10;
+    VrReloadSnapRot[1][1] = a11;
+    VrReloadSnapRot[1][2] = a12;
+    VrReloadSnapRot[2][0] = a20;
+    VrReloadSnapRot[2][1] = a21;
+    VrReloadSnapRot[2][2] = a22;
+}
+
+
+
+// Reload zone table per weapon
+// NOTE: adjust the size according to your enum (e.g. last weapon + 1)
+#define NUM_WEAPONS 64
+static const VrReloadZoneConfig gVrReloadZones[NUM_WEAPONS][VR_RELOAD_MAX_ZONES] = {
+
+        [WEAPON_FALCON2_SILENCER][0] = { // Zone 0
+                // Detection
+                .zoneOffX     = -10.106f,
+                .zoneOffY     =  -10.917f,
+                .zoneOffZ     =  9.934f,
+                .zoneRadius   =  10.0f,
+
+                // Snap
+                .valid        = true,
+                .ox           =  8.6528f,
+                .oy           = -2.6214f,
+                .oz           = -4.2495f,
+
+                .rot = {
+                        { -0.0929f,  0.9026f, -0.3280f },
+                        { -0.9772f,  0.0087f,  0.2123f },
+                        {  0.2030f,  0.3338f,  0.9205f },
+                },
+
+                .oxDeltaMax   =  0.0f,
+                .oxDeltaMin   =  0.0f,
+                .oyDeltaMax   =  0.0f,
+                .oyDeltaMin   = -11.3786f,
+                .ozDeltaMax   =  0.0f,
+                .ozDeltaMin   = -3.5505f,
+
+                .deltaOXScale =  0.0f,
+                .deltaOYScale =  2.0f,
+                .deltaOZScale =  0.8f,
+                .mainDelatScale = 1, // X = 0, Y = 1, Z = 2
+
+                .partsToShowId = LeftHandAndMagMtx,
+
+                .animFrameStart = 18.0f,
+                .animFrameEnd   = 18.0f,
+
+                .snapOffsetX = 30.0f,  // Left hand position offset when removing the magazine
+                .snapOffsetY = 0.0f,
+                .snapOffsetZ = -5.0f,
+                .holdSnap = false,
+
+                .sound1 = 472,
+                .sound2 = 473,
+        },
+
+
+        [WEAPON_FALCON2_SILENCER][1] = { // Zone 1
+                // Detection
+                .zoneOffX     = -9.840f,
+                .zoneOffY     =  15.376f,
+                .zoneOffZ     =  -0.598f,
+                .zoneRadius   =  10.0f,
+
+                // Snap
+                .valid        = true,
+                .ox           =  1.2657f,
+                .oy           =  2.5778f,
+                .oz           =  8.7933f,
+
+                .rot = {
+                        { 0.9878f, -0.0088f, -0.1554f},
+                        {-0.1556f, -0.0210f, -0.9876f},
+                        { 0.0055f,  0.9998f, -0.0221f},
+                },
+
+                .oxDeltaMax   =  0.0f,
+                .oxDeltaMin   =  0.0f,
+                .oyDeltaMax   =  0.0f,
+                .oyDeltaMin   =  0.0f,
+                .ozDeltaMax   =  0.0f,
+                .ozDeltaMin   = -4.0f,
+
+                .deltaOXScale =  0.0f,
+                .deltaOYScale =  0.0f,
+                .deltaOZScale =  2.0f,
+                .mainDelatScale = 2, // X = 0, Y = 1, Z = 2
+
+                .partsToShowId = LeftHandAndSlideMtx,
+
+                .animFrameStart = 62.0f,
+                .animFrameEnd   = 62.0f,
+
+                .snapOffsetX = 0.0f,
+                .snapOffsetY = 0.0f,
+                .snapOffsetZ = 0.0f,
+                .holdSnap = true,
+
+                .sound1 = 475,
+                .sound2 = -1,
+        },
+
+        [WEAPON_FALCON2][0] = {
+                // Detection
+                .zoneOffX     = -10.106f,
+                .zoneOffY     =  -10.917f,
+                .zoneOffZ     =  9.934f,
+                .zoneRadius   =  10.0f,
+
+                // Snap
+                .valid        = true,
+                .ox           =  8.6528f,
+                .oy           = -2.6214f,
+                .oz           = -4.2495f,
+
+                .rot = {
+                        { -0.0929f,  0.9026f, -0.3280f },
+                        { -0.9772f,  0.0087f,  0.2123f },
+                        {  0.2030f,  0.3338f,  0.9205f },
+                },
+
+                .oxDeltaMax   =  0.0f,
+                .oxDeltaMin   =  0.0f,
+                .oyDeltaMax   =  0.0f,
+                .oyDeltaMin   = -11.3786f,
+                .ozDeltaMax   =  0.0f,
+                .ozDeltaMin   = -3.5505f,
+
+                .deltaOXScale =  0.0f,
+                .deltaOYScale =  2.0f,
+                .deltaOZScale =  0.8f,
+                .mainDelatScale = 1, // X = 0, Y = 1, Z = 2
+
+                .partsToShowId = LeftHandAndMagMtx,
+
+                .animFrameStart = 18.0f,
+                .animFrameEnd   = 18.0f,
+
+                .snapOffsetX = 30.0f,
+                .snapOffsetY = 0.0f,
+                .snapOffsetZ = -5.0f,
+                .holdSnap = false,
+
+                .sound1 = 472,
+                .sound2 = 473,
+        },
+
+        [WEAPON_FALCON2][1] = {
+                // Détection
+                .zoneOffX     = -9.840f,
+                .zoneOffY     =  15.376f,
+                .zoneOffZ     =  -0.598f,
+                .zoneRadius   =  10.0f,
+
+                // Snap
+                .valid        = true,
+                .ox           =  1.2657f,
+                .oy           =  2.5778f,
+                .oz           =  8.7933f,
+
+                .rot = {
+                        {0.9878f,-0.0076f,-0.1555f},
+                        {-0.1556f,-0.0131f,-0.9877f},
+                        {0.0055f,0.9999f,-0.0141f},
+                },
+
+                .oxDeltaMax   =  0.0f,
+                .oxDeltaMin   =  0.0f,
+                .oyDeltaMax   =  0.0f,
+                .oyDeltaMin   =  0.0f,
+                .ozDeltaMax   =  0.0f,
+                .ozDeltaMin   = -4.0f,
+
+                .deltaOXScale =  0.0f,
+                .deltaOYScale =  0.0f,
+                .deltaOZScale =  2.0f,
+                .mainDelatScale = 2, // X = 0, Y = 1, Z = 2
+
+                .partsToShowId = LeftHandAndSlideMtx,
+
+                .animFrameStart = 62.0f,
+                .animFrameEnd   = 62.0f,
+
+                .snapOffsetX = 0.0f,
+                .snapOffsetY = 0.0f,
+                .snapOffsetZ = 0.0f,
+                .holdSnap = true,
+
+                .sound1 = 475,
+                .sound2 = -1,
+        },
+
+        [WEAPON_FALCON2_SCOPE][0] = {
+                // Détection
+                .zoneOffX     = -10.106f,
+                .zoneOffY     =  -10.917f,
+                .zoneOffZ     =  9.934f,
+                .zoneRadius   =  10.0f,
+
+                // Snap
+                .valid        = true,
+                .ox           = 7.3827f,
+                .oy           = -1.1455f,
+                .oz           = -3.3488f,
+
+                .rot = {
+                        {-0.0593f,0.9662f,-0.2507f},
+                        {-0.9734f,-0.0003f,0.2292f},
+                        {0.2214f,0.2576f,0.9405f},
+                },
+
+                .oxDeltaMax   =  0.0f,
+                .oxDeltaMin   =  0.0f,
+                .oyDeltaMax   =  0.0f,
+                .oyDeltaMin   = -11.3786f,
+                .ozDeltaMax   =  0.0f,
+                .ozDeltaMin   = -3.5505f,
+
+                .deltaOXScale =  0.0f,
+                .deltaOYScale =  2.0f,
+                .deltaOZScale =  0.8f,
+                .mainDelatScale = 1, // X = 0, Y = 1, Z = 2
+
+
+                .partsToShowId = LeftHandAndMagMtx,
+
+                .animFrameStart = 18.0f,
+                .animFrameEnd   = 18.0f,
+
+                .snapOffsetX = 30.0f,
+                .snapOffsetY = 0.0f,
+                .snapOffsetZ = -5.0f,
+                .holdSnap = false,
+
+                .sound1 = 472,
+                .sound2 = 473,
+        },
+
+        [WEAPON_FALCON2_SCOPE][1] = {
+                // Détection
+                .zoneOffX     = -9.840f,
+                .zoneOffY     =  15.376f,
+                .zoneOffZ     =  -0.598f,
+                .zoneRadius   =  10.0f,
+
+                // Snap
+                .valid        = true,
+                .ox           =  1.0865f,
+                .oy           =  2.5839f,
+                .oz           =  8.9714f,
+
+                .rot = {
+                        {0.9895f, -0.0489f, -0.1357f},
+                        {-0.1369f, -0.0227f, -0.9903f},
+                        {0.0454f, 0.9985f, -0.0291f},
+                },
+
+                .oxDeltaMax   =  0.0f,
+                .oxDeltaMin   =  0.0f,
+                .oyDeltaMax   =  0.0f,
+                .oyDeltaMin   =  0.0f,
+                .ozDeltaMax   =  0.0f,
+                .ozDeltaMin   = -4.0f,
+
+                .deltaOXScale =  0.0f,
+                .deltaOYScale =  0.0f,
+                .deltaOZScale =  2.0f,
+                .mainDelatScale = 2, // X = 0, Y = 1, Z = 2
+
+                .partsToShowId = LeftHandAndSlideMtx,
+
+                .animFrameStart = 62.0f,
+                .animFrameEnd   = 62.0f,
+
+                .snapOffsetX = 0.0f,
+                .snapOffsetY = 0.0f,
+                .snapOffsetZ = 0.0f,
+                .holdSnap = true,
+
+                .sound1 = 475,
+                .sound2 = -1,
+        },
+
+        // TODO: WEAPON_LAPTOPGUN, WEAPON_DRAGON...
+};
+
+
+
+
+
+// Runtime table of automatically resolved animIds
+static int gVrResolvedAnimId[NUM_WEAPONS][VR_RELOAD_MAX_ZONES];
+static bool gVrAnimIdsResolved[NUM_WEAPONS] = {false};
+
+// Resolves the animId of a weapon/zone using bgunStartAnimation on a temporary hand
+static int vrGetReloadAnimIdForWeapon(s32 wep, int zone)
+{
+
+    struct hand *rightHand = &g_Vars.currentplayer->hands[HAND_RIGHT];
+    struct weaponfunc *func = weaponGetFunction(&rightHand->gset, FUNC_PRIMARY);
+    if (!func || func->ammoindex < 0) return -1;
+
+    struct handweaponinfo info;
+    bgunGetWeaponInfo(&info, HAND_RIGHT);
+    if (!info.definition) return -1;
+
+    if (!info.definition->ammos[func->ammoindex]->reload_animation) return -1;
+
+    struct hand tempHand = *rightHand;
+    tempHand.animload = -1;
+    bgunStartAnimation(info.definition->ammos[func->ammoindex]->reload_animation, HAND_RIGHT, &tempHand);
+
+//    LOGI("[VR ReloadAnimId] weapon=%d zone=%d -> animId=%d\n", wep, zone, (int)tempHand.animload);
+    return (int)tempHand.animload;
+}
+
+
+void vrResolveReloadAnimIds(s32 wep)
+{
+    if (wep < 0 || wep >= NUM_WEAPONS) return;
+    for (int z = 0; z < VR_RELOAD_MAX_ZONES; z++) {
+        const VrReloadZoneConfig *cfg = &gVrReloadZones[wep][z];
+        if (cfg->valid) {
+            gVrResolvedAnimId[wep][z] = vrGetReloadAnimIdForWeapon(wep, z);
+        } else {
+            gVrResolvedAnimId[wep][z] = -1;
+        }
+    }
+    gVrAnimIdsResolved[wep] = true;
+}
+
+
+// Helper macro to read the resolved animId
+#define VR_ANIM_ID(wep, zone) \
+    (gVrAnimIdsResolved[(wep)] ? gVrResolvedAnimId[(wep)][(zone)] : -1)
+
+
+
+
+float DebugAnimFrame = 0.0f;
+void VrDebugAnimFrame(){
+
+    if(get_button_state(0, "y")) {
+        DebugAnimFrame = DebugAnimFrame - 0.1f;
+    }
+
+    if (get_button_state(1, "grip")) {
+        DebugAnimFrame = DebugAnimFrame + 0.1f;
+
+    }
+
+}
+
+
+
+// Helper: captures snapA and snapB, starts the A→B or B→A transition
+// if reverse=true:  snapA = current pose, snapB = rest pose (return transition)
+// if reverse=false: snapA = rest pose,    snapB = snap pose (forward transition)
+static void vrStartReloadTransition(struct hand *rightHand, bool reverse) {
+    if (g_VrCopyWepModeldef == NULL || g_VrCopyWepModel.matrices == NULL) return;
+
+    if (!VrReloadGrip) return;
+
+    int nMtx = g_VrCopyWepModeldef->nummatrices;
+    if (nMtx > VR_RELOAD_SNAP_MAX_MATRICES) nMtx = VR_RELOAD_SNAP_MAX_MATRICES;
+    sVrReloadSnapCount = nMtx;
+
+    struct modelrenderdata rdTmp;
+    memset(&rdTmp, 0, sizeof(rdTmp));
+    rdTmp.unk00 = &g_VrCopyWepSp2c4;
+    rdTmp.unk10 = g_VrCopyWepModel.matrices;
+    rdTmp.unk20 = 3;
+
+    // --- Rest pose (no animation) ---
+    Mtxf snapRest[VR_RELOAD_SNAP_MAX_MATRICES];
+    g_VrCopyWepModel.anim = NULL;
+
+    if (reverse) {
+    // For the return transition, use the free position (not snapped)
+        rdTmp.unk00 = &g_VrLeftHandFreeSp2c4;
+    }
+
+    modelUpdateRelations(&g_VrCopyWepModel);
+    modelSetMatricesWithAnim(&rdTmp, &g_VrCopyWepModel);
+    for (int i = 0; i < nMtx; i++)
+        mtx4Copy(&g_VrCopyWepModel.matrices[i], &snapRest[i]);
+
+// --- Snap pose (with animation + sp2c4B) ---
+    Mtxf snapSnap[VR_RELOAD_SNAP_MAX_MATRICES];
+    if (rightHand && rightHand->inuse) {
+        Mtxf *R = &rightHand->cammtx;
+        float lenX = sqrtf(
+                R->m[0][0] * R->m[0][0] + R->m[0][1] * R->m[0][1] + R->m[0][2] * R->m[0][2]);
+        float lenY = sqrtf(
+                R->m[1][0] * R->m[1][0] + R->m[1][1] * R->m[1][1] + R->m[1][2] * R->m[1][2]);
+        float lenZ = sqrtf(
+                R->m[2][0] * R->m[2][0] + R->m[2][1] * R->m[2][1] + R->m[2][2] * R->m[2][2]);
+        float rx0 = R->m[0][0] / lenX, rx1 = R->m[0][1] / lenX, rx2 = R->m[0][2] / lenX;
+        float ry0 = R->m[1][0] / lenY, ry1 = R->m[1][1] / lenY, ry2 = R->m[1][2] / lenY;
+        float rz0 = R->m[2][0] / lenZ, rz1 = R->m[2][1] / lenZ, rz2 = R->m[2][2] / lenZ;
+
+        float lsX = sqrtf(g_VrCopyWepSp2c4.m[0][0] * g_VrCopyWepSp2c4.m[0][0] +
+                          g_VrCopyWepSp2c4.m[0][1] * g_VrCopyWepSp2c4.m[0][1] +
+                          g_VrCopyWepSp2c4.m[0][2] * g_VrCopyWepSp2c4.m[0][2]);
+        float lsY = sqrtf(g_VrCopyWepSp2c4.m[1][0] * g_VrCopyWepSp2c4.m[1][0] +
+                          g_VrCopyWepSp2c4.m[1][1] * g_VrCopyWepSp2c4.m[1][1] +
+                          g_VrCopyWepSp2c4.m[1][2] * g_VrCopyWepSp2c4.m[1][2]);
+        float lsZ = sqrtf(g_VrCopyWepSp2c4.m[2][0] * g_VrCopyWepSp2c4.m[2][0] +
+                          g_VrCopyWepSp2c4.m[2][1] * g_VrCopyWepSp2c4.m[2][1] +
+                          g_VrCopyWepSp2c4.m[2][2] * g_VrCopyWepSp2c4.m[2][2]);
+
+        Mtxf sp2c4B;
+        mtx4Copy(&g_VrCopyWepSp2c4, &sp2c4B);
+        sp2c4B.m[0][0] = (rx0 * VrReloadSnapRot[0][0] + ry0 * VrReloadSnapRot[1][0] +
+                          rz0 * VrReloadSnapRot[2][0]) * lsX;
+        sp2c4B.m[0][1] = (rx1 * VrReloadSnapRot[0][0] + ry1 * VrReloadSnapRot[1][0] +
+                          rz1 * VrReloadSnapRot[2][0]) * lsX;
+        sp2c4B.m[0][2] = (rx2 * VrReloadSnapRot[0][0] + ry2 * VrReloadSnapRot[1][0] +
+                          rz2 * VrReloadSnapRot[2][0]) * lsX;
+        sp2c4B.m[1][0] = (rx0 * VrReloadSnapRot[0][1] + ry0 * VrReloadSnapRot[1][1] +
+                          rz0 * VrReloadSnapRot[2][1]) * lsY;
+        sp2c4B.m[1][1] = (rx1 * VrReloadSnapRot[0][1] + ry1 * VrReloadSnapRot[1][1] +
+                          rz1 * VrReloadSnapRot[2][1]) * lsY;
+        sp2c4B.m[1][2] = (rx2 * VrReloadSnapRot[0][1] + ry2 * VrReloadSnapRot[1][1] +
+                          rz2 * VrReloadSnapRot[2][1]) * lsY;
+        sp2c4B.m[2][0] = (rx0 * VrReloadSnapRot[0][2] + ry0 * VrReloadSnapRot[1][2] +
+                          rz0 * VrReloadSnapRot[2][2]) * lsZ;
+        sp2c4B.m[2][1] = (rx1 * VrReloadSnapRot[0][2] + ry1 * VrReloadSnapRot[1][2] +
+                          rz1 * VrReloadSnapRot[2][2]) * lsZ;
+        sp2c4B.m[2][2] = (rx2 * VrReloadSnapRot[0][2] + ry2 * VrReloadSnapRot[1][2] +
+                          rz2 * VrReloadSnapRot[2][2]) * lsZ;
+        sp2c4B.m[3][0] =
+                R->m[3][0] + rx0 * RELOAD_SNAP_OX + ry0 * RELOAD_SNAP_OY + rz0 * RELOAD_SNAP_OZ;
+        sp2c4B.m[3][1] =
+                R->m[3][1] + rx1 * RELOAD_SNAP_OX + ry1 * RELOAD_SNAP_OY + rz1 * RELOAD_SNAP_OZ;
+        sp2c4B.m[3][2] =
+                R->m[3][2] + rx2 * RELOAD_SNAP_OX + ry2 * RELOAD_SNAP_OY + rz2 * RELOAD_SNAP_OZ;
+
+        rdTmp.unk00 = &sp2c4B;
+
+        s32 _wep = g_Vars.currentplayer->gunctrl.weaponnum;
+        int _id = VR_ANIM_ID(_wep, ReloadZone);
+        struct hand tempHand = *rightHand;
+        tempHand.animload = -1;
+        modelSetAnimation(&tempHand.gunmodel, RELOAD_ANIM_FRAME_START > 0 ? _id : -1,
+                          false, RELOAD_ANIM_FRAME_START, 0, 0.0f);
+        g_VrCopyWepModel.anim = tempHand.gunmodel.anim;
+
+        modelUpdateRelations(&g_VrCopyWepModel);
+        modelSetMatricesWithAnim(&rdTmp, &g_VrCopyWepModel);
+        for (int i = 0; i < nMtx; i++)
+            mtx4Copy(&g_VrCopyWepModel.matrices[i], &snapSnap[i]);
+
+        rdTmp.unk00 = &g_VrCopyWepSp2c4;
+
+    }
+
+
+// Assign A and B depending on the direction
+    if (!reverse) {
+        // Forward: rest → snap
+        for (int i = 0; i < nMtx; i++) {
+            mtx4Copy(&snapRest[i], &sVrReloadMtxSnapA[i]);
+            mtx4Copy(&snapSnap[i], &sVrReloadMtxSnapB[i]);
+        }
+    } else {
+        // Return: current pose → rest
+        for (int i = 0; i < nMtx; i++) {
+            mtx4Copy(&g_VrCopyWepModel.matrices[i], &sVrReloadMtxSnapA[i]);
+            mtx4Copy(&snapRest[i],                  &sVrReloadMtxSnapB[i]);
+        }
+    }
+
+    sVrReloadTransT      = 0.0f;
+    sVrReloadTransSpd    = reverse ? 0.07f : 0.05f;
+    sVrReloadTransActive = true;
+
+
+}
+
+
+
+
+// Apply the snap configuration (offset + matrix + animation) for the current weapon/zone
+static void vrApplyReloadSnapConfig(struct hand *rightHand)
+{
+    const VrReloadZoneConfig *cfg = NULL;
+
+    if (ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES &&
+        weaponnum >= 0 && weaponnum < NUM_WEAPONS &&
+        g_Vars.currentplayer->gunctrl.weaponnum >= 0 &&
+        g_Vars.currentplayer->gunctrl.weaponnum < NUM_WEAPONS) // VR: upstream UB guard (indexes by gunctrl.weaponnum, checked only the weaponnum global)
+    {
+        cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
+        if (!cfg->valid) cfg = NULL;
+    }
+
+
+    if (cfg) {
+        RELOAD_SNAP_OX        = cfg->ox;
+        RELOAD_SNAP_OY        = cfg->oy;
+        RELOAD_SNAP_OZ        = cfg->oz;
+
+        RELOAD_SNAP_OX_MAX    = cfg->ox + cfg->oxDeltaMax;
+        RELOAD_SNAP_OX_MIN    = cfg->ox + cfg->oxDeltaMin;
+        RELOAD_SNAP_OY_MAX    = cfg->oy + cfg->oyDeltaMax;
+        RELOAD_SNAP_OY_MIN    = cfg->oy + cfg->oyDeltaMin;
+        RELOAD_SNAP_OZ_MAX    = cfg->oz + cfg->ozDeltaMax;
+        RELOAD_SNAP_OZ_MIN    = cfg->oz + cfg->ozDeltaMin;
+
+        RELOAD_DELTA_OX_SCALE = cfg->deltaOXScale;
+        RELOAD_DELTA_OY_SCALE = cfg->deltaOYScale;
+        RELOAD_DELTA_OZ_SCALE = cfg->deltaOZScale;
+
+
+        RELOAD_ANIM_FRAME_START = cfg->animFrameStart;
+        RELOAD_ANIM_FRAME_END   = cfg->animFrameEnd;
+
+        VrSetReloadSnapRot(
+                cfg->rot[0][0], cfg->rot[0][1], cfg->rot[0][2],
+                cfg->rot[1][0], cfg->rot[1][1], cfg->rot[1][2],
+                cfg->rot[2][0], cfg->rot[2][1], cfg->rot[2][2]);
+
+
+
+    } else {
+        RELOAD_SNAP_OX        = 0.0f;
+        RELOAD_SNAP_OY        = 0.0f;
+        RELOAD_SNAP_OZ        = 0.0f;
+        RELOAD_SNAP_OX_MAX    = 0.0f;
+        RELOAD_SNAP_OX_MIN    = 0.0f;
+        RELOAD_SNAP_OY_MAX    = 0.0f;
+        RELOAD_SNAP_OY_MIN    = 0.0f;
+        RELOAD_SNAP_OZ_MAX    = 0.0f;
+        RELOAD_SNAP_OZ_MIN    = 0.0f;
+        RELOAD_DELTA_OX_SCALE = 0.0f;
+        RELOAD_DELTA_OY_SCALE = 2.0f;
+        RELOAD_DELTA_OZ_SCALE = 0.8f;
+        RELOAD_ANIM_FRAME_START = 0.0f;
+        RELOAD_ANIM_FRAME_END   = 0.0f;
+        VrSetReloadSnapRot(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    }
+
+    if (cfg && rightHand && rightHand->inuse
+        && g_VrCopyWepModeldef != NULL && !VrReloadDisable)
+    {
+        vrStartReloadTransition(rightHand, false);
+    }
+
+}
+
+
+
+
+
+// Flag: the magazine has been removed and is being held in hand (not yet dropped or reinserted)
+static bool sVrMagInHand = false;
+
+void vrReloadAmmoOnly(s32 handnum)
+{
+    struct player *player = g_Vars.currentplayer;
+    struct hand *hand = &player->hands[handnum];
+    struct handweaponinfo info;
+
+    bgunGetWeaponInfo(&info, handnum);
+    bgun0f098f8c(&info, hand);
+}
+
+// Store the contents of the ejected magazine
+static s32 sSavedMagAmmo   = 0;
+static s32 sSavedMagWeapon = WEAPON_NONE; // pour vérifier que c'est la même arme
+static bool sVrChamberEmpty = false;  // true = chambre vide, slide requis
+// true = a magazine is physically inserted in the weapon (mechanical state)
+// false = magazine removed (held in hand or dropped)
+static bool sVrMagPhysicallyInGun = true;
+
+void vrEjectMag(s32 handnum) {
+    struct player *player = g_Vars.currentplayer;
+    struct hand *hand = &player->hands[handnum];
+    struct handweaponinfo info;
+    bgunGetWeaponInfo(&info, handnum);
+
+    // If the magazine is already no longer in the weapon, or already in the hand,
+    // do nothing (prevents multiple ejections).
+    if (!sVrMagPhysicallyInGun || sVrMagInHand) {
+        return;
+    }
+
+    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
+    if (!func || func->ammoindex < 0) {
+        sSavedMagAmmo   = 0;
+        sSavedMagWeapon = WEAPON_NONE;
+        sVrMagInHand    = false;
+        sVrMagPhysicallyInGun = false;
+        return;
+    }
+
+    s32 ammoindex = func->ammoindex;
+    s32 loaded = hand->loadedammo[ammoindex];
+
+    if (loaded <= 0) {
+        // Empty magazine: still consider it as removed
+        sSavedMagAmmo   = 0;
+        sSavedMagWeapon = WEAPON_NONE;
+        sVrMagInHand    = true;
+        sVrMagPhysicallyInGun = false;
+        return;
+    }
+
+    // Cas normal : chargeur avec balles
+    sSavedMagAmmo   = loaded;
+    sSavedMagWeapon = hand->gset.weaponnum;
+    hand->loadedammo[ammoindex] = 1;  // Keep 1 round in the chamber
+    sVrMagInHand    = true;
+    sVrMagPhysicallyInGun = false;
+}
+
+void vrReinsertSavedMag(s32 handnum) {
+    struct player *player = g_Vars.currentplayer;
+    struct hand *hand = &player->hands[handnum];
+
+    // If a magazine is already physically in the weapon, reject the reinsertion
+    if (sVrMagPhysicallyInGun) {
+        return;
+    }
+
+    if (sSavedMagAmmo <= 0 || hand->gset.weaponnum != sSavedMagWeapon) {
+        return;
+    }
+
+    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
+    if (!func || func->ammoindex < 0) return;
+
+    s32 ammoindex = func->ammoindex;
+
+    hand->loadedammo[ammoindex] = sSavedMagAmmo;
+
+    sSavedMagAmmo   = 0;
+    sSavedMagWeapon = WEAPON_NONE;
+    sVrMagInHand    = false;
+    sVrMagPhysicallyInGun = true;   // Magazine reinserted
+}
+
+
+
+// Return the bullets from the held magazine to the ammo reserve (magazine dropped without being reinserted)
+static void vrDropMagToReserve(s32 handnum) {
+// Empty magazine: nothing to return to the reserve, just clean up
+    if (sSavedMagAmmo <= 0 || sSavedMagWeapon == WEAPON_NONE) {
+        sSavedMagAmmo = 0;
+        sSavedMagWeapon = WEAPON_NONE;
+        sVrMagPhysicallyInGun = false;
+        return;
+    }
+
+    struct player *player = g_Vars.currentplayer;
+    struct hand *hand = &player->hands[handnum];
+    if (hand->gset.weaponnum != sSavedMagWeapon) return;
+
+    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
+    if (!func || func->ammoindex < 0) return;
+
+    struct handweaponinfo info;
+    bgunGetWeaponInfo(&info, handnum);
+    s32 ammoindex = func->ammoindex;
+    s32 ammoType = info.gunctrl->ammotypes[ammoindex];
+
+    s32 toReturn = sSavedMagAmmo - 1;  // -1 because the round in the chamber remains in the weapon
+    if (toReturn > 0)
+        player->ammoheldarr[ammoType] += toReturn;
+
+    sSavedMagAmmo = 0;
+    sSavedMagWeapon = WEAPON_NONE;
+    sVrMagPhysicallyInGun = false; // Magazine dropped (with bullets)
+}
+
+static void vrInsertFullMag(s32 handnum) {
+    struct player *player = g_Vars.currentplayer;
+    struct hand *hand = &player->hands[handnum];
+    struct handweaponinfo info;
+    bgunGetWeaponInfo(&info, handnum);
+
+    struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
+    if (!func || func->ammoindex < 0) return;
+
+    s32 ammoindex = func->ammoindex;
+    s32 inChamber = hand->loadedammo[ammoindex];
+
+    if (inChamber == 0) {
+        // Empty chamber: do nothing, the slide will handle everything
+        sVrChamberEmpty = true;
+        return;
+    }
+
+    // Chamber already loaded: fill the magazine normally
+    sVrChamberEmpty = false;
+    s32 ammoType = info.gunctrl->ammotypes[ammoindex];
+    s32 clipSize = hand->clipsizes[ammoindex];
+    s32 toLoad = clipSize - inChamber;
+    if (toLoad <= 0) return;
+    if (toLoad > player->ammoheldarr[ammoType])
+        toLoad = player->ammoheldarr[ammoType];
+    player->ammoheldarr[ammoType] -= toLoad;
+    hand->loadedammo[ammoindex] = inChamber + toLoad;
+}
+
+static bool sVrReloadFromBelt = false;
+static bool sVrBeltMagOut = false;
+static bool sSoundPlayed = false;
+bool magOutFirstTime = false;
+
+
+void vrReloadZoneInput(struct hand *rightHand, struct hand *leftHand){
+
+    const VrReloadZoneConfig *cfg = NULL;
+    if (ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES &&
+        weaponnum >= 0 && weaponnum < NUM_WEAPONS &&
+        g_Vars.currentplayer->gunctrl.weaponnum >= 0 &&
+        g_Vars.currentplayer->gunctrl.weaponnum < NUM_WEAPONS) // VR: upstream UB guard (indexes by gunctrl.weaponnum, checked only the weaponnum global)
+    {
+        cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
+        if (!cfg->valid) cfg = NULL;
+    }
+
+    if(!VrGrabMagBelt && !sVrMagPhysicallyInGun){
+        VrReloadGrip = false;
+        return;
+    }
+
+    if (VrInReloadZone && !VrInReloadLoop && VrReloadGrip && cfg != NULL) { // VR: upstream UB guard (cfg NULL deref)
+
+        VrInReloadLoop = true;
+        sVrSnapReload = true;
+        VrReloadDisable = false;
+        sVrPrevGrip = false;
+        sVrReloadTransActive = false;
+        sVrReloadTransT = 0.0f;
+        sVrForceSnapRecapture = true;
+        sSoundPlayed = false;
+
+        sReloadPullBase = vrGetReloadPull(cfg->mainDelatScale);
+        sReloadYDistBase = leftHand->posrotmtx.m[3][1] - rightHand->posrotmtx.m[3][1];
+
+        // Load the snap configuration (fills RELOADSNAP*, VrReloadSnapRot, anim)
+        // but cancel the transition it starts
+        vrApplyReloadSnapConfig(rightHand);
+        sVrReloadTransActive = false;
+        sVrReloadTransT = 0.0f;
+
+        if (sVrBeltMagOut) {
+            VrGrabMagBelt = false;
+            sVrBeltMagOut = false;
+            sVrReloadFromBelt = true;
+
+            // Shift sReloadPullBase so that newOY starts at OY_MIN
+            // (magazine removed, outside the weapon)
+            // newOY = OY_MAX + (pull - pullBase) * scale
+            // We want newOY = OY_MIN when pull = currentPull
+            // => pullBase = currentPull - (OY_MIN - OY_MAX) / scale
+            if (RELOAD_DELTA_OY_SCALE != 0.0f) {
+                float pullOffset =
+                        (RELOAD_SNAP_OY_MIN - RELOAD_SNAP_OY_MAX) / RELOAD_DELTA_OY_SCALE;
+                sReloadPullBase -= pullOffset;
+                // Now delta = -pullOffset at startup, so newOY = OY_MAX + (-pullOffset) * scale = OY_MIN
+            }
+
+            magOutFirstTime = true;
+            sVrSnap = false;
+        } else {
+            // === NORMAL CASE ===
+            // Eject the magazine and start the visual transition
+            // (vrApplyReloadSnapConfig has already started vrStartReloadTransition)
+            magOutFirstTime = false;
+            sVrSnap = false;
+            sVrReloadTransActive = true;
+
+        }
+
+    }
+    else if (!VrInReloadZone && !VrInReloadLoop && VrReloadGrip && !VrGrabMagBelt) {
+        VrReloadDisable = true;
+    }
+
+
+
+// --- Tick: follow the movement according to the right hand ---
+    if (VrInReloadLoop && !VrReloadDisable && VrReloadGrip && cfg != NULL) { // VR: upstream UB guard (cfg NULL deref)
+        float delta = vrGetReloadPull(cfg->mainDelatScale) - sReloadPullBase;
+
+        if (!VRDebugMtxPos) {
+            if (!sVrReloadFromBelt) {
+                float baseYDist = sReloadYDistBase;
+                if (baseYDist < 0.0f) baseYDist = -baseYDist;
+
+                float offX = cfg->snapOffsetX - baseYDist * 5;
+                float offY = cfg->snapOffsetY;
+                float offZ = cfg->snapOffsetZ;
+
+                vrApplyReloadOffset(&vr_sp2c4, offX, offY, offZ);
+            }
+        }
+
+        float newOX = RELOAD_SNAP_OX_MAX + delta * RELOAD_DELTA_OX_SCALE;
+        float newOY = RELOAD_SNAP_OY_MAX + delta * RELOAD_DELTA_OY_SCALE;
+        float newOZ = RELOAD_SNAP_OZ_MAX + delta * RELOAD_DELTA_OZ_SCALE;
+
+
+        // OX
+        if (RELOAD_DELTA_OX_SCALE != 0.0f) {
+            if (newOX < RELOAD_SNAP_OX_MIN) {
+                newOX = RELOAD_SNAP_OX_MIN;
+                if (cfg->mainDelatScale == 0) { // 0 = AXE X
+                    if (sVrSnap && !sSoundPlayed) {
+                        sndStart(var80095200, cfg->sound1, 0, -1, -1, -1, -1, -1);
+                        sSoundPlayed = true;
+                    }
+                    sVrSnap = cfg->holdSnap;
+                    magOutFirstTime = true;
+                }
+            } else {
+                if (cfg->mainDelatScale == 1) { // 0 = AXE X
+                    if (!sVrSnap && magOutFirstTime) {
+                        sndStart(var80095200, cfg->sound2, 0, -1, -1, -1, -1, -1);
+                    }
+                    sVrSnap = true;
+                    magOutFirstTime = false;
+                    sSoundPlayed = false;
+                }
+            }
+            if (newOX > RELOAD_SNAP_OX_MAX) {
+                newOX = RELOAD_SNAP_OX_MAX;
+            }
+            RELOAD_SNAP_OX = newOX;
+        }
+
+
+        // OY (+ snap)
+        if (RELOAD_DELTA_OY_SCALE != 0.0f) {
+            if (newOY < RELOAD_SNAP_OY_MIN) {
+                newOY = RELOAD_SNAP_OY_MIN;
+
+                if (cfg->mainDelatScale == 1 ) { // 1 = AXE Y
+                    if (sVrSnap && !sSoundPlayed) {
+                        sndStart(var80095200, cfg->sound1, 0, -1, -1, -1, -1, -1);
+                        vrEjectMag(HAND_RIGHT);
+                        sSoundPlayed = true;
+                    }
+                    sVrSnap = cfg->holdSnap;
+                    magOutFirstTime = true;
+                }
+
+            } else {
+                if (cfg->mainDelatScale == 1) { // 1 = AXE Y
+                    if (!sVrSnap && magOutFirstTime) {
+                        sndStart(var80095200, cfg->sound2, 0, -1, -1, -1, -1, -1);
+                    }
+                    if (sVrReloadFromBelt) {
+                        vrInsertFullMag(HAND_RIGHT);  // Belt magazine → full magazine
+                        sVrReloadFromBelt = false;
+                    } else {
+                        vrReinsertSavedMag(HAND_RIGHT); // Same magazine reinserted → restore the exact contents
+                    }
+                    sVrMagInHand = false;
+                    sVrSnap = true;
+                    magOutFirstTime = false;
+                    sSoundPlayed = false;
+
+                }
+            }
+            if (newOY > RELOAD_SNAP_OY_MAX) {
+                newOY = RELOAD_SNAP_OY_MAX;
+            }
+            RELOAD_SNAP_OY = newOY;
+        }
+
+        // OZ
+        if (RELOAD_DELTA_OZ_SCALE != 0.0f) {
+            if (newOZ < RELOAD_SNAP_OZ_MIN) {
+                newOZ = RELOAD_SNAP_OZ_MIN;
+
+                if (cfg->mainDelatScale == 2) { // 2 = AXE Z
+                    if (sVrSnap && !sSoundPlayed) {
+                        sndStart(var80095200, cfg->sound1, 0, -1, -1, -1, -1, -1);
+                        sSoundPlayed = true;
+                    }
+                    sVrSnap = cfg->holdSnap;
+                    magOutFirstTime = true;
+                }
+            } else {
+                if (cfg->mainDelatScale == 2) { // 2 = AXE Z
+                    if (!sVrSnap && magOutFirstTime) {
+                        sndStart(var80095200, cfg->sound2, 0, -1, -1, -1, -1, -1);
+                    }
+
+                    // If the chamber was empty, chamber a round now
+                    if (sVrChamberEmpty) {
+                        struct hand *hand = &g_Vars.currentplayer->hands[HAND_RIGHT];
+                        struct handweaponinfo info;
+                        bgunGetWeaponInfo(&info, HAND_RIGHT);
+                        struct weaponfunc *func = weaponGetFunction(&hand->gset, FUNC_PRIMARY);
+                        if (func && func->ammoindex >= 0) {
+                            s32 ammoindex = func->ammoindex;
+                            s32 ammoType = info.gunctrl->ammotypes[ammoindex];
+                            s32 clipSize = hand->clipsizes[ammoindex];
+                            s32 toLoad = clipSize;
+                            if (toLoad > g_Vars.currentplayer->ammoheldarr[ammoType])
+                                toLoad = g_Vars.currentplayer->ammoheldarr[ammoType];
+                            g_Vars.currentplayer->ammoheldarr[ammoType] -= toLoad;
+                            hand->loadedammo[ammoindex] = toLoad;
+                        }
+                        sVrChamberEmpty = false;
+                    }
+
+                    sVrSnap = true;
+                    magOutFirstTime = false;
+                    sSoundPlayed = false;
+                }
+            }
+            if (newOZ > RELOAD_SNAP_OZ_MAX) {
+                newOZ = RELOAD_SNAP_OZ_MAX;
+            }
+            RELOAD_SNAP_OZ = newOZ;
+        }
+    }
+
+
+
+    if (VrInReloadLoop && !VrReloadDisable && !VrReloadGrip && magOutFirstTime
+        && weaponnum >= 0 && weaponnum < NUM_WEAPONS
+        && ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES) { // VR: upstream UB guard
+        const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][ReloadZone];
+        if (cfg->valid) {
+            // Only reload if: magazine properly reinserted AND chamber is not empty
+            // If sVrChamberEmpty, wait for the slide zone before validating
+            if (!cfg->holdSnap && !sVrMagInHand && !sVrChamberEmpty) {
+                vrReloadAmmoOnly(HAND_RIGHT);
+            }
+        }
+    }
+
+    // Full reset when the grip is released (exiting the loop)
+    if (VrInReloadLoop && !VrReloadGrip) {
+
+        RELOAD_SNAP_OX = RELOAD_SNAP_OX_MAX;
+        RELOAD_SNAP_OY = RELOAD_SNAP_OY_MAX;
+        RELOAD_SNAP_OZ = RELOAD_SNAP_OZ_MAX;
+
+        if (rightHand) {
+            modelSetAnimFrame(&rightHand->gunmodel, 0);
+        }
+
+        // If the magazine was held in hand and not reinserted → return it to the reserve
+        if (sVrMagInHand) {
+            vrDropMagToReserve(HAND_RIGHT);
+            sVrMagInHand = false;
+        }
+
+        VrInReloadLoop   = false;
+        sVrSnap          = false;
+        sVrSnapReload    = false;
+        sVrReloadFromBelt = false;
+        ReloadZone = -1;
+
+        // Return transition: current pose → rest
+        if (g_VrCopyWepModeldef != NULL && g_VrCopyWepModel.matrices != NULL && !VrReloadDisable) {
+            vrStartReloadTransition(rightHand, true);
+
+        } else {
+            sVrReloadTransActive  = false;
+            sVrReloadTransT       = 0.0f;
+            g_VrCopyWepModel.anim = NULL;
+        }
+
+        VrReloadDisable  = false;
+    }
+
+}
+
+
+void vrReloadZone(void) {
+    struct hand *rightHand = &g_Vars.currentplayer->hands[HAND_RIGHT];
+    struct hand *leftHand  = &g_Vars.currentplayer->hands[HAND_LEFT];
+    float rx = rightHand->posrotmtx.m[3][0], ry = rightHand->posrotmtx.m[3][1], rz = rightHand->posrotmtx.m[3][2];
+    float lx = leftHand->posrotmtx.m[3][0],  ly = leftHand->posrotmtx.m[3][1],  lz = leftHand->posrotmtx.m[3][2];
+
+    VrInReloadZone = false;
+
+// Do not change zone during an active reload
+    if (VrInReloadLoop) {
+        // Continuer à gérer la zone déjà active
+        if (ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES &&
+            weaponnum >= 0 && weaponnum < NUM_WEAPONS) { // VR: upstream UB guard
+            const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][ReloadZone];
+            if (cfg->zoneRadius > 0.0f) {
+                float zonex = rx + rightHand->posrotmtx.m[0][0]*cfg->zoneOffX + rightHand->posrotmtx.m[0][1]*cfg->zoneOffY + rightHand->posrotmtx.m[0][2]*cfg->zoneOffZ;
+                float zoney = ry + rightHand->posrotmtx.m[1][0]*cfg->zoneOffX + rightHand->posrotmtx.m[1][1]*cfg->zoneOffY + rightHand->posrotmtx.m[1][2]*cfg->zoneOffZ;
+                float zonez = rz + rightHand->posrotmtx.m[2][0]*cfg->zoneOffX + rightHand->posrotmtx.m[2][1]*cfg->zoneOffY + rightHand->posrotmtx.m[2][2]*cfg->zoneOffZ;
+                float dx = lx - zonex, dy = ly - zoney, dz = lz - zonez;
+                VrInReloadZone = sqrtf(dx*dx + dy*dy + dz*dz) <= cfg->zoneRadius;
+            }
+        }
+        vrReloadZoneInput(rightHand, leftHand);
+        return;
+    }
+
+
+// NOT reloading: scan ALL zones to find the one the hand is touching
+    for (int z = 0; z < VR_RELOAD_MAX_ZONES && weaponnum >= 0 && weaponnum < NUM_WEAPONS; z++) { // VR: upstream UB guard
+        const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][z];
+        if (cfg->zoneRadius <= 0.0f || !cfg->valid) continue;
+
+        float zonex = rx + rightHand->posrotmtx.m[0][0]*cfg->zoneOffX + rightHand->posrotmtx.m[0][1]*cfg->zoneOffY + rightHand->posrotmtx.m[0][2]*cfg->zoneOffZ;
+        float zoney = ry + rightHand->posrotmtx.m[1][0]*cfg->zoneOffX + rightHand->posrotmtx.m[1][1]*cfg->zoneOffY + rightHand->posrotmtx.m[1][2]*cfg->zoneOffZ;
+        float zonez = rz + rightHand->posrotmtx.m[2][0]*cfg->zoneOffX + rightHand->posrotmtx.m[2][1]*cfg->zoneOffY + rightHand->posrotmtx.m[2][2]*cfg->zoneOffZ;
+        float dx = lx - zonex, dy = ly - zoney, dz = lz - zonez;
+
+        if (sqrtf(dx*dx + dy*dy + dz*dz) <= cfg->zoneRadius) {
+            VrInReloadZone = true;
+            ReloadZone = z;  // <-- dynamic selection of the touched zone
+            break;
+        }
+    }
+
+    vrReloadZoneInput(rightHand, leftHand);
+    float wx = lx - rx;
+    float wy = ly - ry;
+    float wz = lz - rz;
+
+    float local_x = rightHand->posrotmtx.m[0][0] * wx
+                    + rightHand->posrotmtx.m[1][0] * wy
+                    + rightHand->posrotmtx.m[2][0] * wz;
+
+    float local_y = rightHand->posrotmtx.m[0][1] * wx
+                    + rightHand->posrotmtx.m[1][1] * wy
+                    + rightHand->posrotmtx.m[2][1] * wz;
+
+    float local_z = rightHand->posrotmtx.m[0][2] * wx
+                    + rightHand->posrotmtx.m[1][2] * wy
+                    + rightHand->posrotmtx.m[2][2] * wz;
+
+/*    if (get_button_state(0, "grip")){
+        LOGI("Debug ReloadZone local: X=%.3f Y=%.3f Z=%.3f\n", local_x, local_y, local_z);
+    }*/
+}
+
+static float sVrSnapOX      = 0.f;
+static float sVrSnapOY      = 0.f;
+static float sVrSnapOZ      = 0.f;
+static float sVrSnapRel[3][3];
+static float sSnapRelBase[3][3];
+static bool sDebugEditRot = false; // false = position, true = rotation
+static bool sPrevThumbClick = false;
+
+void vrApplyTwoHandGrip(struct hand *rightHand, struct hand *leftHand, Mtxf *L)
+{
+
+    Mtxf *R = &rightHand->cammtx;
+
+    float lenX = sqrtf(R->m[0][0]*R->m[0][0] + R->m[0][1]*R->m[0][1] + R->m[0][2]*R->m[0][2]);
+    float lenY = sqrtf(R->m[1][0]*R->m[1][0] + R->m[1][1]*R->m[1][1] + R->m[1][2]*R->m[1][2]);
+    float lenZ = sqrtf(R->m[2][0]*R->m[2][0] + R->m[2][1]*R->m[2][1] + R->m[2][2]*R->m[2][2]);
+    if (lenX < 0.0001f || lenY < 0.0001f || lenZ < 0.0001f) return;
+
+    float rx0=R->m[0][0]/lenX, rx1=R->m[0][1]/lenX, rx2=R->m[0][2]/lenX;
+    float ry0=R->m[1][0]/lenY, ry1=R->m[1][1]/lenY, ry2=R->m[1][2]/lenY;
+    float rz0=R->m[2][0]/lenZ, rz1=R->m[2][1]/lenZ, rz2=R->m[2][2]/lenZ;
+
+    if ((VrReloadGrip && !sVrPrevGrip) || sVrForceSnapRecapture) {
+        sVrForceSnapRecapture = false;
+        if (!VRDebugMtxPos) {
+            if (sVrSnapReload) {
+                // Only recapture if sVrSnap is not already active.
+                // If sVrSnap is already true, the block below already updates
+                // sVrSnapOX/OY/OZ naturally every frame → no jump.
+                if (!sVrSnap) {
+                    sVrSnapOX = RELOAD_SNAP_OX + offsetX;
+                    sVrSnapOY = RELOAD_SNAP_OY + offsetY;
+                    sVrSnapOZ = RELOAD_SNAP_OZ + offsetZ;
+                }
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++) {
+                        sVrSnapRel[i][j] = VrReloadSnapRot[i][j];
+                        sSnapRelBase[i][j] = VrReloadSnapRot[i][j];
+                    }
+            }
+        } else {
+            // --- NORMAL CASE: capture from the current L position ---
+            float dx = L->m[3][0] - R->m[3][0];
+            float dy = L->m[3][1] - R->m[3][1];
+            float dz = L->m[3][2] - R->m[3][2];
+            sVrSnapOX = dx*rx0 + dy*rx1 + dz*rx2;
+            sVrSnapOY = dx*ry0 + dy*ry1 + dz*ry2;
+            sVrSnapOZ = dx*rz0 + dy*rz1 + dz*rz2;
+
+            float lsX = sqrtf(L->m[0][0]*L->m[0][0] + L->m[0][1]*L->m[0][1] + L->m[0][2]*L->m[0][2]);
+            float lsY = sqrtf(L->m[1][0]*L->m[1][0] + L->m[1][1]*L->m[1][1] + L->m[1][2]*L->m[1][2]);
+            float lsZ = sqrtf(L->m[2][0]*L->m[2][0] + L->m[2][1]*L->m[2][1] + L->m[2][2]*L->m[2][2]);
+            if (lsX < 0.0001f || lsY < 0.0001f || lsZ < 0.0001f) return;
+            float lx0=L->m[0][0]/lsX, lx1=L->m[0][1]/lsX, lx2=L->m[0][2]/lsX;
+            float ly0=L->m[1][0]/lsY, ly1=L->m[1][1]/lsY, ly2=L->m[1][2]/lsY;
+            float lz0=L->m[2][0]/lsZ, lz1=L->m[2][1]/lsZ, lz2=L->m[2][2]/lsZ;
+
+            sVrSnapRel[0][0] = rx0*lx0 + rx1*lx1 + rx2*lx2;
+            sVrSnapRel[0][1] = rx0*ly0 + rx1*ly1 + rx2*ly2;
+            sVrSnapRel[0][2] = rx0*lz0 + rx1*lz1 + rx2*lz2;
+            sVrSnapRel[1][0] = ry0*lx0 + ry1*lx1 + ry2*lx2;
+            sVrSnapRel[1][1] = ry0*ly0 + ry1*ly1 + ry2*ly2;
+            sVrSnapRel[1][2] = ry0*lz0 + ry1*lz1 + ry2*lz2;
+            sVrSnapRel[2][0] = rz0*lx0 + rz1*lx1 + rz2*lx2;
+            sVrSnapRel[2][1] = rz0*ly0 + rz1*ly1 + rz2*ly2;
+            sVrSnapRel[2][2] = rz0*lz0 + rz1*lz1 + rz2*lz2;
+
+//            LOGI("TWOHAND: L final pos=(%.4f, %.4f, %.4f)\n",
+//                 L->m[3][0], L->m[3][1], L->m[3][2]);
+        }
+
+/*        if (get_button_state(0, "y")) {
+            LOGI("[SNAP_CAPTURE] #define RELOAD_SNAP_OX %.4ff\n", sVrSnapOX);
+            LOGI("[SNAP_CAPTURE] #define RELOAD_SNAP_OY %.4ff\n", sVrSnapOY);
+            LOGI("[SNAP_CAPTURE] #define RELOAD_SNAP_OZ %.4ff\n", sVrSnapOZ);
+            LOGI("[SNAP_CAPTURE] static const float kReloadSnapRel[3][3] = "
+                 "{\n{%.4ff,%.4ff,%.4ff},\n{%.4ff,%.4ff,%.4ff},\n{%.4ff,%.4ff,%.4ff},\n},\n",
+                 sVrSnapRel[0][0], sVrSnapRel[0][1], sVrSnapRel[0][2],
+                 sVrSnapRel[1][0], sVrSnapRel[1][1], sVrSnapRel[1][2],
+                 sVrSnapRel[2][0], sVrSnapRel[2][1], sVrSnapRel[2][2]);
+            LOGI("[SNAPB twohand] snap captured (reload=%d)\n", sVrSnapReload);
+        }*/
+    }
+    if (!VRDebugMtxPos) {
+        sVrPrevGrip = VrReloadGrip;
+
+        if (sVrSnap) {
+
+/*
+// Toggle mode on thumbstick click (rising edge only)
+        bool thumbClick = get_button_state(0, "thumbstick_click");
+        if (thumbClick && !sPrevThumbClick) {
+            sDebugEditRot = !sDebugEditRot;
+            LOGI("Debug mode: %s", sDebugEditRot ? "ROTATION" : "POSITION");
+        }
+        sPrevThumbClick = thumbClick;
+
+// Y button: change axis
+        if (get_button_state(0, "y")) {
+            if (sDebugEditRot) {
+                sSnapRotAxis++;
+                if (sSnapRotAxis > 2) sSnapRotAxis = 0;
+            } else {
+                axis++;
+                if (axis > 2) axis = 0;
+            }
+        }
+
+// Trigger: increment
+        if (get_button_state(0, "trigger")) {
+            if (sDebugEditRot) {
+                if (sSnapRotAxis == 0) sSnapRotOffsetX += 0.001f;
+                if (sSnapRotAxis == 1) sSnapRotOffsetY += 0.001f;
+                if (sSnapRotAxis == 2) sSnapRotOffsetZ += 0.001f;
+            } else {
+                if (axis == 0) offsetX += 0.001f;
+                if (axis == 1) offsetY += 0.001f;
+                if (axis == 2) offsetZ += 0.001f;
+            }
+        }
+
+// B: decrement
+        if (get_button_state(1, "b")) {
+            if (sDebugEditRot) {
+                if (sSnapRotAxis == 0) sSnapRotOffsetX -= 0.001f;
+                if (sSnapRotAxis == 1) sSnapRotOffsetY -= 0.001f;
+                if (sSnapRotAxis == 2) sSnapRotOffsetZ -= 0.001f;
+            } else {
+                if (axis == 0) offsetX -= 0.001f;
+                if (axis == 1) offsetY -= 0.001f;
+                if (axis == 2) offsetZ -= 0.001f;
+            }
+        }*/
+
+//            LOGI("offsetX %.2f offsetY %.2f offsetZ %.2f", offsetX, offsetY, offsetZ);
+
+            // Correction matrix
+            float cx = cosf(sSnapRotOffsetX), sx = sinf(sSnapRotOffsetX);
+            float cy = cosf(sSnapRotOffsetY), sy = sinf(sSnapRotOffsetY);
+            float cz = cosf(sSnapRotOffsetZ), sz = sinf(sSnapRotOffsetZ);
+            float c[3][3] = {
+                    { cy*cz,             cy*sz,             -sy    },
+                    { sx*sy*cz - cx*sz,  sx*sy*sz + cx*cz,  sx*cy },
+                    { cx*sy*cz + sx*sz,  cx*sy*sz - sx*cz,  cx*cy }
+            };
+
+
+
+
+            // sVrSnapRel = sSnapRelBase (config) * correction
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    sVrSnapRel[i][j] = sSnapRelBase[i][0] * c[0][j]
+                                       + sSnapRelBase[i][1] * c[1][j]
+                                       + sSnapRelBase[i][2] * c[2][j];
+            // Corrected matrix = sSnapRelBase * current correction
+            float logR[3][3];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    logR[i][j] = sSnapRelBase[i][0] * c[0][j]
+                                 + sSnapRelBase[i][1] * c[1][j]
+                                 + sSnapRelBase[i][2] * c[2][j];
+
+/*
+            LOGI(".rot = {\n"
+                 "    {%.4ff, %.4ff, %.4ff},\n"
+                 "    {%.4ff, %.4ff, %.4ff},\n"
+                 "    {%.4ff, %.4ff, %.4ff},\n"
+                 "},",
+                 logR[0][0], logR[0][1], logR[0][2],
+                 logR[1][0], logR[1][1], logR[1][2],
+                 logR[2][0], logR[2][1], logR[2][2]);
+*/
+
+
+            // Left Scale
+            float lsX = sqrtf(
+                    L->m[0][0] * L->m[0][0] + L->m[0][1] * L->m[0][1] + L->m[0][2] * L->m[0][2]);
+            float lsY = sqrtf(
+                    L->m[1][0] * L->m[1][0] + L->m[1][1] * L->m[1][1] + L->m[1][2] * L->m[1][2]);
+            float lsZ = sqrtf(
+                    L->m[2][0] * L->m[2][0] + L->m[2][1] * L->m[2][1] + L->m[2][2] * L->m[2][2]);
+
+            // Rotation: R_right * R_rel, with left-side scale
+            L->m[0][0] =
+                    (rx0 * sVrSnapRel[0][0] + ry0 * sVrSnapRel[1][0] + rz0 * sVrSnapRel[2][0]) * lsX;
+            L->m[0][1] =
+                    (rx1 * sVrSnapRel[0][0] + ry1 * sVrSnapRel[1][0] + rz1 * sVrSnapRel[2][0]) * lsX;
+            L->m[0][2] =
+                    (rx2 * sVrSnapRel[0][0] + ry2 * sVrSnapRel[1][0] + rz2 * sVrSnapRel[2][0]) * lsX;
+            L->m[1][0] =
+                    (rx0 * sVrSnapRel[0][1] + ry0 * sVrSnapRel[1][1] + rz0 * sVrSnapRel[2][1]) * lsY;
+            L->m[1][1] =
+                    (rx1 * sVrSnapRel[0][1] + ry1 * sVrSnapRel[1][1] + rz1 * sVrSnapRel[2][1]) * lsY;
+            L->m[1][2] =
+                    (rx2 * sVrSnapRel[0][1] + ry2 * sVrSnapRel[1][1] + rz2 * sVrSnapRel[2][1]) * lsY;
+            L->m[2][0] =
+                    (rx0 * sVrSnapRel[0][2] + ry0 * sVrSnapRel[1][2] + rz0 * sVrSnapRel[2][2]) * lsZ;
+            L->m[2][1] =
+                    (rx1 * sVrSnapRel[0][2] + ry1 * sVrSnapRel[1][2] + rz1 * sVrSnapRel[2][2]) * lsZ;
+            L->m[2][2] =
+                    (rx2 * sVrSnapRel[0][2] + ry2 * sVrSnapRel[1][2] + rz2 * sVrSnapRel[2][2]) * lsZ;
+
+            // Position updated during movement
+            sVrSnapOX = RELOAD_SNAP_OX + offsetX;
+            sVrSnapOY = RELOAD_SNAP_OY + offsetY;
+            sVrSnapOZ = RELOAD_SNAP_OZ + offsetZ;
+
+            // Position
+            L->m[3][0] = R->m[3][0] + rx0 * sVrSnapOX + ry0 * sVrSnapOY + rz0 * sVrSnapOZ;
+            L->m[3][1] = R->m[3][1] + rx1 * sVrSnapOX + ry1 * sVrSnapOY + rz1 * sVrSnapOZ;
+            L->m[3][2] = R->m[3][2] + rx2 * sVrSnapOX + ry2 * sVrSnapOY + rz2 * sVrSnapOZ;
+
+        }
+    }
+}
+
+
+
+
+#define VR_BELT_DETECT_OX -9.83f
+#define VR_BELT_DETECT_OY  1.32f
+#define VR_BELT_DETECT_OZ -11.08f
+
+static void vrUpdateBeltMagGrab(void)
+{
+    struct hand *lhand = &g_Vars.currentplayer->hands[HAND_LEFT];
+    float lx = lhand->posrotmtx.m[3][0];
+    float ly = lhand->posrotmtx.m[3][1];
+    float lz = lhand->posrotmtx.m[3][2];
+
+    float bx = gVrBeltPosForDetection.x + VR_BELT_DETECT_OX;
+    float by = gVrBeltPosForDetection.y + VR_BELT_DETECT_OY;
+    float bz = gVrBeltPosForDetection.z + VR_BELT_DETECT_OZ;
+
+    float dx = lx - bx, dy = ly - by, dz = lz - bz;
+    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+
+    bool inZone = (dist < 10.0f);
+    bool gripL  = get_button_state(0, "grip");
+
+    // Do nothing if we are already in the reload loop (zone 0 grabbed by the hand)
+    if (VrInReloadLoop) {
+        sVrMagPhysicallyInGun = true;
+        VrGrabMagBelt = false;
+        return;
+    }
+
+    if (!VrGrabMagBelt && !sVrMagPhysicallyInGun) {
+        if (inZone && gripL) {
+            VrGrabMagBelt = true;
+            sVrBeltMagOut = true;
+//            LOGI("BeltMag GRAB! dist=%.2f\n", dist);
+        }
+    } else {
+        if (!gripL) {
+            VrGrabMagBelt = false;
+            sVrBeltMagOut = false;
+//            LOGI("BeltMag RELEASE\n");
+        }
+    }
+}
+
+
+void vrCopyWepUnload(void)
+{
+
+    if (g_VrCopyWepMatricesAlloc) {
+        sysMemFree(g_VrCopyWepMatricesAlloc);
+        g_VrCopyWepMatricesAlloc = NULL;
+    }
+    if (g_VrCopyWepRwdatasAlloc) {
+        sysMemFree(g_VrCopyWepRwdatasAlloc);
+        g_VrCopyWepRwdatasAlloc = NULL;
+    }
+    if (g_VrCopyHandRwdatasAlloc) {
+        sysMemFree(g_VrCopyHandRwdatasAlloc);
+        g_VrCopyHandRwdatasAlloc = NULL;
+    }
+
+    g_VrCopyWepModeldef  = NULL;
+    g_VrCopyHandModeldef = NULL;
+    g_VrCopyWepReadyToRender = false;
+
+    memset(&g_VrCopyWepModel, 0, sizeof(g_VrCopyWepModel));
+    memset(&g_VrCopyHandModel, 0, sizeof(g_VrCopyHandModel));
+}
+
+
+void vrCopyWepLoad(s32 handnum)
+{
+
+    if (g_VrCopyWepModeldef != NULL || g_VrCopyHandModeldef != NULL){
+        vrCopyWepUnload();
+    }
+
+    vrSwitchCopyGun = true;
+
+    struct player *player = g_Vars.currentplayer;
+    struct modeldef *gunmodeldef = player->gunctrl.gunmodeldef;
+    struct modeldef *handmodeldef = player->gunctrl.handmodeldef;
+
+    if (!gunmodeldef) {
+        return;
+    }
+
+    // SAFETY GUARD: weapon without a real 3D model (fists, knife using
+    // only the hand model, etc.) -> do not create a VR copy
+    if (gunmodeldef->rootnode == NULL
+        || gunmodeldef->numparts <= 0
+        || gunmodeldef->nummatrices <= 0) {
+        g_VrCopyWepModeldef = NULL;
+        return;
+    }
+
+    s32 gnp = gunmodeldef->numparts;
+    s32 gnm = gunmodeldef->nummatrices;
+    s32 grs = gnp * (s32)sizeof(union modelrwdata);
+
+    u32 *wepRwdatas = (u32 *)sysMemAlloc(grs);
+    Mtxf *wepMatrices = (Mtxf *)sysMemAlloc(gnm * sizeof(Mtxf));
+
+    if (!wepRwdatas || !wepMatrices) {
+        if (wepRwdatas) sysMemFree(wepRwdatas);
+        if (wepMatrices) sysMemFree(wepMatrices);
+        return;
+    }
+    memset(wepRwdatas, 0, grs);
+    memset(wepMatrices, 0, gnm * sizeof(Mtxf));
+
+    modelInit(&g_VrCopyWepModel, gunmodeldef, wepRwdatas, false);
+    g_VrCopyWepModel.matrices = wepMatrices;
+    g_VrCopyWepModeldef = gunmodeldef;
+
+    g_VrCopyWepMatricesAlloc = wepMatrices;
+    g_VrCopyWepRwdatasAlloc  = wepRwdatas;
+
+    g_VrCopyHandModeldef = handmodeldef;
+    if (handmodeldef && handmodeldef->rootnode != NULL && handmodeldef->numparts > 0) {
+        s32 hnp = handmodeldef->numparts;
+        s32 hrs = hnp * (s32)sizeof(union modelrwdata);
+
+        u32 *handRwdatas = (u32 *)sysMemAlloc(hrs);
+        if (handRwdatas) {
+            memset(handRwdatas, 0, hrs);
+            modelInit(&g_VrCopyHandModel, handmodeldef, handRwdatas, false);
+            g_VrCopyHandModel.matrices = wepMatrices;
+            g_VrCopyHandRwdatasAlloc = handRwdatas;
+        } else {
+            g_VrCopyHandModeldef = NULL;
+        }
+    } else {
+        g_VrCopyHandModeldef = NULL;
+    }
+
+    s32 wep = player->hands[HAND_RIGHT].gset.weaponnum;
+    vrResolveReloadAnimIds(wep);
+
+}
+
+
+
+void vr_record_throw_sample(int ctrlIdx, float vx, float vy, float vz) // VR
+{
+    vr_ThrowSample *s = &gThrowHistory[ctrlIdx][vr_ThrowHistoryIdx[ctrlIdx]];
+    s->vx = vx;
+    s->vy = vy;
+    s->vz = vz;
+    s->vr_magnitude = sqrtf(vx*vx + vy*vy + vz*vz);
+    s->frame60 = g_Vars.lvframe60;
+
+    vr_ThrowHistoryIdx[ctrlIdx] = (vr_ThrowHistoryIdx[ctrlIdx] + 1) % VR_THROW_HISTORY_MAX;
+    if (vr_ThrowHistoryCount[ctrlIdx] < VR_THROW_HISTORY_MAX) {
+        vr_ThrowHistoryCount[ctrlIdx]++;
+    }
+}
+
+
+struct coord vr_throw(s32 handnum) {
+    int ctrlIdx = (!vr_invert_hands) ? (handnum == HAND_RIGHT ? 1 : 0)
+                                     : (handnum == HAND_RIGHT ? 0 : 1);
+
+    uint32_t frameNow = g_Vars.lvframe60;
+    float best_vx = vr_ctrl_velocity[ctrlIdx][0];
+    float best_vy = vr_ctrl_velocity[ctrlIdx][1];
+    float best_vz = vr_ctrl_velocity[ctrlIdx][2];
+    float best_mag = sqrtf(best_vx*best_vx + best_vy*best_vy + best_vz*best_vz);
+
+    int count = vr_ThrowHistoryCount[ctrlIdx];
+    int cur   = vr_ThrowHistoryIdx[ctrlIdx];
+    for (int i = 0; i < count; i++) {
+        int idx = cur - 1 - i;
+        if (idx < 0) idx += VR_THROW_HISTORY_MAX;
+
+        vr_ThrowSample *s = &gThrowHistory[ctrlIdx][idx];
+
+        if (frameNow - s->frame60 > VR_THROW_HISTORY_FRAMES)
+            break;
+
+        if (s->vr_magnitude > best_mag) {
+            best_mag = s->vr_magnitude;
+            best_vx  = s->vx;
+            best_vy  = s->vy;
+            best_vz  = s->vz;
+        }
+    }
+
+    float vx = best_vx;
+    float vy = best_vy;
+    float vz = best_vz;
+    float vr_magnitude = best_mag;
+    struct coord throwdir;
+
+
+    if (vr_magnitude > 0.5f) {
+        XrQuaternionf headQMonde;
+        headQMonde.x = vr_joy_rot_Q.w * vr_HMD_rot_Q.x + vr_joy_rot_Q.x * vr_HMD_rot_Q.w +
+                       vr_joy_rot_Q.y * vr_HMD_rot_Q.z - vr_joy_rot_Q.z * vr_HMD_rot_Q.y;
+        headQMonde.y = vr_joy_rot_Q.w * vr_HMD_rot_Q.y - vr_joy_rot_Q.x * vr_HMD_rot_Q.z +
+                       vr_joy_rot_Q.y * vr_HMD_rot_Q.w + vr_joy_rot_Q.z * vr_HMD_rot_Q.x;
+        headQMonde.z = vr_joy_rot_Q.w * vr_HMD_rot_Q.z + vr_joy_rot_Q.x * vr_HMD_rot_Q.y -
+                       vr_joy_rot_Q.y * vr_HMD_rot_Q.x + vr_joy_rot_Q.z * vr_HMD_rot_Q.w;
+        headQMonde.w = vr_joy_rot_Q.w * vr_HMD_rot_Q.w - vr_joy_rot_Q.x * vr_HMD_rot_Q.x -
+                       vr_joy_rot_Q.y * vr_HMD_rot_Q.y - vr_joy_rot_Q.z * vr_HMD_rot_Q.z;
+
+        throwdir.x = -vx / vr_magnitude;
+        throwdir.y = -vy / vr_magnitude;
+        throwdir.z = -vz / vr_magnitude;
+
+        vr_rotate_vector_by_quaternion(&throwdir, &headQMonde);
+        throwdir.y = -throwdir.y;
+
+        float minSpeed   = 1.0f;
+        float maxSpeed   = 1000.0f;
+        float throwSpeed = vr_magnitude * 10.0f;
+        if (throwSpeed < minSpeed) throwSpeed = minSpeed;
+        if (throwSpeed > maxSpeed) throwSpeed = maxSpeed;
+
+        velocity.x = throwdir.x * throwSpeed;
+        velocity.y = throwdir.y * throwSpeed;
+        velocity.z = throwdir.z * throwSpeed;
+
+        vr_ThrowHistoryCount[ctrlIdx] = 0;
+        vr_ThrowHistoryIdx[ctrlIdx] = 0;
+        vr_throw_cancelled = false;
+    }
+    else {
+        vr_ThrowHistoryCount[ctrlIdx] = 0;
+        vr_ThrowHistoryIdx[ctrlIdx] = 0;
+        vr_throw_cancelled = true;
+    }
+
+    return velocity;
+}
+
+
+
+#endif /* PD_ENABLE_VR */
 
 #if !MATCHING || VERSION >= VERSION_NTSC_1_0
 void bgunRumble(s32 handnum, s32 weaponnum)
@@ -1115,6 +3354,47 @@ void bgunStartAnimation(struct guncmd *cmd, s32 handnum, struct hand *hand)
 		s32 done = false;
 		u32 rand = rngRandom() % 100;
 
+#ifdef PD_ENABLE_VR
+        if (VrMotionThrowing && handnum == HAND_RIGHT && hand[HAND_RIGHT].gset.weaponnum == WEAPON_UNARMED) { // VR
+            s32 targetAnim = vr_button_R_grip ? 1002 : 1055;
+            struct guncmd *found = NULL;
+
+            while (loopcmd->type != GUNCMD_END) {
+                if (loopcmd->type == GUNCMD_RANDOM) {
+                    struct guncmd *chosen = (struct guncmd *) loopcmd->unk04;
+                    if (chosen->type == GUNCMD_PLAYANIMATION &&
+                        chosen->unk02 == targetAnim) {
+                        found = (struct guncmd *) loopcmd->unk04;
+                        break;
+                    }
+                }
+                loopcmd++;
+            }
+
+            if (found != NULL) {
+                bgunStartAnimation(found, handnum, hand);
+            }
+        }else if (VrMotionThrowing && handnum == HAND_LEFT && hand->gset.weaponnum == WEAPON_UNARMED) { // VR (upstream read hand[HAND_LEFT] here - OOB when hand already points at hands[HAND_LEFT]; VR: upstream UB guard)
+            s32 targetAnim = vr_button_L_grip ? 1002 : 1055;
+            struct guncmd *found = NULL;
+
+            while (loopcmd->type != GUNCMD_END) {
+                if (loopcmd->type == GUNCMD_RANDOM) {
+                    struct guncmd *chosen = (struct guncmd *) loopcmd->unk04;
+                    if (chosen->type == GUNCMD_PLAYANIMATION &&
+                        chosen->unk02 == targetAnim) {
+                        found = (struct guncmd *) loopcmd->unk04;
+                        break;
+                    }
+                }
+                loopcmd++;
+            }
+
+            if (found != NULL) {
+                bgunStartAnimation(found, handnum, hand);
+            }
+        }else {
+#endif
 		while (loopcmd->type != GUNCMD_END) {
 			if (bgun0f098884(loopcmd, &hand->gset) && !done) {
 				if (loopcmd->type == GUNCMD_INCLUDE) {
@@ -1130,6 +3410,9 @@ void bgunStartAnimation(struct guncmd *cmd, s32 handnum, struct hand *hand)
 
 			loopcmd++;
 		}
+#ifdef PD_ENABLE_VR
+        }
+#endif
 	} else {
 		hand->animload = cmd->unk02;
 		hand->animmode = HANDANIMMODE_IDLE;
@@ -1244,6 +3527,11 @@ void bgunGetWeaponInfo(struct handweaponinfo *info, s32 handnum)
  * 2 = has ammo in clip but none in reserve
  * 3 = gun doesn't use ammo or clip is full
  */
+#ifdef PD_ENABLE_VR
+// Edge detection for forced manual reload via B button
+static bool sPrevBButtonReload = false;
+#endif
+
 s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo *info, struct hand *hand)
 {
 	s32 result = 3;
@@ -1270,6 +3558,57 @@ s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo *info, struct hand *hand)
 
 			result = 1;
 
+#ifdef PD_ENABLE_VR
+            if ((VrManualReloading && info->weaponnum == WEAPON_FALCON2)
+                || (VrManualReloading &&  info->weaponnum == WEAPON_FALCON2_SILENCER)
+                || (VrManualReloading &&  info->weaponnum == WEAPON_FALCON2_SCOPE)) {
+			if (hand->loadedammo[ammoindex] < minqty) {
+
+                    // VR: check if the weapon has a defined manual reload system
+                    bool hasVrReload = false;
+                    if (weaponnum >= 0 && weaponnum < NUM_WEAPONS) {
+                        for (int z = 0; z < VR_RELOAD_MAX_ZONES; z++) {
+                            if (gVrReloadZones[weaponnum][z].valid) {
+                                hasVrReload = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Rising edge detection on the B button (force manual reload)
+                    bool bPressed = get_button_state(1, "b");
+                    bool forceManualReload = bPressed && !sPrevBButtonReload;
+                    sPrevBButtonReload = bPressed;
+
+                    if (hasVrReload && !forceManualReload) {
+                        // Block auto-reload: the player must reload using the VR gesture
+                        result = 2;
+                    } else {
+                        // Reload triggered: either weapon without VR reload (normal N64),
+                        // or manual reload forced via the B button
+                        result = 0;
+                    }
+                } else {
+                    if (g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] ==
+                        0) {
+                        result = 2;
+                    }
+                }
+            }
+
+
+            else if (hand->loadedammo[ammoindex] < minqty) {
+				result = 0;
+
+				if (g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] == 0) {
+					result = -1;
+				}
+			} else {
+				if (g_Vars.currentplayer->ammoheldarr[info->gunctrl->ammotypes[ammoindex]] == 0) {
+					result = 2;
+				}
+			}
+#else
 			if (hand->loadedammo[ammoindex] < minqty) {
 				result = 0;
 
@@ -1281,6 +3620,7 @@ s32 bgun0f098ca0(s32 funcnum, struct handweaponinfo *info, struct hand *hand)
 					result = 2;
 				}
 			}
+#endif
 		}
 	}
 
@@ -1653,6 +3993,25 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 
 void bgunSetArmPitch(struct hand *hand, f32 angle)
 {
+#ifdef PD_ENABLE_VR
+    Mtxf base;
+    Mtxf offset;
+    mtx4Copy(&hand->posmtx, &base);
+
+    // "Lower/raise" offset IN controller local space
+    mtx4LoadXRotation(angle, &offset);
+
+    // Local translation (adjust according to your VR units/scale)
+    offset.m[3][0] = 0.0f;
+    offset.m[3][1] = (1.0f - cosf(angle)) * -80.0f;
+    offset.m[3][2] = sinf(angle) * 15.0f;
+
+    // Compose: final = base * offset (offset applied in controller local space)
+    mtx4MultMtx4(&base, &offset, &hand->posrotmtx);
+
+    hand->useposrot = true;
+    mtx4Copy(&hand->posrotmtx, &hand->posmtx);
+#else
 	hand->useposrot = true;
 
 	mtx4LoadXRotation(angle, &hand->posrotmtx);
@@ -1660,6 +4019,7 @@ void bgunSetArmPitch(struct hand *hand, f32 angle)
 	hand->posrotmtx.m[3][0] = 0;
 	hand->posrotmtx.m[3][1] = (1.0f - cosf(angle)) * -80.0f;
 	hand->posrotmtx.m[3][2] = sinf(angle) * 15.0f;
+#endif
 }
 
 s32 bgunTickIncAutoSwitch(struct handweaponinfo *info, s32 handnum, struct hand *hand, s32 lvupdate)
@@ -2366,6 +4726,11 @@ bool bgun0f09aba4(struct hand *hand, struct handweaponinfo *info, s32 handnum, s
 	f32 mult2;
 	u32 stack;
 
+#ifdef PD_ENABLE_VR
+	recoildist = 0.0f;  // VR: upstream UB guard (upstream reads recoildist/recoilangle
+	recoilangle = 0.0f; // uninitialised in the HANDSTATEFLAG_00000040 recoil-release block)
+#endif
+
 #if PAL
 	unk24 = func->unk24;
 	unk25 = func->unk25;
@@ -2440,6 +4805,123 @@ bool bgun0f09aba4(struct hand *hand, struct handweaponinfo *info, s32 handnum, s
 			hand->posstart.z = hand->posoffset.z;
 		}
 
+#ifdef PD_ENABLE_VR
+        int ctrlIndex = 0; // VR
+        if (!vr_invert_hands) {
+            ctrlIndex = (handnum == HAND_RIGHT) ? 1 : 0;
+        }else{
+            ctrlIndex = (handnum == HAND_RIGHT) ? 0 : 1; // Swap the hands/controllers for the laser
+        }
+
+        if (hand->stateflags & HANDSTATEFLAG_00000040) {
+            if (unk27 > frames - hand->statevar1) {
+                mult1 = cosf((f32)(unk27 - frames + hand->statevar1) * 1.5707963705063f / (f32)unk27) * 0.5f + 0.5f;
+
+                float posAmpX = (recoildist / 100.0f);
+                float angleAmpX = (recoilangle / 100.0f);
+
+                float decay = 1.0f - mult1;
+
+
+                hand->posoffset.x = hand->posoffset.x - posAmpX * decay;
+                hand->posoffset.y = hand->posoffset.y;
+                hand->posoffset.z = hand->posoffset.z;
+
+                const float qw = gCtrlQuat[ctrlIndex][0];
+                const float qx = gCtrlQuat[ctrlIndex][1];
+                const float qy = gCtrlQuat[ctrlIndex][2];
+                const float qz = gCtrlQuat[ctrlIndex][3];
+
+                const float recoilRad = -(recoilangle)*decay * (M_BADTAU / 360.0f);
+
+                const float h = recoilRad * 0.5f;
+                const float rw = cosf(h);
+                const float rx = sinf(h);
+                const float ry = 0.0f;
+                const float rz = 0.0f;
+
+                float qTmp[4];
+                qTmp[0] = qw * rw - qx * rx - qy * ry - qz * rz;
+                qTmp[1] = qw * rx + qx * rw + qy * rz - qz * ry;
+                qTmp[2] = qw * ry - qx * rz + qy * rw + qz * rx;
+                qTmp[3] = qw * rz + qx * ry - qy * rx + qz * rw;
+
+                {
+                    const float invLen = 1.0f / sqrtf(qTmp[0] * qTmp[0] + qTmp[1] * qTmp[1] + qTmp[2] * qTmp[2] + qTmp[3] * qTmp[3]);
+                    qTmp[0] *= invLen; qTmp[1] *= invLen; qTmp[2] *= invLen; qTmp[3] *= invLen;
+                }
+
+                quaternionToMtx(qTmp, &hand->posrotmtx);
+                hand->posrotmtx.m[3][0] = hand->posoffset.x;
+                hand->posrotmtx.m[3][1] = hand->posoffset.y;
+                hand->posrotmtx.m[3][2] = hand->posoffset.z;
+
+                hand->useposrot = true;
+                hand->rotxoffset = 0.0f;
+
+            }
+            else {
+                mtx4LoadIdentity(&hand->posrotmtx);
+                hand->useposrot = false;
+                return true;
+            }
+        }
+
+        if (frames < sum && (hand->stateflags & HANDSTATEFLAG_00000040) == 0) {
+            recoildist = func->recoildist;
+            recoilangle = func->recoilangle;
+
+            if (frames < unk24) {
+                mult2 = sinf(frames * 1.5707963705063f / (f32)unk24);
+            }
+            else {
+                mult2 = cosf((f32)(frames - unk24) * M_PI / (f32)unk25) * 0.5f + 0.5f;
+            }
+
+            float posAmpX = (recoildist / 100.0f);
+            float angleAmpX = (recoilangle / 100.0f);
+
+            hand->posoffset.x = hand->posoffset.x - posAmpX * mult2;
+            hand->posoffset.y = hand->posoffset.y;
+            hand->posoffset.z = hand->posoffset.z;
+
+            const float qw = gCtrlQuat[ctrlIndex][0];
+            const float qx = gCtrlQuat[ctrlIndex][1];
+            const float qy = gCtrlQuat[ctrlIndex][2];
+            const float qz = gCtrlQuat[ctrlIndex][3];
+
+            const float recoilRad = -(recoilangle)*mult2 * (M_BADTAU / 360.0f);
+
+            const float h = recoilRad * 0.5f;
+            const float rw = cosf(h);
+            const float rx = sinf(h);
+            const float ry = 0.0f;
+            const float rz = 0.0f;
+
+            float qTmp[4];
+            qTmp[0] = qw * rw - qx * rx - qy * ry - qz * rz;
+            qTmp[1] = qw * rx + qx * rw + qy * rz - qz * ry;
+            qTmp[2] = qw * ry - qx * rz + qy * rw + qz * rx;
+            qTmp[3] = qw * rz + qx * ry - qy * rx + qz * rw;
+
+            {
+                const float invLen = 1.0f / sqrtf(qTmp[0] * qTmp[0] + qTmp[1] * qTmp[1] + qTmp[2] * qTmp[2] + qTmp[3] * qTmp[3]);
+                qTmp[0] *= invLen; qTmp[1] *= invLen; qTmp[2] *= invLen; qTmp[3] *= invLen;
+            }
+
+            quaternionToMtx(qTmp, &hand->posrotmtx);
+            hand->posrotmtx.m[3][0] = hand->posoffset.x;
+            hand->posrotmtx.m[3][1] = hand->posoffset.y;
+            hand->posrotmtx.m[3][2] = hand->posoffset.z;
+
+            mtx4Copy(&hand->posrotmtx, &hand->posmtx);
+
+            hand->useposrot = true;
+            mtx4Copy(&hand->posrotmtx, &hand->posmtx);
+
+        }
+	}
+#else
 		if (hand->stateflags & HANDSTATEFLAG_00000040) {
 			if (unk27 > frames - hand->statevar1) {
 				mult1 = cosf((f32)(unk27 - frames + hand->statevar1) * 1.5707963705063f / (f32)unk27) * 0.5f + 0.5f;
@@ -2495,6 +4977,7 @@ bool bgun0f09aba4(struct hand *hand, struct handweaponinfo *info, s32 handnum, s
 			mtx4SetTranslation(&hand->posoffset, &hand->posrotmtx);
 		}
 	}
+#endif
 
 	if (sum <= frames) {
 		if (unk27 >= 0 && hand->triggerreleased && hand->triggeron) {
@@ -2634,6 +5117,23 @@ bool bgunTickIncAttackingThrow(s32 handnum, struct hand *hand)
 	}
 
 	if (hand->stateminor == HANDSTATEMINOR_ATTACK_THROW_0) {
+#ifdef PD_ENABLE_VR
+        if ((hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->triggeron) ||
+            (hand->gset.weaponnum == WEAPON_DRAGON && hand->triggeron)) { // VR
+            hand->stateminor = HANDSTATEMINOR_ATTACK_THROW_1;
+            /// Trigger still held down → wait
+            return false;
+        }
+
+        if ((hand->gset.weaponnum == WEAPON_COMBATKNIFE &&
+             hand->gset.weaponfunc == FUNC_SECONDARY)) {
+            hand->stateminor = HANDSTATEMINOR_ATTACK_THROW_1;
+            g_Vars.currentplayer->gunctrl.throwing = true;
+            // Trigger still held down → wait
+            return false;
+        }
+#endif
+
 		if (hand->statecycles == 0) {
 			if (func->base.flags & FUNCFLAG_DISCARDWEAPON) {
 				invRemoveItemByNum(hand->gset.weaponnum);
@@ -2679,6 +5179,70 @@ bool bgunTickIncAttackingThrow(s32 handnum, struct hand *hand)
 	}
 
 	if (hand->stateminor == HANDSTATEMINOR_ATTACK_THROW_1) {
+#ifdef PD_ENABLE_VR
+        if ((hand->gset.weaponnum == WEAPON_ECMMINE
+             || (hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->gset.weaponfunc == FUNC_SECONDARY)
+             || (hand->gset.weaponnum == WEAPON_DRAGON && hand->gset.weaponfunc == FUNC_SECONDARY)
+             || (hand->gset.weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_SECONDARY))
+            && (hand->triggeron)) {
+            // Trigger still held down → wait
+            return false;
+        }
+
+        // 2) Laptop Gun / secondary Dragon: remove the weapon from the VR inventory
+        if (hand->gset.weaponnum == WEAPON_LAPTOPGUN ||
+            hand->gset.weaponnum == WEAPON_DRAGON) {
+            invRemoveItemByNum(hand->gset.weaponnum);
+        }
+
+        // VR...
+        if (hand->gset.weaponnum == WEAPON_GRENADE
+            || hand->gset.weaponnum == WEAPON_NBOMB
+            || hand->gset.weaponnum == WEAPON_ECMMINE
+            || hand->gset.weaponnum == WEAPON_PROXIMITYMINE
+            || hand->gset.weaponnum == WEAPON_TIMEDMINE
+            || hand->gset.weaponnum == WEAPON_REMOTEMINE
+            || (hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->gset.weaponfunc == FUNC_SECONDARY)
+            || (hand->gset.weaponnum == WEAPON_DRAGON && hand->gset.weaponfunc == FUNC_SECONDARY)
+            || (hand->gset.weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_SECONDARY)){
+
+
+            if (VrMotionThrowing) {
+                // ===== MODE VR : lancer par vélocité du contrôleur =====
+                velocity = vr_throw(handnum);
+                if (vr_throw_cancelled) {
+                    if(hand->gset.weaponnum == WEAPON_GRENADE
+                       || hand->gset.weaponnum == WEAPON_NBOMB){
+                        bgunSetState(handnum, HANDSTATE_RELOAD);
+                    }else{
+                        bgunSetState(handnum, HANDSTATE_IDLE);
+                    }
+                    return false;
+                } else {
+                    vr_throw_cancelled = false;
+                    if((hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->gset.weaponfunc == FUNC_SECONDARY)
+                       || (hand->gset.weaponnum == WEAPON_DRAGON && hand->gset.weaponfunc == FUNC_SECONDARY)){
+                        g_Vars.currentplayer->gunctrl.throwing = true;
+                        bgunSwitchToPrevious();
+                        hand->primetimer60 = 0;
+                    }
+                }
+            } else {
+                // ===== MODE CLASSIQUE : lancer par bouton, pas de vélocité VR =====
+                // La vélocité reste à {0,0,0} — bgunCreateThrownProjectile la calculera
+                // depuis gundir exactement comme dans le jeu original (paste-2.txt)
+                vr_throw_cancelled = false;
+                if ((hand->gset.weaponnum == WEAPON_LAPTOPGUN && hand->gset.weaponfunc == FUNC_SECONDARY)
+                    || (hand->gset.weaponnum == WEAPON_DRAGON && hand->gset.weaponfunc == FUNC_SECONDARY)) {
+                    g_Vars.currentplayer->gunctrl.throwing = true;
+                    bgunSwitchToPrevious();
+                    hand->primetimer60 = 0;
+                }
+            }
+
+        }
+#endif
+
 		hand->firing = true;
 		hand->attacktype = HANDATTACKTYPE_THROWPROJECTILE;
 		hand->loadedammo[func->base.ammoindex]--;
@@ -2687,9 +5251,15 @@ bool bgunTickIncAttackingThrow(s32 handnum, struct hand *hand)
 	}
 
 	if (hand->stateminor == HANDSTATEMINOR_ATTACK_THROW_2) {
+#ifdef PD_ENABLE_VR
+        if (hand->stateframes > TICKS(func->recoverytime60) / 3) { // VR speedup reloading
+			return true;
+		}
+#else
 		if (hand->stateframes > TICKS(func->recoverytime60)) {
 			return true;
 		}
+#endif
 
 		if (hand->gset.weaponnum == WEAPON_REMOTEMINE
 				&& bgunIsUsingSecondaryFunction() == true
@@ -3274,6 +5844,16 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 			delay = 1;
 		}
 
+#ifdef PD_ENABLE_VR
+        // --- VR unload the weapon copy here
+        if (g_VrCopyWepModeldef != NULL) {
+            s32 halfDelay = delay / 2.5;
+            if (hand->stateframes >= halfDelay) {
+                vrCopyWepUnload();
+            }
+        }
+#endif
+
 		if (hand->ejecttype == EJECTTYPE_GUN
 				&& (hand->ejectstate == EJECTSTATE_INIT || hand->ejectstate == EJECTSTATE_AIRBORNE)) {
 			throwing = true;
@@ -3331,6 +5911,21 @@ s32 bgunTickIncChangeGun(struct handweaponinfo *info, s32 handnum, struct hand *
 					hand->stateminor++; // to HANDSTATEMINOR_CHANGEGUN_RAISE
 					hand->count60 = 0;
 					hand->count = 0;
+
+#ifdef PD_ENABLE_VR
+                    // --- VR: resynchronize the weapon copy here ---
+                    struct modeldef *currentGunModeldef = g_Vars.currentplayer->gunctrl.gunmodeldef;
+                    if (g_VrCopyWepModeldef != currentGunModeldef) {
+                        vrCopyWepLoad(handnum);                         // recopie le modèle courant
+                        vrSwitchGun = true;
+                        vrResolveReloadAnimIds(g_Vars.currentplayer->gunctrl.weaponnum);
+                        sVrMagPhysicallyInGun = true;
+                        sVrMagInHand          = false;
+                        sSavedMagAmmo         = 0;
+                        sSavedMagWeapon       = WEAPON_NONE;
+                        sVrChamberEmpty       = false;
+                    }
+#endif
 				}
 			}
 		}
@@ -3569,6 +6164,81 @@ s32 bgunTickIncState2(struct handweaponinfo *info, s32 handnum, struct hand *han
 bool bgunCurrentPlayerInIframe(void);
 #endif
 
+#ifdef PD_ENABLE_VR
+void vr_gun_pos_rot(int handnum, struct hand* hand) {
+    int ctrlIndex = (!vr_invert_hands)
+                    ? (handnum == HAND_RIGHT ? 1 : 0)
+                    : (handnum == HAND_RIGHT ? 0 : 1);
+
+    switch (g_Vars.currentplayer->gunctrl.weaponnum){
+        case WEAPON_DRAGON:
+        case WEAPON_SUPERDRAGON:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 4.0f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 20.0f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + -4.0f;
+            break;
+        case WEAPON_RCP120:
+        case WEAPON_AR34:
+        case WEAPON_SHOTGUN:
+        case WEAPON_SNIPERRIFLE:
+        case WEAPON_FARSIGHT:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 4.0f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 16.0f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + -8.0f;
+            break;
+        case WEAPON_CALLISTO:
+        case WEAPON_ROCKETLAUNCHER:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 8.0f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 14.0f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 4.0f;
+            break;
+        case WEAPON_REAPER:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + -8.00f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 12.00f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 4.00f;
+            break;
+        case WEAPON_DEVASTATOR:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 4.00f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 16.00f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + -4.00f;
+            break;
+        case WEAPON_COMBATKNIFE:
+        case WEAPON_CROSSBOW:
+        case WEAPON_GRENADE:
+        case WEAPON_NBOMB:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 2.0f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 12.0f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 12.0f;
+            break;
+        default:
+            hand->posoffset.x = gCtrlPos[ctrlIndex][0] + 0.0f;
+            hand->posoffset.y = gCtrlPos[ctrlIndex][1] + 16.0f;
+            hand->posoffset.z = gCtrlPos[ctrlIndex][2] + 4.0f;
+            break;
+    }
+
+    float qx = gRawHeadQ.x;
+    float qy = gRawHeadQ.y;
+    float qz = gRawHeadQ.z;
+    float qw = gRawHeadQ.w;
+
+    // Slight Pitch correction (up/down)
+    float pitch = asinf(2.0f * (qw*qx - qz*qy));
+    hand->posoffset.y += pitch * 15.0f;
+    hand->posoffset.z += pitch * 5.0f;
+
+    quaternionToMtx(gCtrlQuat[ctrlIndex], &hand->posrotmtx);
+
+    hand->posrotmtx.m[3][0] = hand->posoffset.x;
+    hand->posrotmtx.m[3][1] = hand->posoffset.y;
+    hand->posrotmtx.m[3][2] = hand->posoffset.z;
+    hand->useposrot = true;
+    mtx4Copy(&hand->posrotmtx, &hand->posmtx);
+    VrDebugAnimFrame();
+
+}
+#endif
+
 s32 bgunTickInc(struct handweaponinfo *info, s32 handnum, s32 lvupdate)
 {
 	s32 result = 0;
@@ -3603,6 +6273,10 @@ s32 bgunTickInc(struct handweaponinfo *info, s32 handnum, s32 lvupdate)
 	}
 
 	hand->useposrot = false;
+
+#ifdef PD_ENABLE_VR
+    vr_gun_pos_rot(handnum, hand); // VR
+#endif
 
 	switch (hand->state) {
 	case HANDSTATE_IDLE:
@@ -4118,6 +6792,7 @@ void bgunUpdateBlend(struct hand *hand, s32 handnum)
 
 	sp5c.x += handGetXShift(handnum);
 
+#ifndef PD_ENABLE_VR // VR: upstream removes the hand damping entirely
 	for (i = 0; i < g_Vars.lvupdate240; i++) {
 		hand->damppossum.x = (PAL ? 0.9847f : 0.9872f) * hand->damppossum.x + sp5c.f[0];
 		hand->damppossum.y = (PAL ? 0.9847f : 0.9872f) * hand->damppossum.y + sp5c.f[1];
@@ -4143,6 +6818,7 @@ void bgunUpdateBlend(struct hand *hand, s32 handnum)
 	hand->dampup.x = hand->dampupsum.x * (PAL ? 0.01529997587204f : 0.012799978f);
 	hand->dampup.y = hand->dampupsum.y * (PAL ? 0.01529997587204f : 0.012799978f);
 	hand->dampup.z = hand->dampupsum.z * (PAL ? 0.01529997587204f : 0.012799978f);
+#endif /* !PD_ENABLE_VR */
 }
 
 u32 var80070158 = 0x04e50764;
@@ -4169,6 +6845,7 @@ u32 var800701a8 = 0x0000ffff;
 
 void bgun0f09d8dc(f32 breathing, f32 arg1, f32 arg2, f32 arg3, f32 arg4)
 {
+#ifndef PD_ENABLE_VR // VR: upstream comments out this entire body ("Removed for VR")
 	f32 dampt[2];
 	struct player *player = g_Vars.currentplayer;
 	u32 stack;
@@ -4262,6 +6939,7 @@ void bgun0f09d8dc(f32 breathing, f32 arg1, f32 arg2, f32 arg3, f32 arg4)
 		player->hands[i].adjustdamp.x = -1.75f * arg3 + -0.8f * arg4;
 		player->hands[i].adjustdamp.y = -2.0f * arg2;
 	}
+#endif /* !PD_ENABLE_VR */
 }
 
 bool bgunIsLoaded(void)
@@ -4461,6 +7139,15 @@ void bgunTickGunLoad(void)
 	u32 stack;
 #if VERSION >= VERSION_NTSC_1_0
 	u32 stack2;
+#endif
+
+#ifdef PD_ENABLE_VR
+    // VR WEAPON_LASER
+    if (player->hands[HAND_RIGHT].gset.weaponnum == WEAPON_LASER) {
+        vr_invert_hands = true;
+    }else{
+        vr_invert_hands = false;
+    }
 #endif
 
 	if (player->gunctrl.gunloadstate == GUNLOADSTATE_MODEL) {
@@ -5128,7 +7815,9 @@ struct defaultobj *bgunCreateThrownProjectile2(struct chrdata *chr, struct gset 
  */
 struct defaultobj *bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 {
+#ifndef PD_ENABLE_VR // VR: upstream uses the file-scope `velocity` global (set by vr_throw) instead of a zeroed local
 	struct coord velocity = {0, 0, 0};
+#endif
 	Mtxf sp1f4;
 	struct coord gunpos;
 	struct coord gundir;
@@ -5218,9 +7907,29 @@ struct defaultobj *bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 		velocity.x = gundir.x * 1.6666666f;
 		velocity.y = gundir.y * 1.6666666f;
 		velocity.z = gundir.z * 1.6666666f;
-	} else if (gsetHasFunctionFlags(&hand->gset, FUNCFLAG_CALCULATETRAJECTORY)) {
+	}
+#ifdef PD_ENABLE_VR
+    else if (VrMotionThrowing &&
+             (gset->weaponnum == WEAPON_GRENADE  ||
+              gset->weaponnum == WEAPON_NBOMB    ||
+              gset->weaponnum == WEAPON_ECMMINE  ||
+              gset->weaponnum == WEAPON_PROXIMITYMINE ||
+              gset->weaponnum == WEAPON_TIMEDMINE     ||
+              gset->weaponnum == WEAPON_REMOTEMINE ||
+              (gset->weaponnum == WEAPON_LAPTOPGUN && gset->weaponfunc == FUNC_SECONDARY)||
+              (gset->weaponnum == WEAPON_DRAGON && gset->weaponfunc == FUNC_SECONDARY))) {
+        // VR Motion Throwing is enabled: the velocity has already been calculated by vr_throw()
+        // in bgunTickIncAttackingThrow, so `velocity` is left unchanged here.
+        // do nothing
+    }
+#endif
+	else if (gsetHasFunctionFlags(&hand->gset, FUNCFLAG_CALCULATETRAJECTORY)) {
 		// Calculate the velocity based on the trajectory to the aimpos
+#ifdef PD_ENABLE_VR
+        propFindAimingAt(handnum, false, FINDPROPCONTEXT_QUERY);
+#else
 		propFindAimingAt(HAND_RIGHT, false, FINDPROPCONTEXT_QUERY);
+#endif
 
 		if (hand->hasdotinfo) {
 			aimpos.x = hand->dotpos.x;
@@ -5525,7 +8234,11 @@ void bgunCreateFiredProjectile(s32 handnum)
 			sp25c = funcdef->traveldist * 1.6666666f;
 
 			if (gsetHasFunctionFlags(&hand->gset, FUNCFLAG_CALCULATETRAJECTORY)) {
+#ifdef PD_ENABLE_VR
+                propFindAimingAt(handnum, false, FINDPROPCONTEXT_QUERY);
+#else
 				propFindAimingAt(HAND_RIGHT, false, FINDPROPCONTEXT_QUERY);
+#endif
 
 				if (hand->hasdotinfo) {
 					aimpos.x = hand->dotpos.x;
@@ -5578,7 +8291,15 @@ void bgunCreateFiredProjectile(s32 handnum)
 				sp264.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_Vars.lvupdate60freal;
 			}
 
+#ifdef PD_ENABLE_VR
+            // VR: rebuild sp210 from gundir (already in world space)
+            // mtx00016b58 builds a "look-at" matrix from a direction
+            mtx00016b58(&sp210, 0.0f, 0.0f, 0.0f,
+                        -gundir.x, -gundir.y, -gundir.z,   // forward = -gundir (axe -Z)
+                        0.0f, 1.0f, 0.0f);                  // up = Y world
+#else
 			mtx4Copy(&g_Vars.currentplayer->hands[handnum].posmtx, &sp210);
+#endif
 
 			sp210.m[3][0] = 0.0f;
 			sp210.m[3][1] = 0.0f;
@@ -5818,6 +8539,183 @@ void bgunCreateFiredProjectile(s32 handnum)
 #endif
 }
 
+#ifdef PD_ENABLE_VR
+void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
+{
+    f32 screenwidth = camGetScreenWidth();
+    f32 screenheight = camGetScreenHeight();
+    struct player *player = g_Vars.currentplayer;
+    struct coord aimpos;
+    s32 h;
+    f32 x[2];
+    f32 y[2];
+    bool ignore[2] = {false, false};
+    s32 numframes;
+    struct hand *hand;
+    struct coord sp94;
+    f32 sp8c[2];
+
+
+    x[HAND_RIGHT] = screenx;
+    x[HAND_LEFT]  = screenx;
+    y[HAND_RIGHT] = screeny;
+    y[HAND_LEFT]  = screeny;
+
+    ignore[HAND_LEFT]  = !player->hands[HAND_LEFT].inuse;
+    ignore[HAND_RIGHT] = !player->hands[HAND_RIGHT].inuse;
+
+    if (!player->hands[HAND_LEFT].inuse &&
+        player->hands[HAND_RIGHT].state == HANDSTATE_RELOAD &&
+        player->hands[HAND_RIGHT].unk0ce8) {
+        numframes = 25;
+        if (player->hands[HAND_RIGHT].gset.weaponnum == WEAPON_CROSSBOW) {
+            numframes = 5;
+        }
+        if ((s32)bgun0f09815c(&player->hands[HAND_RIGHT]) <=
+            modelGetNumAnimFrames(&player->hands[HAND_RIGHT].gunmodel) - numframes) {
+            x[HAND_RIGHT] = 0.0f;
+            y[HAND_RIGHT] = 0.0f;
+            ignore[HAND_RIGHT] = true;
+        }
+    }
+
+    // Compute the raw weapon direction in screen space
+    for (h = 0; h < 2; h++) {
+        if (!ignore[h]) {
+            hand = &player->hands[h];
+            Mtxf *matrix = hand->useposrot ? &hand->posrotmtx : &hand->posmtx;
+
+            struct coord vrdir = {0.0f, 0.0f, -1.0f};
+            mtx4RotateVecInPlace(matrix, &vrdir);
+            vrdir.y = -vrdir.y;
+
+            f32 norm = sqrtf(vrdir.x * vrdir.x + vrdir.y * vrdir.y + vrdir.z * vrdir.z);
+            if (norm > 0.0001f) {
+                vrdir.x /= norm;
+                vrdir.y /= norm;
+                vrdir.z /= norm;
+
+                vr_rotate_vector_by_quaternion(&vrdir, &vr_HMD_rot_Q);
+                vr_rotate_vector_by_quaternion(&vrdir, &vr_joy_rot_Q);
+
+
+                if ((old_dotpos_init[h] &&
+                     hand->dotpos.x == old_dotposX[h] &&
+                     hand->dotpos.y == old_dotposY[h] &&
+                     hand->dotpos.z == old_dotposZ[h]) ||
+                        player->hands[HAND_RIGHT].gset.weaponnum == WEAPON_REAPER){ // TODO fix reaper sight
+
+                    sp94.x = hand->muzzlepos.x + vrdir.x * 100000.0f;
+                    sp94.y = hand->muzzlepos.y - vrdir.y * 100000.0f;
+                    sp94.z = hand->muzzlepos.z + vrdir.z * 100000.0f;
+                    show_laser_dot[h] = false;
+                } else {
+                    old_dotposX[h] = hand->dotpos.x;
+                    old_dotposY[h] = hand->dotpos.y;
+                    old_dotposZ[h] = hand->dotpos.z;
+                    old_dotpos_init[h] = true;
+
+                    sp94.x = hand->dotpos.x;
+                    sp94.y = hand->dotpos.y;
+                    sp94.z = hand->dotpos.z;
+                    show_laser_dot[h] = true;
+                }
+
+
+                mtx4TransformVecInPlace(camGetWorldToScreenMtxf(), &sp94);
+                cam0f0b4d04(&sp94, sp8c);
+                x[h] = sp8c[0];
+                y[h] = sp8c[1];
+
+                x[h] = (2.0f * x[h]) / viGetViewWidth()  - 1.0f;
+                y[h] = (2.0f * y[h]) / viGetViewHeight() - 1.0f;
+            }
+        }
+    }
+
+    player->oldcrosspos[0] = player->crosspos[0];
+    player->oldcrosspos[1] = player->crosspos[1];
+
+    player->guncrossdamp = crossdamp;
+    player->gunaimdamp   = aimdamp;
+
+    if (crossdamp < 1.0f) {
+        player->crosspossum[0] = x[HAND_RIGHT] / (1.0f - crossdamp);
+        player->crosspossum[1] = y[HAND_RIGHT] / (1.0f - crossdamp);
+    }
+    if (aimdamp < 1.0f) {
+        player->crosssum2[0] = x[HAND_RIGHT] / (1.0f - aimdamp);
+        player->crosssum2[1] = y[HAND_RIGHT] / (1.0f - aimdamp);
+    }
+
+    // --- crosspos: raw position, without smoothing ---
+    player->crosspos[0] = x[HAND_RIGHT] * screenwidth  * 0.5f + screenwidth  * 0.5f;
+    player->crosspos[1] = y[HAND_RIGHT] * screenheight * 0.5f + screenheight * 0.5f;
+
+
+    if      (player->crosspos[0] < 3.0f)              player->crosspos[0] = 3.0f;
+    else if (player->crosspos[0] > screenwidth - 4.0f) player->crosspos[0] = screenwidth - 4.0f;
+    if      (player->crosspos[1] < 3.0f)               player->crosspos[1] = 3.0f;
+    else if (player->crosspos[1] > screenheight - 4.0f) player->crosspos[1] = screenheight - 4.0f;
+
+    player->crosspos[0] += camGetScreenLeft();
+    player->crosspos[1] += camGetScreenTop();
+
+    // --- HUD crosshair ---
+    for (h = 0; h < 2; h++) {
+        hand = &player->hands[h];
+
+        hand->guncrosspossum[0] *= (PAL ? 0.913f : 0.9269697f);
+        hand->guncrosspossum[1] *= (PAL ? 0.913f : 0.9269697f);
+
+        hand->crosspos[0] = screenwidth  * 0.5f;
+        hand->crosspos[1] = screenheight * 0.5f;
+
+        if      (hand->crosspos[0] < 3.0f)               hand->crosspos[0] = 3.0f;
+        else if (hand->crosspos[0] > screenwidth - 4.0f)  hand->crosspos[0] = screenwidth - 4.0f;
+        if      (hand->crosspos[1] < 3.0f)               hand->crosspos[1] = 3.0f;
+        else if (hand->crosspos[1] > screenheight - 4.0f) hand->crosspos[1] = screenheight - 4.0f;
+
+        hand->crosspos[0] += camGetScreenLeft();
+        hand->crosspos[1] += camGetScreenTop();
+    }
+
+    if(!vr_invert_hands) {
+        // --- Store the left-hand position for the HUD crosshair (sight.c only) ---
+        vr_LeftCrossValid = !ignore[HAND_LEFT] && player->hands[HAND_LEFT].inuse;
+        if (vr_LeftCrossValid) {
+            f32 lx = x[HAND_LEFT] * screenwidth * 0.5f + screenwidth * 0.5f;
+            f32 ly = y[HAND_LEFT] * screenheight * 0.5f + screenheight * 0.5f;
+            lx = CLAMP(lx, 3.0f, screenwidth - 4.0f);
+            ly = CLAMP(ly, 3.0f, screenheight - 4.0f);
+            vr_LeftCrossX = lx + camGetScreenLeft();
+            vr_LeftCrossY = ly + camGetScreenTop();
+
+        }
+    }else{
+        vr_LeftCrossValid = !ignore[HAND_RIGHT] && player->hands[HAND_RIGHT].inuse;
+        if (vr_LeftCrossValid) {
+            f32 lx = x[HAND_RIGHT] * screenwidth * 0.5f + screenwidth * 0.5f;
+            f32 ly = y[HAND_RIGHT] * screenheight * 0.5f + screenheight * 0.5f;
+            lx = CLAMP(lx, 3.0f, screenwidth - 4.0f);
+            ly = CLAMP(ly, 3.0f, screenheight - 4.0f);
+            vr_LeftCrossX = lx + camGetScreenLeft();
+            vr_LeftCrossY = ly + camGetScreenTop();
+        }
+    }
+
+    // --- crosspos2 (bullet aim): raw position, without smoothing ---
+    player->crosspos2[0] = x[HAND_RIGHT] * screenwidth  * 0.5f + screenwidth  * 0.5f;
+    player->crosspos2[1] = y[HAND_RIGHT] * screenheight * 0.5f + screenheight * 0.5f;
+
+    player->crosspos2[0] += camGetScreenLeft();
+    player->crosspos2[1] += camGetScreenTop();
+
+    cam0f0b4c3c(player->crosspos2, &aimpos, 1000);
+    bgunSetAimPos(&aimpos);
+
+}
+#else
 void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 {
 	f32 screenwidth = camGetScreenWidth();
@@ -5985,6 +8883,7 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 
 	bgunSetAimPos(&aimpos);
 }
+#endif /* PD_ENABLE_VR */
 
 /**
  * Swivel the gun towards the given screen coordinates, dampening the movement
@@ -5997,9 +8896,11 @@ void bgunSwivelWithDamp(f32 screenx, f32 screeny, f32 crossdamp)
 	struct weapon *weapon = weaponFindById(bgunGetWeaponNum(HAND_RIGHT));
 	f32 aimdamp = PAL ? weapon->aimsettings->aimdamppal : weapon->aimsettings->aimdamp;
 
+#ifndef PD_ENABLE_VR // Removed for VR
 	if (aimdamp < crossdamp) {
 		aimdamp = crossdamp;
 	}
+#endif
 
 	bgunSwivel(screenx, screeny, crossdamp, aimdamp);
 }
@@ -6051,6 +8952,129 @@ void bgun0f0a0c44(s32 handnum, struct coord *arg1, struct coord *arg2)
 f32 g_ChaosSpreadMult = 1.0f;
 #endif
 
+#ifdef PD_ENABLE_VR
+void bgunCalculatePlayerShotSpread(struct coord* gunpos2d, struct coord* gundir2d, s32 handnum, bool dorandom)
+{
+    f32 spread = 0;
+    f32 scaledspread;
+    f32 randfactor;
+    struct weaponfunc* func = currentPlayerGetWeaponFunction(handnum);
+    struct player* player = g_Vars.currentplayer;
+    struct hand* hand = &player->hands[handnum];
+
+    if (func != NULL && (func->type & 0xff) == INVENTORYFUNCTYPE_SHOOT) {
+        struct weaponfunc_shoot* shootfunc = (struct weaponfunc_shoot*)func;
+        spread = shootfunc->spread;
+        spread *= g_ChaosSpreadMult; // port: Chaos Weapon Spread (hoisted into VR branch)
+    }
+
+    if (weaponHasAimFlag(bgunGetWeaponNum2(handnum), INVAIMFLAG_ACCURATESINGLESHOT)
+        && player->hands[handnum].burstbullets == 1) {
+        spread *= 0.25f;
+    }
+
+    if (bmoveGetCrouchPos() == CROUCHPOS_SQUAT
+            && !classicOptionActive(CHEAT_CLASSIC_NOCROUCHACC, MPOPTION_CLASSIC_NOCROUCHACC)) { // port: Classic Options (hoisted into VR branch)
+        spread *= 0.5f;
+    }
+
+    if (player->hands[HAND_LEFT].inuse) {
+        spread *= 1.5f;
+    }
+
+    scaledspread = 120.0f * spread / viGetFovY();
+
+    // --- VR: firing direction from the hand ---
+    struct coord vr_dir = { 0, 0, -1 };
+    mtx4RotateVecInPlace(&hand->posrotmtx, &vr_dir);
+    vr_dir.y = -vr_dir.y;
+
+    float norm = sqrtf(vr_dir.x * vr_dir.x + vr_dir.y * vr_dir.y + vr_dir.z * vr_dir.z);
+    if (norm > 0.0001f) {
+        vr_dir.x /= norm;
+        vr_dir.y /= norm;
+        vr_dir.z /= norm;
+    }
+    // --- Apply spread to vr_dir ---
+    // Build two axes perpendicular to vr_dir (right and up),
+    // then perturb the direction by a random angle within that plane.
+    if (dorandom && scaledspread > 0.0f) {
+        // "right" axis: perpendicular to vr_dir in the horizontal plane
+        struct coord right;
+        struct coord world_up = { 0.0f, 1.0f, 0.0f };
+
+        // If vr_dir is nearly vertical, use another reference vector
+        if (fabsf(vr_dir.y) > 0.99f) {
+            world_up.x = 1.0f;
+            world_up.y = 0.0f;
+            world_up.z = 0.0f;
+        }
+
+        // right = vr_dir × world_up
+        right.x = vr_dir.y * world_up.z - vr_dir.z * world_up.y;
+        right.y = vr_dir.z * world_up.x - vr_dir.x * world_up.z;
+        right.z = vr_dir.x * world_up.y - vr_dir.y * world_up.x;
+
+        float rlen = sqrtf(right.x*right.x + right.y*right.y + right.z*right.z);
+        if (rlen > 0.0001f) { right.x /= rlen; right.y /= rlen; right.z /= rlen; }
+
+        // up = right × vr_dir
+        struct coord up;
+        up.x = right.y * vr_dir.z - right.z * vr_dir.y;
+        up.y = right.z * vr_dir.x - right.x * vr_dir.z;
+        up.z = right.x * vr_dir.y - right.y * vr_dir.x;
+
+    // Convert scaledspread (pixels) to angle (radians)
+    // Same scale as the original: spread in pixels / screen width → angle
+        float spread_angle = scaledspread / camGetScreenWidth() * viGetFovY() * (3.14159265f / 180.0f);
+
+        if(VrWeaponRecoil && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum) && get_button_state(0, "grip")) {
+            spread_angle *= 0.5f; // spread -50%
+        }
+
+        float rx = (RANDOMFRAC() - 0.5f) * RANDOMFRAC() * spread_angle;
+        float ry = (RANDOMFRAC() - 0.5f) * RANDOMFRAC() * spread_angle;
+
+
+        vr_dir.x += right.x * rx + up.x * ry;
+        vr_dir.y += right.y * rx + up.y * ry;
+        vr_dir.z += right.z * rx + up.z * ry;
+
+        norm = sqrtf(vr_dir.x*vr_dir.x + vr_dir.y*vr_dir.y + vr_dir.z*vr_dir.z);
+        if (norm > 0.0001f) {
+            vr_dir.x /= norm;
+            vr_dir.y /= norm;
+            vr_dir.z /= norm;
+        }
+    }
+
+    *gundir2d = vr_dir;
+
+    // --- Project the muzzle into screen space ---
+    struct coord muzzlescreen;
+    muzzlescreen.x = hand->muzzlepos.x;
+    muzzlescreen.y = hand->muzzlepos.y;
+    muzzlescreen.z = hand->muzzlepos.z;
+    mtx4TransformVecInPlace(camGetWorldToScreenMtxf(), &muzzlescreen);
+
+    gunpos2d->x = muzzlescreen.x;
+    gunpos2d->y = muzzlescreen.y;
+
+    // --- Linear view-space Z for cam0f0b4c3c ---
+    float vz = camGetWorldToScreenMtxf()->m[0][2] * hand->muzzlepos.x
+               + camGetWorldToScreenMtxf()->m[1][2] * hand->muzzlepos.y
+               + camGetWorldToScreenMtxf()->m[2][2] * hand->muzzlepos.z
+               + camGetWorldToScreenMtxf()->m[3][2];
+
+    gunpos2d->z = (vz > 0.0f) ? vz : 1.0f;
+
+    // port: Chaos "backfire" (hoisted into VR branch; see flat branch for rationale)
+    if (g_ChaosBackfire && !player->isremote) {
+        gundir2d->x = -gundir2d->x;
+        gundir2d->z = -gundir2d->z;
+    }
+}
+#else
 void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2d, s32 handnum, bool dorandom)
 {
 	f32 crosspos[2];
@@ -6141,6 +9165,7 @@ void bgunCalculatePlayerShotSpread(struct coord *gunpos2d, struct coord *gundir2
 	}
 #endif
 }
+#endif /* PD_ENABLE_VR */
 
 void bgunCalculateBotShotSpread(struct coord *arg0, s32 weaponnum, s32 funcnum, bool arg3, s32 crouchpos, bool dual)
 {
@@ -6342,8 +9367,12 @@ void bgunTickSwitch2(void)
 			righthand = &player->hands[HAND_RIGHT];
 
 			if (ctrl->switchtoweaponnum == WEAPON_NONE) {
+#ifdef PD_ENABLE_VR
+                righthand->inuse = true;
+#else
 				lefthand->inuse = false;
 				righthand->inuse = false;
+#endif
 				ctrl->weaponnum = WEAPON_NONE;
 			} else {
 				bgunSetGunMemWeapon(ctrl->switchtoweaponnum);
@@ -6364,6 +9393,12 @@ void bgunTickSwitch2(void)
 			if (bgunDualWieldDisabled()) {
 				ctrl->dualwielding = false;
 			}
+#endif
+
+#ifdef PD_ENABLE_VR
+            // WEAPON_UNARMED (fists): always enable both VR hands
+            if (ctrl->weaponnum == WEAPON_UNARMED) // VR
+                ctrl->dualwielding = true;
 #endif
 
 			if (!ctrl->dualwielding) {
@@ -6526,9 +9561,17 @@ s32 bgunGetSwitchToWeapon(s32 handnum)
 		weaponnum = g_Vars.currentplayer->gunctrl.weaponnum;
 	}
 
+#ifdef PD_ENABLE_VR
+    // VR: Do not force WEAPON_NONE on the left hand if it is UNARMED or NONE
+    if (!g_Vars.currentplayer->gunctrl.dualwielding && handnum == HAND_LEFT
+        && weaponnum != WEAPON_UNARMED) {
+        weaponnum = WEAPON_UNARMED;
+	}
+#else
 	if (!g_Vars.currentplayer->gunctrl.dualwielding && handnum == HAND_LEFT) {
 		weaponnum = WEAPON_NONE;
 	}
+#endif
 
 	return weaponnum;
 }
@@ -6610,6 +9653,13 @@ void bgunCycleBack(void)
 		if (weaponnum2 == WEAPON_REMOTEMINE) {
 			weaponnum2 = WEAPON_NONE;
 		}
+
+#ifdef PD_ENABLE_VR
+        // VR
+        if (weaponnum2 == WEAPON_UNARMED) {
+            weaponnum2 = WEAPON_NONE;
+        }
+#endif
 
 #ifndef PLATFORM_N64
 		// Same dual-wield-disabled cycle fix as bgunCycleForward — pretend
@@ -7419,7 +10469,11 @@ void bgunDisarm(struct prop *attackerprop)
 		}
 
 		bgunEquipWeapon2(HAND_RIGHT, WEAPON_UNARMED);
+#ifdef PD_ENABLE_VR
+        bgunEquipWeapon2(HAND_LEFT, WEAPON_UNARMED); // VR
+#else
 		bgunEquipWeapon2(HAND_LEFT, WEAPON_NONE);
+#endif
 	}
 }
 
@@ -7627,6 +10681,7 @@ void bgunUpdateGangsta(struct hand *hand, s32 handnum, struct coord *arg2, struc
 	f32 tmp;
 	struct coord sp38 = {0, 0, 0};
 
+#ifndef PD_ENABLE_VR // VR: upstream comments out this entire body ("Removed for VR")
 	if (g_Vars.currentplayer->gunctrl.gangsta
 			&& funcdef
 			&& (funcdef->type & 0xff) == INVENTORYFUNCTYPE_SHOOT
@@ -7704,6 +10759,7 @@ void bgunUpdateGangsta(struct hand *hand, s32 handnum, struct coord *arg2, struc
 
 	arg2->y += 4.0f * hand->gangstarot;
 	arg2->x += 2.0f * hand->gangstarot * (handnum != HAND_RIGHT ? 1.0f : -1.0f);
+#endif /* !PD_ENABLE_VR */
 }
 
 /**
@@ -7940,6 +10996,15 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 			beamfar.z += beamnear.z;
 
 			lasersightSetBeam(handnum, 1, &beamnear, &beamfar);
+
+#ifdef PD_ENABLE_VR
+            if (show_laser_dot[handnum]) {
+                dotpos.x = hand->dotpos.x; dotpos.y = hand->dotpos.y; dotpos.z = hand->dotpos.z;
+                dotrot.x = hand->dotrot.x; dotrot.y = hand->dotrot.y; dotrot.z = hand->dotrot.z;
+                lasersightSetDot(handnum, &dotpos, &dotrot);
+            }
+#endif
+
 			return;
 		}
 
@@ -7991,6 +11056,45 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 		mtx4TransformVecInPlace(camGetProjectionMtxF(), &beamfar);
 		lasersightSetBeam(handnum, 1, &beamnear, &beamfar);
 
+#ifdef PD_ENABLE_VR
+        if (show_laser_dot[handnum]) {
+            dotpos.x = hand->dotpos.x; dotpos.y = hand->dotpos.y; dotpos.z = hand->dotpos.z;
+            dotrot.x = hand->dotrot.x; dotrot.y = hand->dotrot.y; dotrot.z = hand->dotrot.z;
+            lasersightSetDot(handnum, &dotpos, &dotrot);
+        }
+    } else if (VrlaserDotForALL) {
+
+        // ======= VR OTHER WEAPONS ONLY =======
+        // Node missing = no Falcon2 → create the slot with an invisible dummy beam
+        // then display the dot if the position is valid
+
+
+        // Left hand without a weapon should not have a dot
+        if (!hand->inuse) {
+            lasersightFree(handnum);
+            return;
+        }
+
+        if (vrLaserDotAllowed(weaponnum)
+            && (hand->dotpos.x != 0.0f || hand->dotpos.y != 0.0f || hand->dotpos.z != 0.0f))
+        {
+            struct coord dummyNear = {0.0f, 0.0f, 0.0f};
+            struct coord dummyFar  = {0.0f, 0.0f, 0.0f};
+            lasersightSetBeam(handnum, 0, &dummyNear, &dummyFar);
+
+			dotpos.x = hand->dotpos.x;
+			dotpos.y = hand->dotpos.y;
+			dotpos.z = hand->dotpos.z;
+			dotrot.x = hand->dotrot.x;
+			dotrot.y = hand->dotrot.y;
+			dotrot.z = hand->dotrot.z;
+			lasersightSetDot(handnum, &dotpos, &dotrot);
+		}
+    }else{
+        lasersightFree(handnum);
+
+	}
+#else
 		if (handnum == HAND_RIGHT && hand->hasdotinfo && !busy) {
 			dotpos.x = hand->dotpos.x;
 			dotpos.y = hand->dotpos.y;
@@ -8003,6 +11107,7 @@ void bgunUpdateLasersight(struct hand *hand, struct modeldef *modeldef, s32 hand
 			lasersightSetDot(handnum, &dotpos, &dotrot);
 		}
 	}
+#endif
 }
 
 /**
@@ -8551,6 +11656,12 @@ void bgunCreateFx(struct hand *hand, s32 handnum, struct weaponfunc *funcdef, s3
 	if (funcdef) {
 		ground = g_Vars.currentplayer->vv_ground;
 
+#ifdef PD_ENABLE_VR
+        // --- notifie le recul VR ---
+        vrRecoilNotifyShotFired(handnum);
+        //---
+#endif
+
 		if (modeldef && weaponnum != WEAPON_DY357MAGNUM && weaponnum != WEAPON_DY357LX) {
 			s32 partnum = MODELPART_GUN_CARTEJECTPOS;
 			struct modelnode *node;
@@ -8720,6 +11831,7 @@ void bgun0f0a5550(s32 handnum)
 
 	bgunUpdateBlend(hand, handnum);
 
+#ifndef PD_ENABLE_VR // VR: upstream deletes the xshift + base-position + aim-tracking blocks
 	if (handnum == HAND_RIGHT) {
 		if (weaponHasFlag(bgunGetWeaponNum2(HAND_LEFT), WEAPONFLAG_00000040)) {
 			hand->xshift += 2.0f * g_Vars.lvupdate60freal / 240.0f;
@@ -8766,6 +11878,7 @@ void bgun0f0a5550(s32 handnum)
 
 	sp274.y += player->guncloseroffset * 5.0f / -90.0f * 50.0f;
 	sp274.z -= player->guncloseroffset * 15.0f / -90.0f * 50.0f;
+#endif /* !PD_ENABLE_VR */
 
 #ifndef PLATFORM_N64
 	// adjust viewmodel position for different FOVs
@@ -8773,6 +11886,7 @@ void bgun0f0a5550(s32 handnum)
 	sp274.z += bgunGetFovOffsetZ();
 #endif
 
+#ifndef PD_ENABLE_VR // VR: upstream deletes the positional recoil jitter + fspare aim tracking
 	if (hand->firing && shootfunc && g_Vars.lvupdate240 != 0 && shootfunc->recoilsettings != NULL) {
 		sp274.x += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->xrange * hand->finalmult[0];
 		sp274.y += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->yrange * hand->finalmult[0];
@@ -8792,6 +11906,7 @@ void bgun0f0a5550(s32 handnum)
 
 	sp274.f[0] += fspare1;
 	sp274.f[1] -= fspare2;
+#endif /* !PD_ENABLE_VR */
 
 	hand->visible = true;
 
@@ -8925,13 +12040,14 @@ void bgun0f0a5550(s32 handnum)
 	mtx4MultMtx4InPlace(&sp284, &sp234);
 	mtx4Copy(&sp234, &sp2c4);
 
-#ifndef PLATFORM_N64
+#if !defined(PLATFORM_N64) && !defined(PD_ENABLE_VR)
 	// CHEAT_MIRROR: the gun also SLIDES laterally with the aim (fspare1 = the
 	// guntransside translation from crosspos2, added to sp274.f[0] above). That
 	// slide is rendered mirror-imaged, so flip just the aim-slide component here —
 	// after the yaw has already consumed sp274.x, leaving the (already-correct)
 	// pivot undisturbed; the base hand position stays put. Now the gun both pivots
 	// AND slides toward the aim.
+	// (VR: fspare1 is never computed — upstream deleted the aim-tracking block.)
 	if (cheatIsActive(CHEAT_MIRROR)) {
 		sp274.f[0] -= 2.0f * fspare1;
 	}
@@ -8958,11 +12074,55 @@ void bgun0f0a5550(s32 handnum)
 		hand->gunmodel.matrices = (Mtxf *)mtxallocation;
 		hand->handmodel.matrices = (Mtxf *)mtxallocation;
 
+#ifdef PD_ENABLE_VR
+        // VR...
+        struct hand *rhand = &player->hands[HAND_RIGHT];
+        struct hand *lhand = &player->hands[HAND_LEFT];
+
+        // VR - adjust weapon size according to the level's vr_world_scale
+        float bg_scale = bgGetScaleBg2Gfx();
+        VrCopyScale = bgGetScaleBg2Gfx();
+        if (bg_scale != 1.0f && bg_scale != 0.0f) {
+            mtx00015f04(1.0f * bg_scale, &sp2c4);
+
+            // 2. Correct the position relative to the camera (translation vector)
+            // Reduce the offset so that vr_world_scale restores it to the correct size
+            sp2c4.m[3][0] *= bg_scale; // Axe X
+            sp2c4.m[3][1] *= bg_scale; // Axe Y
+            sp2c4.m[3][2] *= bg_scale; // Axe Z
+        }
+        // ----------------------------
+
+
+        // VR laser for all guns
+        if (hand->visible) {
+            bgunUpdateLasersight(hand, modeldef, handnum, mtxallocation);
+        }
+
+
+        if ((weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP) || weaponnum == WEAPON_UNARMED) &&
+            handnum == HAND_LEFT) {
+			mtx00015e24(-1, &sp2c4);
+		}
+
+
+        // Adjust the position of the K7 Avenger using the pivot point as well
+        // Maybe TODO this for all weapons, replace code in vr_gun_pos_rot ?
+        if(g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_K7AVENGER) {
+            sp2c4.m[3][0] -= sp2c4.m[0][0] * -3.00f + sp2c4.m[1][0] * 0.00f + sp2c4.m[2][0] * -15.00f;
+            sp2c4.m[3][1] -= sp2c4.m[0][1] * -3.00f + sp2c4.m[1][1] * 0.00f + sp2c4.m[2][1] * -15.00f;
+            sp2c4.m[3][2] -= sp2c4.m[0][2] * -3.00f + sp2c4.m[1][2] * 0.00f + sp2c4.m[2][2] * -15.00f;
+
+        }
+
+        mtx00015f04(0.10000001f, &sp2c4);
+#else
 		if (weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP) && handnum == HAND_LEFT) {
 			mtx00015e24(-1, &sp2c4);
 		}
 
 		mtx00015f04(0.10000001f, &sp2c4);
+#endif
 
 		mtx4Copy(&sp2c4, (Mtxf *)mtxallocation);
 
@@ -9176,6 +12336,58 @@ void bgun0f0a5550(s32 handnum)
 				*sp1e4[2] = false;
 			}
 
+#ifdef PD_ENABLE_VR
+            s32 currentWeapon = player->hands[HAND_RIGHT].gset.weaponnum;
+            bool CrossbowLaserUnarmed =
+                    currentWeapon == WEAPON_CROSSBOW || currentWeapon == WEAPON_LASER || (!VrMotionThrowing && currentWeapon == WEAPON_UNARMED);
+            if (!CrossbowLaserUnarmed) {
+                vr_wrist_rot(hand, modeldef, hand->gunmodel.matrices, bg_scale);
+            }
+
+            if (vrSwitchGun == true && modeldef != NULL) {
+                vrBuildHandIndexList(player->gunctrl.handmodeldef);
+                vrBuildMtxPartsList(hand, player->gunctrl.gunmodeldef, true);
+                vrSwitchGun = false;
+            }
+
+            if (VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
+                VrTwoHandGrip = get_button_state(0, "grip");
+            }
+
+            if (weaponnum == WEAPON_REMOTEMINE || weaponnum == WEAPON_LASER
+                || (VrTwoHandGrip && VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum))) {
+                // Nothing
+            } else {
+                if (hand->state != HANDSTATE_RELOAD) {
+                    vrHideOnly(LeftHandMtx);
+                    vrHideGunParts(hand->gunmodel.matrices);
+                    vrBuildMtxPartsList(hand, player->gunctrl.gunmodeldef, false);
+                }
+            }
+
+            if(!VRDebugMtxPos) {
+                if (VrInReloadLoop && !VrReloadDisable && VrReloadGrip && MtxReplacePart
+                    && g_Vars.currentplayer->gunctrl.weaponnum >= 0
+                    && g_Vars.currentplayer->gunctrl.weaponnum < NUM_WEAPONS
+                    && ReloadZone >= 0 && ReloadZone < VR_RELOAD_MAX_ZONES) { // VR: upstream UB guard (raw gVrReloadZones index by gunctrl.weaponnum/ReloadZone)
+                    const VrReloadZoneConfig *cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
+                    if (cfg->valid) {
+                        vrHideOnly(cfg->partsToShowId);
+                        vrHideGunParts(rhand->gunmodel.matrices);
+                    }
+                }
+            }
+
+
+            bool FALCON2S = g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2
+                            || g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2_SILENCER
+                            || g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2_SCOPE;
+
+            if(FALCON2S && sVrMagPhysicallyInGun && !VrInReloadLoop){
+                bgunSetPartVisible(MODELPART_FALCON2_MAGAZINE1, true, hand, modeldef);
+            }
+#endif
+
 			switch (weaponnum) {
 			case WEAPON_SNIPERRIFLE:
 				bgunUpdateSniperRifle(modeldef, mtxallocation);
@@ -9319,7 +12531,22 @@ void bgun0f0a5550(s32 handnum)
 		bgunTickEject(hand, modeldef, isdetonator);
 	}
 
-#ifndef PLATFORM_N64
+#ifdef PD_ENABLE_VR
+	// VR: upstream deletes the else { lasersightFree } — bgunUpdateLasersight now
+	// runs for every visible gun earlier in this function and frees internally.
+	// Netplay isremote guard + net co-op single-viewport gate hoisted from the
+	// flat branch (remote pawns must not clobber the local laser-sight slots).
+	if (g_Vars.currentplayer->isremote) {
+		// remote player in net co-op: leave the local laser-sight slots alone
+	} else if ((PLAYERCOUNT() == 1 || (LOCALPLAYERCOUNT() == 1 && !g_Vars.normmplayerisrunning))
+			&& IS8MB() && hand->visible
+			&& weaponnum >= WEAPON_FALCON2 && weaponnum <= WEAPON_FALCON2_SCOPE) {
+		bgunUpdateLasersight(hand, modeldef, handnum, mtxallocation);
+	}
+//    else { // Deletes for VR
+//        lasersightFree(handnum);
+//    }
+#elif !defined(PLATFORM_N64)
 	// Falcon 2 laser sight: the engine only updates it in true single-player
 	// (PLAYERCOUNT()==1, multiple viewports can't afford it); net co-op has a
 	// single local viewport, so re-enable it for net co-op too. g_LaserSights[]
@@ -12454,7 +15681,12 @@ void bgunRender(Gfx **gdlptr)
 #endif
 			}
 
+#ifdef PD_ENABLE_VR
+            if (weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP) ||
+                weaponnum == WEAPON_UNARMED) { // VR mirror flip face
+#else
 			if (weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP)) {
+#endif
 				gSPClearGeometryMode(renderdata.gdl++, G_CULL_BOTH);
 
 				if (i == HAND_RIGHT) {
@@ -12550,7 +15782,12 @@ void bgunRender(Gfx **gdlptr)
 			// Clean up
 			gdl = renderdata.gdl;
 
+#ifdef PD_ENABLE_VR
+            if (weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP) ||
+                weaponnum == WEAPON_UNARMED) { // VR mirror flip face
+#else
 			if (weaponHasFlag(weaponnum, WEAPONFLAG_DUALFLIP)) {
+#endif
 				gSPClearGeometryMode(gdl++, G_CULL_BOTH);
 			}
 
@@ -12567,6 +15804,300 @@ void bgunRender(Gfx **gdlptr)
 			}
 #endif
 		}
+
+#ifdef PD_ENABLE_VR
+        // VR: Display left hand and gun part for reload
+        struct coord vr_sp274 = {0, 0, 0};
+        struct coord vr_sp1a4, vr_sp118;
+        struct hand *rhand = &player->hands[HAND_RIGHT];
+        struct hand *lhand = &player->hands[HAND_LEFT];
+
+        bool OnlyWeapons = g_Vars.currentplayer->gunctrl.weaponnum < 36;
+        if (OnlyWeapons && g_VrCopyWepModeldef != NULL
+            && g_Vars.currentplayer->gunctrl.dualwielding == false) {
+
+            lhand->useposrot = false;
+            vr_gun_pos_rot(HAND_LEFT, lhand);
+
+            // Right-hand based transition animation ---
+            f32 pitchAngle = 0.0f;
+            s32 delayLower = g_Vars.normmplayerisrunning ? TICKS(12) : TICKS(16);
+            s32 delayRaise = g_Vars.normmplayerisrunning ? TICKS(12) : TICKS(23);
+
+            if (rhand->state == HANDSTATE_CHANGEGUN) {
+                if (rhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER || rhand->stateminor == HANDSTATEMINOR_AUTOSWITCH_UNEQUIP) {
+                    pitchAngle = (f32)rhand->stateframes * MAX_PITCH / (f32)delayLower;
+
+                } else if (rhand->stateminor == HANDSTATEMINOR_CHANGEGUN_RAISE || rhand->stateminor == HANDSTATEMINOR_CHANGEGUN_EQUIP) {
+                    pitchAngle = (f32)(delayRaise - rhand->count60) * MAX_PITCH / (f32)delayRaise;
+                }
+            } else if (rhand->state == HANDSTATE_AUTOSWITCH) {
+                if (rhand->stateminor == HANDSTATEMINOR_AUTOSWITCH_UNEQUIP) {
+                    pitchAngle = (f32)rhand->stateframes * MAX_PITCH / (f32)delayLower;
+                }
+            }
+            // Apply pitch, move the copy hand up/down
+            if (pitchAngle > 0.0f) {
+                if (pitchAngle > MAX_PITCH) pitchAngle = MAX_PITCH;
+                bgunSetArmPitch(lhand, pitchAngle);
+            }
+
+
+            vr_sp274.y -= bgunGetFovOffsetY();
+            vr_sp274.z += bgunGetFovOffsetZ();
+
+            mtx4LoadIdentity(&vr_sp234);
+
+            if (lhand->useposrot) {
+                vr_sp274.f[0] += lhand->posrotmtx.m[3][0];
+                vr_sp274.f[1] += lhand->posrotmtx.m[3][1];
+                vr_sp274.f[2] += lhand->posrotmtx.m[3][2];
+                mtx00015be0(&lhand->posrotmtx, &vr_sp234);
+                vr_sp234.m[3][0] = 0.0f;
+                vr_sp234.m[3][1] = 0.0f;
+                vr_sp234.m[3][2] = 0.0f;
+            }
+            else {
+                lhand->rotxoffset = 0.0f;
+                lhand->posoffset.x = 0.0f;
+                lhand->posoffset.y = 0.0f;
+                lhand->posoffset.z = 0.0f;
+            }
+
+            vr_sp1a4.x = 0.0f;
+            vr_sp1a4.y = M_PI;
+            vr_sp1a4.z = 0.0f;
+            mtx4LoadRotation(&vr_sp1a4, &vr_sp164);
+            vr_sp1a4.y = 0.0f;
+
+            bgun0f0a24f0(&vr_sp118, HAND_LEFT);
+            vr_sp1a4.y = -bgun0f0a2498(vr_sp118.x, vr_sp118.z, vr_sp274.f[0], vr_sp274.f[2]);
+            vr_sp1a4.x = bgun0f0a2498(vr_sp118.y, vr_sp118.z, vr_sp274.f[1], vr_sp274.f[2]);
+
+            mtx4LoadRotation(&vr_sp1a4, &vr_sp124);
+            mtx4MultMtx4(&vr_sp124, &vr_sp164, &vr_sp284);
+            mtx4MultMtx4InPlace(&vr_sp284, &vr_sp234);
+            mtx4Copy(&vr_sp234, &vr_sp2c4);
+            mtx4SetTranslation(&vr_sp274, &vr_sp2c4);
+
+
+
+            // VR Fix left Hand position for some weapons.
+            if(g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_DRAGON
+               || g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_SUPERDRAGON){
+                vr_sp2c4.m[3][0] -= vr_sp2c4.m[0][0] * 20.0f + vr_sp2c4.m[1][0] * 0.0f + vr_sp2c4.m[2][0] * 32.0f;
+                vr_sp2c4.m[3][1] -= vr_sp2c4.m[0][1] * 20.0f + vr_sp2c4.m[1][1] * 0.0f + vr_sp2c4.m[2][1] * 32.0f;
+                vr_sp2c4.m[3][2] -= vr_sp2c4.m[0][2] * 20.0f + vr_sp2c4.m[1][2] * 0.0f + vr_sp2c4.m[2][2] * 32.0f;
+            }else if (g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_K7AVENGER){
+                vr_sp2c4.m[3][0] -= vr_sp2c4.m[0][0] * -4.0f + vr_sp2c4.m[1][0] * 0.0f + vr_sp2c4.m[2][0] * 4.0f;
+                vr_sp2c4.m[3][1] -= vr_sp2c4.m[0][1] * -4.0f + vr_sp2c4.m[1][1] * 0.0f + vr_sp2c4.m[2][1] * 4.0f;
+                vr_sp2c4.m[3][2] -= vr_sp2c4.m[0][2] * -4.0f + vr_sp2c4.m[1][2] * 0.0f + vr_sp2c4.m[2][2] * 4.0f;
+            }else{
+                vr_sp2c4.m[3][0] -= vr_sp2c4.m[0][0] * 20.0f + vr_sp2c4.m[1][0] * 0.0f + vr_sp2c4.m[2][0] * 0.0f;
+                vr_sp2c4.m[3][1] -= vr_sp2c4.m[0][1] * 20.0f + vr_sp2c4.m[1][1] * 0.0f + vr_sp2c4.m[2][1] * 0.0f;
+                vr_sp2c4.m[3][2] -= vr_sp2c4.m[0][2] * 20.0f + vr_sp2c4.m[1][2] * 0.0f + vr_sp2c4.m[2][2] * 0.0f;
+            }
+
+
+            if(hand->animmode == HANDANIMMODE_IDLE && rhand->state == HANDSTATE_IDLE) {
+                VrReloadGrip = get_button_state(0, "grip");
+            }
+
+            if((VrInReloadLoop || VrGrabMagBelt) && get_button_state(1, "trigger")) {
+                VrReloadGrip = false;
+            }
+            if(g_Vars.currentplayer->pausemode == PAUSEMODE_PAUSED){
+                VrReloadGrip = false;
+            }
+
+            if(VrManualReloading) {
+
+                if(!sVrMagPhysicallyInGun) {
+                    vrUpdateBeltMagGrab();
+                }
+                vrReloadZone();
+            }
+
+            mtx00015f04(0.10000001f, &vr_sp2c4);
+
+            g_VrCopyWepSp2c4 = vr_sp2c4;
+            g_VrCopyWepReadyToRender = true;
+        }
+
+
+        // Save the free position of the left hand before the snap
+        g_VrLeftHandFreeSp2c4 = g_VrCopyWepSp2c4;
+
+        if (!VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum)) {
+            vrApplyTwoHandGrip(
+                    rhand,
+                    lhand,
+                    &g_VrCopyWepSp2c4
+            );
+        }
+
+
+        if (g_VrCopyWepModeldef != NULL
+            && g_VrCopyWepReadyToRender
+            && g_Vars.currentplayer->gunctrl.dualwielding == false
+            && OnlyWeapons
+            && g_Vars.currentplayer->gunctrl.weaponnum != WEAPON_LASER) {
+
+            g_VrCopyWepReadyToRender = false;
+
+            renderdata.gdl = gdl;
+            renderdata.zbufferenabled = true;
+            renderdata.unk30 = 4;
+            renderdata.envcolour = player->gunshadecol[0] << 24
+                                   | player->gunshadecol[1] << 16
+                                   | player->gunshadecol[2] << 8
+                                   | player->gunshadecol[3];
+            renderdata.cullmode = G_CULL_BOTH;
+
+            if (g_VrCopyWepModeldef != NULL && g_VrCopyWepModel.matrices != NULL) {
+
+                s32 gnm = g_VrCopyWepModeldef->nummatrices;
+                Mtxf *vr_mtxalloc = (Mtxf *) gfxAllocate(gnm * sizeof(Mtxf));
+
+                if (vrSwitchCopyGun == true) {
+                    vrBuildMtxPartsList(hand, g_VrCopyWepModeldef, false);
+                    vrSwitchCopyGun = false;
+                }
+
+                if (vr_mtxalloc) {
+                    // Render VrCopyWep
+                    g_VrCopyWepModel.matrices = vr_mtxalloc;
+                    mtx4Copy(&g_VrCopyWepSp2c4, vr_mtxalloc);
+                    renderdata.unk00 = &g_VrCopyWepSp2c4;
+                    renderdata.unk10 = g_VrCopyWepModel.matrices;
+
+                    // For now - beta: reloading only supported for Falcon
+                    bool FALCON2S = g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2
+                                    || g_Vars.currentplayer->gunctrl.weaponnum ==
+                                       WEAPON_FALCON2_SILENCER
+                                    ||
+                                    g_Vars.currentplayer->gunctrl.weaponnum == WEAPON_FALCON2_SCOPE;
+
+                    if (sVrReloadTransActive) {
+                        sVrReloadTransT += sVrReloadTransSpd;
+                        if (sVrReloadTransT >= 1.0f) {
+                            sVrReloadTransT = 1.0f;
+                            sVrReloadTransActive = false;
+                        }
+
+                        for (int i = 0; i < sVrReloadSnapCount; i++) {
+                            mtxfLerp(&sVrReloadMtxSnapA[i],
+                                     &sVrReloadMtxSnapB[i],
+                                     sVrReloadTransT,
+                                     &g_VrCopyWepModel.matrices[i]);
+                        }
+                        if (FALCON2S) vrHideAllExcept(LeftHandAndRightMagMtx);
+                        else vrHideAllExcept(LeftHandMtx);
+
+                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                        MtxReplacePart = false;
+
+                    } else if (FALCON2S && VrInReloadLoop && !VrReloadDisable && VrReloadGrip) {
+                        modelUpdateRelations(&g_VrCopyWepModel);
+                        modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
+
+                        const VrReloadZoneConfig *cfg = &gVrReloadZones[g_Vars.currentplayer->gunctrl.weaponnum][ReloadZone];
+                        if (cfg->valid) {
+                            vrHideAllExcept(cfg->partsToShowId);
+                            vrHideGunParts(g_VrCopyWepModel.matrices);
+                            MtxReplacePart = true;
+                        }
+                    } else if (FALCON2S && VrGrabMagBelt && VrReloadGrip) {
+                        modelUpdateRelations(&g_VrCopyWepModel);
+                        modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
+
+
+                        // Use the same config as Zone 0
+                        const VrReloadZoneConfig *zone0 = NULL;
+                        s32 weaponnum = g_Vars.currentplayer->gunctrl.weaponnum;
+
+                        if (weaponnum >= 0 && weaponnum < NUM_WEAPONS) {
+                            const VrReloadZoneConfig *cfg = &gVrReloadZones[weaponnum][0];
+                            if (cfg->valid) {
+                                zone0 = cfg;
+                            }
+                        }
+
+                        if (zone0) {
+                            s32 _wep = g_Vars.currentplayer->gunctrl.weaponnum;
+                            int _id = VR_ANIM_ID(_wep, 0); // zone 0
+                            struct hand tempHand = *rhand;
+                            tempHand.animload = -1;
+                            modelSetAnimation(&tempHand.gunmodel, _id, false, zone0->animFrameStart,
+                                              0, 0.0f);
+                            g_VrCopyWepModel.anim = tempHand.gunmodel.anim;
+                            vrHideAllExcept(zone0->partsToShowId);
+                        }
+
+                        vrHideGunParts(g_VrCopyWepModel.matrices);
+
+
+                    } else if ((rhand->state == HANDSTATE_RELOAD)
+                               || (VrTwoHandGrip &&
+                            VrTwoHandsGun(g_Vars.currentplayer->gunctrl.weaponnum))) {
+                        modelUpdateRelations(&g_VrCopyWepModel);
+                        modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
+                        vrHideAllExcept(HideAll);
+                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                    } else {
+                        g_VrCopyWepModel.anim = NULL;
+                        modelUpdateRelations(&g_VrCopyWepModel);
+                        modelSetMatricesWithAnim(&renderdata, &g_VrCopyWepModel);
+
+                        if (FALCON2S) vrHideAllExcept(LeftHandAndRightMagMtx);
+                        else vrHideAllExcept(LeftHandMtx);
+
+                        vrHideGunParts(g_VrCopyWepModel.matrices);
+
+                    }
+                    //-------------------
+
+                    if (player->hands[HAND_LEFT].state == HANDSTATE_CHANGEGUN
+                        || lhand->stateminor == HANDSTATEMINOR_CHANGEGUN_LOWER) {
+                        vrHideAllExcept(HideAll);
+                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                    }
+
+
+                    s32 currentWeapon = player->hands[HAND_RIGHT].gset.weaponnum;
+                    bool CrossbowLaserUnarmed =
+                            currentWeapon == WEAPON_CROSSBOW || currentWeapon == WEAPON_LASER || (!VrMotionThrowing && currentWeapon == WEAPON_UNARMED);
+                    if (!CrossbowLaserUnarmed) {
+                        // TODO VR fixe left wrist rot on vr_world_scale = 42.5f levels
+                        vr_wrist_rot(lhand, g_VrCopyWepModeldef, g_VrCopyWepModel.matrices, VrCopyScale);
+                    }
+
+                    if (VrManualReloading && FALCON2S) {
+                        vrPlaceRightMagOnBelt();
+                    }
+
+                    if (hand->state == HANDSTATE_RELOAD) {
+                        vrHideAllExcept(HideAll);
+                        vrHideGunParts(g_VrCopyWepModel.matrices);
+                    }
+
+                    modelRender(&renderdata, &g_VrCopyWepModel);
+                    mtxF2LBulk(g_VrCopyWepModel.matrices, gnm);
+
+                    // ── Render left hand and weapon part ─────────────────────────
+                    if (g_VrCopyHandModeldef != NULL) {
+                        g_VrCopyHandModel.matrices = g_VrCopyWepModel.matrices;  // Same buffer as the weapon
+                        modelUpdateRelations(&g_VrCopyHandModel);
+                        modelRender(&renderdata, &g_VrCopyHandModel);
+                    }
+
+                }
+            }
+
+
+            gdl = renderdata.gdl;
+        }
+#endif /* PD_ENABLE_VR */
 	}
 
 	casingsRender(&gdl);
@@ -13224,6 +16755,19 @@ s32 bgunConsiderToggleGunFunction(s32 usedowntime, bool trigpressed, bool fromac
 		}
 
 		return USETIMER_STOP;
+#ifdef PD_ENABLE_VR
+        case WEAPON_FALCON2:
+        case WEAPON_FALCON2_SCOPE:
+        case WEAPON_FALCON2_SILENCER:
+        case WEAPON_DY357MAGNUM:
+        case WEAPON_DY357LX:
+        case WEAPON_COMBATKNIFE:
+            if (VrMotionThrowing) {
+                // VR: disable function switching via the standard key
+                // (let the VR logic handle FUNC_SECONDARY)
+                return USETIMER_STOP;
+            }
+#endif
 	case WEAPON_MAULER:
 	case WEAPON_CMP150:
 	case WEAPON_K7AVENGER:
@@ -13310,6 +16854,23 @@ bool bgunIsUsingSecondaryFunction(void)
  *
  * This function is not called during cutscenes.
  */
+#ifdef PD_ENABLE_VR
+// Rotate a world-space vector v into the local space of quaternion q
+// = multiply by the conjugate (qw, -qx, -qy, -qz)
+static void worldToLocal(const float q[4], const float v[3], float out[3]) // VR
+{
+    float qw =  q[0], qx = -q[1], qy = -q[2], qz = -q[3];
+
+    float tx = 2.0f * (qy * v[2] - qz * v[1]);
+    float ty = 2.0f * (qz * v[0] - qx * v[2]);
+    float tz = 2.0f * (qx * v[1] - qy * v[0]);
+
+    out[0] = v[0] + qw * tx + qy * tz - qz * ty;
+    out[1] = v[1] + qw * ty + qz * tx - qx * tz;
+    out[2] = v[2] + qw * tz + qx * ty - qy * tx;
+}
+#endif
+
 void bgunTickGameplay(bool triggeron)
 {
 	s32 gunsfiring[2] = {false, false};
@@ -13342,7 +16903,11 @@ void bgunTickGameplay(bool triggeron)
 			bgunEquipWeapon(WEAPON_UNARMED);
 		}
 
+#ifdef PD_ENABLE_VR
+        g_Vars.currentplayer->gunctrl.dualwielding = true; // VR dualwielding on start
+#else
 		g_Vars.currentplayer->gunctrl.dualwielding = false;
+#endif
 		g_Vars.currentplayer->devicesactive = 0;
 
 		chr->cloakpause = 0;
@@ -13388,6 +16953,287 @@ void bgunTickGameplay(bool triggeron)
 		g_Vars.currentplayer->hands[HAND_RIGHT].firing = false;
 	}
 
+#ifdef PD_ENABLE_VR
+    // VR...
+    static bool vr_hand_triggered[2] = {false, false};
+    int handnums[2] = {HAND_RIGHT, HAND_LEFT};
+    int handnum = 0;
+    int ctrlIndex = 0;
+    bool vr_in_motion_triggered = false;
+
+    struct hand *hand = &player->hands[handnum];
+    struct weaponfunc *func = gsetGetWeaponFunction(&hand->gset);
+
+    if(hand->gset.weaponfunc == FUNC_SECONDARY){ // only for vr_input.cpp
+        VR_FUNC_SECONDARY = true;
+    }else{
+        VR_FUNC_SECONDARY = false;
+    }
+
+    if(VrMotionThrowing) {
+        vr_R_trigger = get_button_state(1, "trigger"); //  for knif
+        vr_L_trigger = get_button_state(0, "trigger"); //  for knif
+    }
+
+    for (int i = 0; i < 2; i++) {
+        handnum = handnums[i];
+        hand = &player->hands[handnum];
+        weaponnum = player->hands[handnum].gset.weaponnum;
+        ctrlIndex = (handnum == HAND_RIGHT) ? 1 : 0;
+
+        float localVel[3];
+        worldToLocal(gCtrlQuat[ctrlIndex], vr_ctrl_velocity[ctrlIndex], localVel);
+        vr_set_motion_triggered = false;
+
+        if(VrMotionThrowing) {
+            // --- Record the peak velocity for grenades, mines... ---
+            if ((weaponnum == WEAPON_GRENADE ||
+                 weaponnum == WEAPON_NBOMB ||
+                 weaponnum == WEAPON_ECMMINE ||
+                 weaponnum == WEAPON_PROXIMITYMINE ||
+                 weaponnum == WEAPON_TIMEDMINE ||
+                 weaponnum == WEAPON_REMOTEMINE) && triggeron) {
+
+                vr_record_throw_sample(
+                        ctrlIndex,
+                        vr_ctrl_velocity[ctrlIndex][0],
+                        vr_ctrl_velocity[ctrlIndex][1],
+                        vr_ctrl_velocity[ctrlIndex][2]
+                );
+
+            }
+
+
+            if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_RIGHT && vr_R_trigger &&
+                !vr_R_knife_sec_anim_run) {
+                bgunSetState(HAND_RIGHT, HANDSTATE_IDLE);
+                bgunStartAnimation(vr_knife_sec_anim, HAND_RIGHT, hand);
+                vr_R_knife_sec_anim_run = true;
+                vr_R_func_secondary_knife = true;
+            } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_RIGHT && vr_R_trigger &&
+                       vr_R_knife_sec_anim_run) {
+                vr_R_func_secondary_knife = true;
+                f32 current_frame = bgun0f09815c(hand);
+                if (hand->unk0ce8 == vr_knife_sec_anim && current_frame >= 46.00f) {
+                    hand->unk0ce8 = NULL;
+                }
+                continue;
+            } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_RIGHT && !vr_R_trigger &&
+                       vr_R_func_secondary_knife) {
+                bgunStartAnimation(vr_knife_sec_anim_throw, HAND_RIGHT, hand);
+                vr_throw_cancelled = true;
+                vr_record_throw_sample(
+                        ctrlIndex,
+                        vr_ctrl_velocity[ctrlIndex][0],
+                        vr_ctrl_velocity[ctrlIndex][1],
+                        vr_ctrl_velocity[ctrlIndex][2]
+                );
+                vr_R_knife_sec_anim_run = false;
+                vr_R_func_secondary_knife = false;
+                hand->gset.weaponfunc = FUNC_SECONDARY;
+                bgunSetState(HAND_RIGHT, HANDSTATE_ATTACK);
+                continue;
+            }
+
+
+            if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT && vr_L_trigger &&
+                !vr_L_knife_sec_anim_run) {
+                bgunSetState(HAND_LEFT, HANDSTATE_IDLE);
+                bgunStartAnimation(vr_knife_sec_anim, HAND_LEFT, hand);
+                vr_L_knife_sec_anim_run = true;
+                vr_L_func_secondary_knife = true;
+            } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT && vr_L_trigger &&
+                       vr_L_knife_sec_anim_run) {
+                vr_L_func_secondary_knife = true;
+                f32 current_frame = bgun0f09815c(hand);
+                if (hand->unk0ce8 == vr_knife_sec_anim && current_frame >= 46.00f) {
+                    hand->unk0ce8 = NULL;
+                }
+                continue;
+            } else if (weaponnum == WEAPON_COMBATKNIFE && handnum == HAND_LEFT && !vr_L_trigger &&
+                       vr_L_func_secondary_knife) {
+                vr_throw_cancelled = true;
+                vr_record_throw_sample(
+                        ctrlIndex,
+                        vr_ctrl_velocity[ctrlIndex][0],
+                        vr_ctrl_velocity[ctrlIndex][1],
+                        vr_ctrl_velocity[ctrlIndex][2]
+                );
+                vr_L_knife_sec_anim_run = false;
+                vr_L_func_secondary_knife = false;
+                hand->gset.weaponfunc = FUNC_SECONDARY;
+                bgunSetState(HAND_LEFT, HANDSTATE_ATTACK);
+                continue;
+            }
+
+
+            if (weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY) {
+
+                float threshold = 1.0f;
+                bool fwd = (localVel[2] < -threshold);
+                bool left = (localVel[1] > threshold);
+                bool up = (localVel[0] > threshold);
+                bool down = (localVel[0] < -threshold);
+                vr_set_motion_triggered = fwd || left || up || down;
+
+            } else if (weaponnum == WEAPON_UNARMED) {
+                vr_set_motion_triggered = (-localVel[0] < -2.0f) || (localVel[2] < -2.0f);
+
+            } else if (weaponnum == WEAPON_FALCON2 ||
+                       weaponnum == WEAPON_FALCON2_SCOPE ||
+                       weaponnum == WEAPON_FALCON2_SILENCER ||
+                       weaponnum == WEAPON_DY357MAGNUM ||
+                       weaponnum == WEAPON_DY357LX) {
+                vr_set_motion_triggered = (localVel[2] < -2.0f);
+            } else {
+                vr_hand_triggered[i] = false;
+                continue;
+            }
+
+
+            if (vr_set_motion_triggered && !vr_hand_triggered[i]) {
+
+                if (weaponnum == WEAPON_COMBATKNIFE && hand->gset.weaponfunc == FUNC_PRIMARY) {
+                    vr_in_motion_triggered = true;
+                    // Cancel any ongoing animation and put the hand back to idle
+                    bgunResetAnim(hand);
+                    hand->animmode = HANDANIMMODE_IDLE;
+                    // Trigger the attack directly
+                    bgunSetState(handnum, HANDSTATE_ATTACK);
+
+                }
+
+                if (weaponnum == WEAPON_FALCON2 ||
+                    weaponnum == WEAPON_FALCON2_SCOPE ||
+                    weaponnum == WEAPON_FALCON2_SILENCER ||
+                    weaponnum == WEAPON_DY357MAGNUM ||
+                    weaponnum == WEAPON_DY357LX) {
+
+                    vr_in_motion_triggered = true;
+                    hand->gset.weaponfunc = FUNC_SECONDARY;
+                    // Cancel any ongoing animation and put the hand back to idle
+                    bgunResetAnim(hand);
+                    hand->animmode = HANDANIMMODE_IDLE;
+                    // Trigger the attack directly
+                    bgunSetState(handnum, HANDSTATE_ATTACK);
+
+                }
+
+                if (handnum == HAND_RIGHT) {
+                    gunsfiring[HAND_RIGHT] = player->hands[HAND_RIGHT].inuse;
+                } else if (handnum == HAND_LEFT) {
+                    gunsfiring[HAND_LEFT] = player->hands[HAND_LEFT].inuse;
+                }
+                vr_hand_triggered[i] = true;
+            }
+
+
+            if (handnum == HAND_RIGHT && weaponnum == WEAPON_UNARMED && vr_button_R_grip) {
+                if (vr_is_R_fist || vr_set_motion_triggered || vr_hand_triggered[i]) {
+                    bgunStartAnimation(vr_hand_grip_anim, handnum, hand);
+                }
+                f32 current_frame = bgun0f09815c(hand);
+                if (hand->unk0ce8 == vr_hand_grip_anim && current_frame >= 28.00f) {
+                    hand->unk0ce8 = NULL;
+                }
+                vr_is_R_fist = false;
+            } else if (!vr_is_R_fist && handnum == HAND_RIGHT && weaponnum == WEAPON_UNARMED &&
+                       !vr_button_R_grip) {
+                hand->animmode = HANDANIMMODE_IDLE;
+                vr_is_R_fist = true;
+            }
+
+            if (handnum == HAND_LEFT && weaponnum == WEAPON_UNARMED && vr_button_L_grip) {
+                if (vr_is_L_fist || vr_set_motion_triggered || vr_hand_triggered[i]) {
+                    bgunStartAnimation(vr_hand_grip_anim, handnum, hand);
+                }
+                f32 current_frame = bgun0f09815c(hand);
+                if (hand->unk0ce8 == vr_hand_grip_anim && current_frame >= 28.00f) {
+                    hand->unk0ce8 = NULL;
+                }
+                vr_is_L_fist = false;
+            } else if (!vr_is_L_fist && handnum == HAND_LEFT && weaponnum == WEAPON_UNARMED &&
+                       !vr_button_L_grip) {
+                hand->animmode = HANDANIMMODE_IDLE;
+                vr_is_L_fist = true;
+            }
+
+
+            if (!vr_set_motion_triggered) {
+                vr_hand_triggered[i] = false;
+            }
+
+        }
+
+    }
+
+
+    // --- Read left controller get_button_state(0, "trigger") button state to fire --- VR
+    if (player->hands[HAND_LEFT].inuse) {
+        vr_leftHasWeapon = true;
+    } else {
+        vr_leftHasWeapon = false;
+    }
+
+    // Trigger Right controller
+    bool rightTrig = triggeron;
+
+    leftTrig = get_button_state(0, "trigger"); //  Trigger left controller
+
+    bool leftTrigPressed = (leftTrig && !vr_prevLeftTrig);
+    vr_prevLeftTrig = leftTrig;
+
+    // Keep the "global" logic (useful for doautoselect / timers)
+    bool anyTrig = rightTrig || leftTrig;
+
+    player->playertriggerprev = player->playertriggeron;
+    player->playertriggeron = anyTrig;
+
+    if (!anyTrig && player->playertriggerprev) {
+        // Releasing trigger (both)
+        player->doautoselect = true;
+    }
+
+    if (player->playertriggeron) {
+        player->playertrigtime240 += g_Vars.lvupdate240;
+    }
+    else {
+        player->playertrigtime240 = 0;
+    }
+
+
+    if(VrMotionThrowing && player->hands[handnum].gset.weaponnum == WEAPON_UNARMED) {
+        vr_grip_for_unarmed = true;
+
+    }else if (weaponnum == WEAPON_COMBATKNIFE && (vr_R_trigger || vr_L_trigger)){
+        // nothing
+    }else if(!vr_in_motion_triggered){
+        vr_grip_for_unarmed = false;
+        // bypass the alternating behavior, map 1:1
+        gunsfiring[HAND_RIGHT] = (rightTrig && player->hands[HAND_RIGHT].inuse);
+        gunsfiring[HAND_LEFT] = (leftTrig && player->hands[HAND_LEFT].inuse);
+    }else{
+        vr_grip_for_unarmed = false;
+    }
+
+
+    // VR Remote mine: use the left trigger for the detonator
+    // (activate the secondary function without going through B + right trigger)
+    if (hand->gset.weaponnum == WEAPON_REMOTEMINE && leftTrigPressed) {
+        g_Vars.currentplayer->gunctrl.invertgunfunc = true;
+        g_Vars.currentplayer->hands[HAND_RIGHT].activatesecondary = true;
+    }else if (hand->gset.weaponnum == WEAPON_REMOTEMINE && triggeron){
+        g_Vars.currentplayer->gunctrl.invertgunfunc = false;
+
+    }
+
+
+    bgunSetTriggerOn(HAND_RIGHT, gunsfiring[HAND_RIGHT]);
+    if (player->hands[HAND_LEFT].gset.weaponnum != WEAPON_REMOTEMINE) {
+        bgunSetTriggerOn(HAND_LEFT, gunsfiring[HAND_LEFT]);
+    }
+
+#else
 	player->playertriggerprev = player->playertriggeron;
 	player->playertriggeron = triggeron;
 
@@ -13439,6 +17285,7 @@ void bgunTickGameplay(bool triggeron)
 
 	bgunSetTriggerOn(HAND_RIGHT, gunsfiring[0]);
 	bgunSetTriggerOn(HAND_LEFT, gunsfiring[1]);
+#endif /* PD_ENABLE_VR */
 
 	if (g_Vars.tickmode == TICKMODE_NORMAL && g_Vars.lvupdate240 > 0) {
 		bgunTickHand(HAND_RIGHT);
@@ -13540,6 +17387,15 @@ void bgun0f0a94d0(u32 operation, struct coord *pos, struct coord *rot)
 			player->hands[HAND_RIGHT].hasdotinfo = true;
 			player->hands[HAND_LEFT].hasdotinfo = true;
 
+#ifdef PD_ENABLE_VR
+                player->hands[HAND_RIGHT].dotpos.x = pos->x;
+                player->hands[HAND_RIGHT].dotpos.y = pos->y;
+                player->hands[HAND_RIGHT].dotpos.z = pos->z;
+
+                player->hands[HAND_RIGHT].dotrot.x = rot->x;
+                player->hands[HAND_RIGHT].dotrot.y = rot->y;
+                player->hands[HAND_RIGHT].dotrot.z = rot->z;
+#else
 			player->hands[HAND_LEFT].dotpos.x = player->hands[HAND_RIGHT].dotpos.x = pos->x;
 			player->hands[HAND_LEFT].dotpos.y = player->hands[HAND_RIGHT].dotpos.y = pos->y;
 			player->hands[HAND_LEFT].dotpos.z = player->hands[HAND_RIGHT].dotpos.z = pos->z;
@@ -13547,12 +17403,33 @@ void bgun0f0a94d0(u32 operation, struct coord *pos, struct coord *rot)
 			player->hands[HAND_LEFT].dotrot.x = player->hands[HAND_RIGHT].dotrot.x = rot->x;
 			player->hands[HAND_LEFT].dotrot.y = player->hands[HAND_RIGHT].dotrot.y = rot->y;
 			player->hands[HAND_LEFT].dotrot.z = player->hands[HAND_RIGHT].dotrot.z = rot->z;
+#endif
 		}
 		break;
 	case 1:
+#ifdef PD_ENABLE_VR
+            if (pos->x > -100000.0f && pos->x < 100000.0f
+                && pos->y > -100000.0f && pos->y < 100000.0f
+                && pos->z > -100000.0f && pos->z < 100000.0f) {
+                player->hands[HAND_RIGHT].hasdotinfo = true;
+                player->hands[HAND_LEFT].hasdotinfo = true;
+
+                player->hands[HAND_LEFT].dotpos.x = pos->x;
+                player->hands[HAND_LEFT].dotpos.y = pos->y;
+                player->hands[HAND_LEFT].dotpos.z = pos->z;
+
+                player->hands[HAND_LEFT].dotrot.x = rot->x;
+                player->hands[HAND_LEFT].dotrot.y = rot->y;
+                player->hands[HAND_LEFT].dotrot.z = rot->z;
+            }
+	case 2:
+            //rien
+		break;
+#else
 	case 2:
 		lasersightSetDot(operation - 1, pos, rot);
 		break;
+#endif
 	}
 }
 
@@ -14242,7 +18119,11 @@ static s32 bgunHudMirrorXR(s32 a, s32 b)
 Gfx *bgunDrawHud(Gfx *gdl)
 {
 	struct player *player = g_Vars.currentplayer;
+#ifdef PD_ENABLE_VR
+    s32 bottom = viGetViewTop() + viGetViewHeight() - 113; //// VR
+#else
 	s32 bottom = viGetViewTop() + viGetViewHeight() - 13;
+#endif
 	s32 playercount = LOCALPLAYERCOUNT();
 	s32 playernum = g_Vars.currentplayernum;
 	struct gunctrl *ctrl;
@@ -14286,6 +18167,43 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	if (g_Vars.lvframenum < 5) {
 		return gdl;
 	}
+
+#ifdef PD_ENABLE_VR
+    // --- VR : HUD visible si contrôleur vers le haut OU récent changement de fonction ---
+    static s32 sFuncChangeFrame = -1000; // frame du dernier changement de fonction
+
+    int ctrlIndex = !vr_invert_hands ? 1 : 0;
+
+    const float qw = gCtrlQuat[ctrlIndex][0];
+    const float qx = gCtrlQuat[ctrlIndex][1];
+    const float qy = gCtrlQuat[ctrlIndex][2];
+    const float qz = gCtrlQuat[ctrlIndex][3];
+// Vecteur "up" local du contrôleur en espace monde
+// up_world_x < 0 → le dessus de l'arme penche vers la gauche monde
+    float up_world_x = 2.0f * (qx * qy - qz * qw);
+    float up_world_y = 1.0f - 2.0f * (qx * qx + qz * qz); // gardé pour référence
+
+// Roulis vers la gauche : up_world_x négatif ET arme pas trop verticale
+// up_world_y > 0 assure que l'arme pointe globalement vers le haut (pas retournée)
+    bool tiltedLeft = (up_world_x < -0.5f);
+
+// Détecter un changement de funcnum
+    static s32 sPrevFuncNum = -1;
+    s32 curFuncNum = g_Vars.currentplayer->hands[HAND_RIGHT].gset.weaponfunc;
+
+    if (sPrevFuncNum != curFuncNum) {
+        sPrevFuncNum = curFuncNum;
+        sFuncChangeFrame = g_Vars.lvframe60;
+    }
+
+    bool funcChangedRecently = (g_Vars.lvframe60 - sFuncChangeFrame) < TICKS(60) + TICKS(60);
+
+// HUD visible SEULEMENT si arme penchée vers la gauche, ou changement récent de fonction
+    if (!tiltedLeft && !funcChangedRecently) {
+        return gdl;
+    }
+    // --- Fin condition HUD VR ---
+#endif
 
 #if PAL
 	g_ScaleX = 1;
@@ -14336,7 +18254,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	}
 #endif
 
+#ifdef PD_ENABLE_VR
+    xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 100;  // VR
+#else
 	xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 24;
+#endif
 
 	if (playercount == 2 && (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || IS4MB()) && playernum == 0) {
 		xpos += 15;
@@ -14577,7 +18499,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 	if (lefthand->inuse
 			&& weapon->ammos[ammoindex] != NULL
 			&& lefthand->gset.weaponnum != WEAPON_REMOTEMINE) {
+#ifdef PD_ENABLE_VR
+        xpos = viGetViewLeft() / g_ScaleX + 100;
+#else
 		xpos = viGetViewLeft() / g_ScaleX + 24;
+#endif
 
 		if (playercount == 2 && (optionsGetScreenSplit() == SCREENSPLIT_VERTICAL || IS4MB()) && playernum == 1) {
 			xpos -= 14;
@@ -14610,7 +18536,11 @@ Gfx *bgunDrawHud(Gfx *gdl)
 		ammotype = player->gunctrl.ammotypes[ammoindex];
 
 #if VERSION >= VERSION_NTSC_1_0
+#ifdef PD_ENABLE_VR
+        xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 100; // VR
+#else
 		xpos = (viGetViewLeft() + viGetViewWidth()) / g_ScaleX - barwidth - 24;
+#endif
 #else
 		// NTSC Beta omits the brackets here. This would normally cause the
 		// ammo info to be misaligned for players on the right side of the

@@ -2456,6 +2456,42 @@ Gfx *bgScissorWithinViewportF(Gfx *gdl, f32 viewleft, f32 viewtop, f32 viewright
 
 Gfx *bgScissorWithinViewport(Gfx *gdl, s32 viewleft, s32 viewtop, s32 viewright, s32 viewbottom)
 {
+#ifdef PD_ENABLE_VR
+/*
+#ifndef PLATFORM_N64
+	const s32 xmargin = videoGetWidth() / SCREEN_320 - 1; // Removed for VR
+	const s32 ymargin = videoGetHeight() / SCREEN_240 - 1;
+	if (xmargin > 0) {
+		viewleft -= xmargin;
+		viewright += xmargin;
+	}
+	if (ymargin > 0) {
+		viewtop -= ymargin;
+		viewbottom += ymargin;
+	}
+#endif
+
+	if (viewleft < g_Vars.currentplayer->viewleft) {
+		viewleft = g_Vars.currentplayer->viewleft;
+	}
+
+	if (viewtop < g_Vars.currentplayer->viewtop) {
+		viewtop = g_Vars.currentplayer->viewtop;
+	}
+
+	if (viewright > g_Vars.currentplayer->viewleft + g_Vars.currentplayer->viewwidth) {
+		viewright = g_Vars.currentplayer->viewleft + g_Vars.currentplayer->viewwidth;
+	}
+
+	if (viewbottom > g_Vars.currentplayer->viewtop + g_Vars.currentplayer->viewheight) {
+		viewbottom = g_Vars.currentplayer->viewtop + g_Vars.currentplayer->viewheight;
+	}
+
+	gDPSetScissor(gdl++, G_SC_NON_INTERLACE, viewleft, viewtop, viewright, viewbottom);
+*/
+
+	return gdl;
+#else
 #ifndef PLATFORM_N64
 	const s32 xmargin = videoGetWidth() / SCREEN_320 - 1;
 	const s32 ymargin = videoGetHeight() / SCREEN_240 - 1;
@@ -2488,6 +2524,7 @@ Gfx *bgScissorWithinViewport(Gfx *gdl, s32 viewleft, s32 viewtop, s32 viewright,
 	gDPSetScissor(gdl++, G_SC_NON_INTERLACE, viewleft, viewtop, viewright, viewbottom);
 
 	return gdl;
+#endif
 }
 
 void bgClearPortalCameraCache(void)
