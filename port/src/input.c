@@ -960,6 +960,9 @@ s32 inputInit(void)
 
 	inputLoadBinds();
 
+	// Explicitly stop text input to prevent key events being swallowed on certain Wayland systems
+	inputStopTextInput();
+
 	return connectedMask;
 }
 
