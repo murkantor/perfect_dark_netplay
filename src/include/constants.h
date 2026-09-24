@@ -3128,6 +3128,7 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 #define MPOPTION_LASTATTACKERKILL       0x0004000000000000ULL // options bit 50: credit env/fall/knockback/suicide-play deaths to the most recent attacker (chr->lastattacker) instead of the victim — reward "push" kills
 #define MPOPTION_AUTOLIFTS              0x0008000000000000ULL // options bit 51: "Auto Lifts" — lifts can't be called; they cycle their stops on their own timers (deterministic, avoids online lift desyncs)
 #define MPOPTION_CLASSIC_REMOVEHANDS    0x0010000000000000ULL // options bit 52: Classic Option "Remove Hands" (floating GE gun; pairs with CHEAT_CLASSIC_REMOVEHANDS)
+#define MPOPTION_EXPLODESIMONDEATH      0x0020000000000000ULL // options bit 53: AIO "Explosive Sims" - a sim killed by another combatant explodes (random type). AIO upstream uses 0x10000000, which is RESERVED here
 
 #define MPPAUSEMODE_UNPAUSED 0
 #define MPPAUSEMODE_PAUSED   1

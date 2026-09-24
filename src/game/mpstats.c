@@ -13,6 +13,8 @@
 #include "game/lang.h"
 #include "game/mplayer/mplayer.h"
 #include "game/options.h"
+#include "game/explosions.h"
+#include "lib/rng.h"
 #include "bss.h"
 #include "data.h"
 #include "types.h"
@@ -428,6 +430,29 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 				&& aplayernum != vplayernum
 				&& ownsStats) {
 			g_MpAllChrPtrs[vplayernum]->aibot->lastkilledbyplayernum = aplayernum;
+
+#ifndef PLATFORM_N64 // All in One Mod
+			// Explosive Sims. Already server-only (ownsStats): the server's blast
+			// does the damage and clients get the visual via SVC_EXPLOSION.
+			if (g_MpSetup.options & MPOPTION_EXPLODESIMONDEATH) {
+				static const s16 exptypes[] = {
+					EXPLOSIONTYPE_HUGE25, EXPLOSIONTYPE_HUGE25, EXPLOSIONTYPE_24, EXPLOSIONTYPE_9,
+					EXPLOSIONTYPE_LAPTOP, EXPLOSIONTYPE_PHOENIX, EXPLOSIONTYPE_SDGRENADE,
+					EXPLOSIONTYPE_A51TABLE, EXPLOSIONTYPE_GASBARREL, EXPLOSIONTYPE_ROCKET,
+				};
+				struct prop *prop = g_MpAllChrPtrs[vplayernum]->prop;
+				u32 rand = rngRandom() % 100;
+
+				if (prop) {
+					s16 exptype = exptypes[rand / 10];
+					explosionCreateSimple(prop, &prop->pos, prop->rooms, exptype, aplayernum);
+
+					if (g_NetMode == NETMODE_SERVER) {
+						netmsgSvcExplosionWrite(&g_NetMsgRel, exptype, &prop->pos, prop->rooms);
+					}
+				}
+			}
+#endif
 		}
 	}
 
