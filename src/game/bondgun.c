@@ -881,6 +881,184 @@ void bgun0f098030(struct hand *hand, struct modeldef *modeldef)
 	}
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Midas time scale: the gun's animation and its recoil kick advance in whole
+ * 60Hz fields inside the hand tick (they drive the guncmd state machine, so they
+ * stay there). Each tick records how they were moving; bgun0f0a5550 draws them
+ * g_LvFieldPhase fields further on - display only, the tick state is untouched.
+ */
+struct bgunrendersnap {
+	s32 animstamp; // g_Vars.lvframe60 + 1 of the field that recorded it, 0 = none
+	s32 animnum;
+	f32 animrate;  // anim frames per field
+	s32 kickstamp;
+	bool kickreturn;
+	f32 kickframes;
+	s32 unk24;
+	s32 unk25;
+	s32 unk27;
+	s32 sum;
+	f32 rotxstart;
+	f32 rotxend;
+	struct coord posstart;
+	struct coord posend;
+};
+
+static struct bgunrendersnap g_BgunRenderSnap[MAX_PLAYERS][2];
+
+static struct bgunrendersnap *bgunGetRenderSnap(struct hand *hand)
+{
+	s32 h;
+
+	if (g_Vars.currentplayer == NULL || g_Vars.currentplayernum < 0 || g_Vars.currentplayernum >= MAX_PLAYERS) {
+		return NULL;
+	}
+
+	h = hand - g_Vars.currentplayer->hands;
+
+	if (h < 0 || h > 1) {
+		return NULL;
+	}
+
+	return &g_BgunRenderSnap[g_Vars.currentplayernum][h];
+}
+
+static void bgunRecordAnimRate(struct hand *hand, s32 animnum, f32 frame)
+{
+	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
+	struct anim *anim = hand->gunmodel.anim;
+	f32 delta;
+
+	if (snap == NULL || g_Vars.lvupdate60 <= 0) {
+		// no field this frame: the last field's record stays current
+		return;
+	}
+
+	snap->animstamp = g_Vars.lvframe60 + 1;
+	snap->animnum = anim ? anim->animnum : 0;
+	snap->animrate = 0.f;
+
+	if (anim && anim->animnum == animnum) {
+		delta = anim->frame - frame;
+
+		// a wrap (loop / REPEATUNTILFULL) shows as a jump against the speed
+		if ((delta >= 0.f) == (anim->speed >= 0.f)) {
+			snap->animrate = delta / (f32)g_Vars.lvupdate60;
+		}
+	}
+}
+
+static bool bgunExtrapolateAnim(struct hand *hand, struct anim *saved)
+{
+	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
+	struct anim *anim = hand->gunmodel.anim;
+	f32 frame;
+	f32 end;
+
+	if (snap == NULL || anim == NULL || g_LvFieldPhase <= 0.f
+			|| snap->animstamp != g_Vars.lvframe60 + 1
+			|| snap->animrate == 0.f || anim->animnum != snap->animnum || anim->animnum2) {
+		return false;
+	}
+
+	frame = anim->frame + snap->animrate * g_LvFieldPhase;
+	end = modelGetNumAnimFrames(&hand->gunmodel) - 1;
+
+	if (anim->endframe >= 0 && end > anim->endframe) {
+		end = anim->endframe;
+	}
+
+	if (frame > end) {
+		frame = end;
+	}
+
+	if (frame < 0.f) {
+		frame = 0.f;
+	}
+
+	*saved = *anim;
+	modelSetAnimFrame(&hand->gunmodel, frame);
+
+	return true;
+}
+
+static void bgunRecordKick(struct hand *hand, bool returning, s32 frames, s32 unk24, s32 unk25, s32 unk27)
+{
+	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
+
+	if (snap == NULL) {
+		return;
+	}
+
+	snap->kickstamp = g_Vars.lvframe60 + 1;
+	snap->kickreturn = returning;
+	snap->kickframes = frames;
+	snap->unk24 = unk24;
+	snap->unk25 = unk25;
+	snap->unk27 = unk27;
+	snap->sum = unk24 + unk25;
+	snap->rotxstart = hand->rotxstart;
+	snap->rotxend = hand->rotxend;
+	snap->posstart = hand->posstart;
+	snap->posend = hand->posend;
+}
+
+static void bgunClearKick(struct hand *hand)
+{
+	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
+
+	if (snap) {
+		snap->kickstamp = 0;
+	}
+}
+
+/**
+ * bgun0f09aba4's kick tween evaluated g_LvFieldPhase fields on, clamped to the
+ * last field the tick itself will evaluate (so it never runs ahead of it).
+ */
+static bool bgunExtrapolateKick(struct hand *hand, Mtxf *out)
+{
+	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
+	struct coord pos;
+	f32 mult;
+	f32 f;
+
+	if (snap == NULL || !hand->useposrot || g_LvFieldPhase <= 0.f || snap->kickstamp != g_Vars.lvframe60 + 1) {
+		return false;
+	}
+
+	f = snap->kickframes + g_LvFieldPhase;
+
+	if (snap->kickreturn) {
+		if (f > snap->unk27 - 1) {
+			f = snap->unk27 - 1;
+		}
+
+		mult = cosf((snap->unk27 - f) * 1.5707963705063f / (f32)snap->unk27) * 0.5f + 0.5f;
+	} else {
+		if (f > snap->sum - 1) {
+			f = snap->sum - 1;
+		}
+
+		if (f < snap->unk24) {
+			mult = sinf(f * 1.5707963705063f / (f32)snap->unk24);
+		} else {
+			mult = cosf((f - snap->unk24) * M_PI / (f32)snap->unk25) * 0.5f + 0.5f;
+		}
+	}
+
+	pos.x = (snap->posend.x - snap->posstart.x) * mult + snap->posstart.x;
+	pos.y = (snap->posend.y - snap->posstart.y) * mult + snap->posstart.y;
+	pos.z = (snap->posend.z - snap->posstart.z) * mult + snap->posstart.z;
+
+	mtx4LoadXRotation(modelTweenRotAxis(snap->rotxstart, snap->rotxend, mult), out);
+	mtx4SetTranslation(&pos, out);
+
+	return true;
+}
+#endif
+
 f32 bgun0f09815c(struct hand *hand)
 {
 	if (hand->animmode == HANDANIMMODE_BUSY && hand->unk0ce8 != NULL) {
@@ -1089,11 +1267,20 @@ void bgun0f0981e8(struct hand *hand, struct modeldef *modeldef)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		const s32 snapanimnum = modelGetAnimNum(&hand->gunmodel);
+		const f32 snapanimframe = modelGetCurAnimFrame(&hand->gunmodel);
+#endif
+
 #if VERSION >= VERSION_PAL_BETA
 		modelSetAnimPlaySpeed(&hand->gunmodel, PALUPF(4.0f), 0);
 		modelTickAnimQuarterSpeed(&hand->gunmodel, hand->animframeinc, true);
 #else
 		modelTickAnim(&hand->gunmodel, hand->animframeinc, true);
+#endif
+
+#ifndef PLATFORM_N64
+		bgunRecordAnimRate(hand, snapanimnum, snapanimframe);
 #endif
 
 		s2 = bgun0f09815c(hand);
@@ -1745,6 +1932,9 @@ s32 bgunTickIncIdle(struct handweaponinfo *info, s32 handnum, struct hand *hand,
 
 void bgunSetArmPitch(struct hand *hand, f32 angle)
 {
+#ifndef PLATFORM_N64
+	bgunClearKick(hand);
+#endif
 	hand->useposrot = true;
 
 	mtx4LoadXRotation(angle, &hand->posrotmtx);
@@ -2545,9 +2735,15 @@ bool bgun0f09aba4(struct hand *hand, struct handweaponinfo *info, s32 handnum, s
 
 				mtx4LoadXRotation(hand->rotxoffset, &hand->posrotmtx);
 				mtx4SetTranslation(&hand->posoffset, &hand->posrotmtx);
+#ifndef PLATFORM_N64
+				bgunRecordKick(hand, true, frames - hand->statevar1, unk24, unk25, unk27);
+#endif
 			} else {
 				mtx4LoadIdentity(&hand->posrotmtx);
 				hand->useposrot = false;
+#ifndef PLATFORM_N64
+				bgunClearKick(hand);
+#endif
 				return true;
 			}
 		}
@@ -2585,6 +2781,9 @@ bool bgun0f09aba4(struct hand *hand, struct handweaponinfo *info, s32 handnum, s
 
 			mtx4LoadXRotation(hand->rotxoffset, &hand->posrotmtx);
 			mtx4SetTranslation(&hand->posoffset, &hand->posrotmtx);
+#ifndef PLATFORM_N64
+			bgunRecordKick(hand, false, frames, unk24, unk25, unk27);
+#endif
 		}
 	}
 
@@ -8959,11 +9158,31 @@ void bgun0f0a5550(s32 handnum)
 	sp274.z += bgunGetFovOffsetZ();
 #endif
 
+#ifndef PLATFORM_N64
+	// Midas time scale: the shake was re-rolled on every frame that had a 1/240
+	// tick and skipped on the rest, so above 60fps it buzzed faster and flickered
+	// on and off. Roll it once per 60Hz field and hold it between fields.
+	if (hand->firing && shootfunc && shootfunc->recoilsettings != NULL && !lvIsPaused() && !mpIsPaused()) {
+		static struct coord shake[MAX_PLAYERS][2];
+		struct coord *s = &shake[g_Vars.currentplayernum % MAX_PLAYERS][handnum & 1];
+
+		if (g_Vars.lvupdate60 > 0) {
+			s->x = (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->xrange * hand->finalmult[0];
+			s->y = (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->yrange * hand->finalmult[0];
+			s->z = (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->zrange * hand->finalmult[0];
+		}
+
+		sp274.x += s->x;
+		sp274.y += s->y;
+		sp274.z += s->z;
+	}
+#else
 	if (hand->firing && shootfunc && g_Vars.lvupdate240 != 0 && shootfunc->recoilsettings != NULL) {
 		sp274.x += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->xrange * hand->finalmult[0];
 		sp274.y += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->yrange * hand->finalmult[0];
 		sp274.z += (RANDOMFRAC() - 0.5f) * shootfunc->recoilsettings->zrange * hand->finalmult[0];
 	}
+#endif
 
 	hand->fspare1 = (player->crosspos2[0] - camGetScreenLeft() - camGetScreenWidth() * 0.5f) * weapondef->aimsettings->guntransside / (camGetScreenWidth() * 0.5f);
 
@@ -9032,12 +9251,19 @@ void bgun0f0a5550(s32 handnum)
 		bgunUpdateGangsta(hand, handnum, &sp274, funcdef, &sp284, &sp234);
 	}
 
-	if (hand->useposrot) {
-		sp274.f[0] += hand->posrotmtx.m[3][0];
-		sp274.f[1] += hand->posrotmtx.m[3][1];
-		sp274.f[2] += hand->posrotmtx.m[3][2];
+#ifndef PLATFORM_N64
+	Mtxf kickmtx;
+	Mtxf *posrot = bgunExtrapolateKick(hand, &kickmtx) ? &kickmtx : &hand->posrotmtx;
+#else
+	Mtxf *posrot = &hand->posrotmtx;
+#endif
 
-		mtx00015be0(&hand->posrotmtx, &sp234);
+	if (hand->useposrot) {
+		sp274.f[0] += posrot->m[3][0];
+		sp274.f[1] += posrot->m[3][1];
+		sp274.f[2] += posrot->m[3][2];
+
+		mtx00015be0(posrot, &sp234);
 
 		sp234.m[3][0] = 0.0f;
 		sp234.m[3][1] = 0.0f;
@@ -9267,6 +9493,11 @@ void bgun0f0a5550(s32 handnum)
 			}
 #endif
 
+#ifndef PLATFORM_N64
+			struct anim savedanim;
+			const bool animextrap = bgunExtrapolateAnim(hand, &savedanim);
+#endif
+
 			if (a0) {
 				if (player->hands[HAND_RIGHT].unk0dd4 == -1) {
 					mtx4LoadIdentity(&sp84);
@@ -9328,6 +9559,12 @@ void bgun0f0a5550(s32 handnum)
 			}
 
 			g_ModelJointPositionedFunc = 0;
+
+#ifndef PLATFORM_N64
+			if (animextrap) {
+				*hand->gunmodel.anim = savedanim;
+			}
+#endif
 
 			node = modelGetPart(modeldef, MODELPART_GUN_SLIDE);
 

@@ -154,6 +154,10 @@ f32 g_LvUpdate60fFracReal = 0;
 s32 g_LvFracActive = 0;
 // the frame's global lvupdate240 (props running on a catch-up step swap their own in)
 s32 g_LvFrame240 = 0;
+// Real time elapsed since the last whole 60Hz field, in fields [0,1): render
+// code that draws a field-stepped system (the gun's animation) a little further
+// on. 0 whenever the real-time delta isn't in use.
+f32 g_LvFieldPhase = 0;
 // The local VIEW's delta (camera yaw/pitch, mouse look): g_LvUpdate60fFrac, but
 // also real time through the netplay 60Hz pin. Netplay view angles are
 // client-authoritative and only sampled when a move is sent, so the view can
@@ -3325,6 +3329,18 @@ void lvTick(void)
 	}
 	g_LvUpdate60fFracReal = PALUPF(g_LvUpdate60fFrac);
 
+	if (g_LvFracActive) {
+		g_LvFieldPhase += g_LvUpdate60fFrac - (f32)g_Vars.lvupdate60;
+
+		if (g_LvFieldPhase < 0.f) {
+			g_LvFieldPhase = 0.f;
+		} else if (g_LvFieldPhase > 0.999f) {
+			g_LvFieldPhase = 0.999f;
+		}
+	} else {
+		g_LvFieldPhase = 0.f;
+	}
+
 	{
 		extern s32 g_FixedTickEnabled;
 
@@ -3335,6 +3351,16 @@ void lvTick(void)
 			g_LvViewFrac = g_LvUpdate60fFrac;
 		}
 		g_LvViewFracReal = PALUPF(g_LvViewFrac);
+
+		// Netplay pins the sim to the net tick: the phase is the time since it
+		// last advanced (one field per tick)
+		if (g_LvViewFrac != g_LvUpdate60fFrac) {
+			g_LvFieldPhase = netTickSubFrac();
+
+			if (g_LvFieldPhase > 0.999f) {
+				g_LvFieldPhase = 0.999f;
+			}
+		}
 	}
 #endif
 

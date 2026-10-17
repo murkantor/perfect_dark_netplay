@@ -34,6 +34,7 @@ extern s32 g_LvSlomoEngaged;
 extern f32 g_LvUpdate60fFrac;
 extern f32 g_LvUpdate60fFracReal;
 extern s32 g_LvFracActive;
+extern f32 g_LvFieldPhase;
 extern s32 g_LvFrame240;
 extern f32 g_LvViewFrac;
 extern f32 g_LvViewFracReal;
