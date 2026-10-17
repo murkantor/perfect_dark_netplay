@@ -162,29 +162,61 @@ Deliberately left alone:
   flash, crosshair, ammo HUD, screen fades, kill feed, chaos.lua (it uses
   `pd.lvupdate()` fields).
 
-## Still to do (from the world audit)
+## Phase 2c (2026-10-17): audio, netplay view + remote players, sims, chr animation
 
-1. **Chr animation and guard root motion** step at 240 Hz (visible only above
-   240 fps). Preferred fix for SP: render-only animation phase extrapolation
-   around `modelSetMatricesWithAnim`. The matrices are also shot hitboxes,
-   so keep it local and off on the server.
-2. **Simulant movement** `bot0f1921f8` has the bug-16 loop. Closed form,
-   with the gate relaxed, SP only.
-3. **Projectiles** (with spin), sparks, shards and smoke: render-only
+- **Audio crackle when turning** (user report). `psTickChannel` posted a
+  vol+pan+pitch event for every playing positional sound on every rendered
+  frame. With the camera now moving every frame, that flooded the sound
+  player, and each pan step lands instantly in the synth.
+  - Positional re-pan/re-volume now posts only on frames where a 60 Hz
+    field elapsed, the rate the game had while capped at 60.
+  - The same applies to the gas cloud re-pan, the Reaper spin vol/pitch and
+    the Mauler charge pitch.
+  - A sound's first play is still immediate.
+- **Netplay local view.** The camera rode the netplay 60 Hz pin.
+  `g_LvViewFrac`/`ViewFracReal` (lv.c) is the real frame time even under
+  the pin. It still falls back on pause, slow-mo, det and the fixed tick.
+  - Camera yaw (local player only), pitch and `mlookscale` use it.
+  - View angles are client-authoritative and only sampled when a move is
+    sent, so the sim contract is unchanged.
+  - The view mouse is per-frame in netplay now (it was banked per tick). A
+    separate tick bank (`inputMouseGetScaledTickDelta`) feeds whole-tick
+    consumers: Slayer fly-by-wire sends a per-tick rotation.
+- **Netplay remote players**, client only:
+  - `bwalkUpdateRemote`'s interp target adds `netTickSubFrac()`, and the
+    chase uses the closed form of the per-tick gain over real time;
+  - the remote facing lerp (`bmoveProcessRemoteInput`) adds the sub-tick
+    fraction;
+  - the host's copy stays per tick, because hits are validated against it.
+- **Simulant movement.** `botMoveFrac` (bot.c) is a closed form of the
+  bug-16 per-quantum velocity filter. It is used on real fractional frames
+  for sims on the frame's step without forced slow updates.
+- **Chr animation.** `modelTickAnimQuarterSpeedF(q)` (model.c) runs whole
+  quanta, then a remainder step. The step function was factored out, and
+  the original calls it with 0.25f, which is bit-identical. `chr0f0220ec`
+  uses it for non-player chrs on the frame's step (not cutscenes or the
+  chaos speed effect). Guard poses and root-motion walking now advance every
+  frame. Accepted side effect: `chr->prevpos` (AI arrival checks) spans one
+  frame of motion, as it already did above 240 fps.
+
+## Still to do
+
+1. **Gun animations and recoil pose** step at 60 Hz. The gun model anim
+   advances by whole fields (`animframeinc = lvupdate60`) inside the
+   integer-gated `bgunTickHand`, and it drives the guncmd state machine
+   (keyframes, sounds). This needs a render-side phase rather than a logic
+   change.
+2. **Projectiles** (with spin), sparks, shards and smoke: render-only
    extrapolation by sub-field phase. Smoke and sparks step at 60 Hz.
-4. **Netplay**: the local camera and remote *players* (bwalkUpdateRemote)
-   still step at 60 Hz, because netplay pins the sim. This needs a view
-   delta that ignores the pin (the mouse bank then has to go) and
-   render-side remote-player smoothing.
-5. Player leftovers:
+3. **Doors/lifts in netplay** still step at 60 Hz (the netplay pin; their
+   logic is synced). This needs a render offset from the sub-tick fraction.
+4. Player leftovers:
    - the landing dip;
-   - the eye-height bob target;
-   - gun animations and recoil pose (60 Hz);
+   - the eye-height bob target (needs fractional head-anim ticks);
    - grab-mode and hoverbike movement.
-6. Small per-frame UI counters left as they are, because they are input
-   grace windows, not animation: menu open inhibit, endscreen continue
-   delay, the radial menu's return and corner timers, file-op delay.
-7. Optional: a render thread and the vsync lock.
+5. Small per-frame UI counters that are input grace windows: left as they
+   are.
+6. Optional: a render thread and the vsync lock.
 
 ## Honest status
 
@@ -220,4 +252,14 @@ Phase 2b checklist (compile-verified only):
 14. Pause menu, inventory, objectives, end screens and front-end dialogs
     open/slide at the same speed as at 60 fps. The radial weapon menu
     glides normally. The combat boost blur takes as long as at 60 fps.
+
+Phase 2c checklist (compile-verified only):
+15. Turning quickly with guards talking / HUD sounds playing: no crackle, and
+    panning is still smooth enough.
+16. Netplay client at 120+ fps: your own turning/looking is smooth (not
+    60 Hz). Mouse sensitivity is unchanged. The Slayer rocket still steers
+    with the mouse.
+17. Netplay client: remote players move and turn smoothly.
+18. Uncapped offline: sims and guards walk/run with smooth animation, and
+    speeds and paths match 60 fps.
 
