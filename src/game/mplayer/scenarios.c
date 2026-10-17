@@ -1066,7 +1066,13 @@ void scenarioCreateMatchStartHudmsgs(void)
 void scenarioTick(void)
 {
 	if (g_Vars.normmplayerisrunning) {
-		if (g_Vars.lvframenum == 5) {
+		// (lvframenum only advances on ticked frames; above 240fps it sits at
+		// 5 for several rendered frames - create the messages once)
+		if (g_Vars.lvframenum == 5
+#ifndef PLATFORM_N64
+				&& g_Vars.lvupdate240 > 0
+#endif
+				) {
 			scenarioCreateMatchStartHudmsgs();
 		}
 

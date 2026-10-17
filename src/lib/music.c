@@ -237,6 +237,22 @@ s32 musicHandlePlayEvent(struct musicevent *event, s32 result)
 	// Check if this tracktype is currently in use. If it is then that's
 	// an error - the caller should have stopped the existing track first.
 	for (i = 0; i < 3; i++) {
+#ifndef PLATFORM_N64
+		// A track started by an earlier event sits in AL_STARTING until the
+		// audio thread runs. At high frame rates several frames (and so a
+		// second PLAY for the same tracktype) can land in that window, which
+		// then found no "playing" channel and started the tune AGAIN on a
+		// second sequence player - the stage music playing twice (until a
+		// death stopped the channels). It's already on its way: done.
+		if (event->tracktype == g_SeqChannels[i].tracktype && g_SeqChannels[i].inuse
+				&& n_alCSPGetState(g_SeqInstances[i].seqp) == AL_STARTING) {
+			event->eventtype = 0;
+			result = RESULT_OK_BREAK;
+			break;
+		}
+#endif
+
+
 		if (event->tracktype == g_SeqChannels[i].tracktype && n_alCSPGetState(g_SeqInstances[i].seqp) == AL_PLAYING) {
 			value = event->tracktype == TRACKTYPE_AMBIENT ? 24 : 32;
 
@@ -1357,6 +1373,14 @@ bool musicIsTrackTypePlaying(s32 tracktype)
 		if (tracktype == g_SeqChannels[i].tracktype && n_alCSPGetState(g_SeqInstances[i].seqp) == AL_PLAYING) {
 			return true;
 		}
+
+#ifndef PLATFORM_N64
+		// (started but the audio thread hasn't run yet - see musicHandlePlayEvent)
+		if (tracktype == g_SeqChannels[i].tracktype && g_SeqChannels[i].inuse
+				&& n_alCSPGetState(g_SeqInstances[i].seqp) == AL_STARTING) {
+			return true;
+		}
+#endif
 	}
 
 	return false;

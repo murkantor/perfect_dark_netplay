@@ -1882,15 +1882,30 @@ Gfx *lvRender(Gfx *gdl)
 			artifactsClear();
 #endif
 
+			// Midas time scale: the stage-entry screen hold (until e.g. an intro
+			// cutscene takes over) counted RENDERED frames, which uncapped are
+			// a few ms - the hold ran out before the intro started and a frame
+			// of the normal spawn showed (dataDyne Infiltration). Count 60Hz
+			// fields instead, as the game did at 60fps.
 			if ((g_Vars.stagenum != STAGE_CITRAINING || (var80087260 <= 0 && g_MenuData.root != MENUROOT_MPSETUP))
+#ifndef PLATFORM_N64
+					&& g_Vars.lvframe60 <= 5
+#else
 					&& g_Vars.lvframenum <= 5
+#endif
 					&& !g_Vars.normmplayerisrunning
 					&& g_Vars.tickmode != TICKMODE_CUTSCENE) {
 				if (var80084050 < 6) {
 					g_Vars.lockscreen = 1;
 				}
 
+#ifndef PLATFORM_N64
+				if (g_Vars.diffframe60 > 0) {
+					var80084050++;
+				}
+#else
 				var80084050++;
+#endif
 			} else if (g_Vars.currentplayer->gunctrl.loadall
 					&& var80075d60 == 2
 					&& g_Vars.currentplayer->cameramode != CAMERAMODE_THIRDPERSON
