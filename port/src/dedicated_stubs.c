@@ -123,6 +123,7 @@ void inputSetDefaultKeyBinds(s32 cidx, s32 n64mode) { (void)cidx; (void)n64mode;
 void inputSetChaosDeadzone(s32 dz) { (void)dz; } // Lua chaos XBLA deadzone floor; no input layer on the dedicated server
 void inputSetChaosInvertLook(s32 on) { (void)on; }      // Lua chaos Inverted Look; no input layer on the dedicated server
 void inputSetChaosInputDelay(s32 frames) { (void)frames; } // Lua chaos Stadia Mode input lag; ditto
+void inputSetChaosSensMult(f32 mult) { (void)mult; }     // Lua chaos Overly sensitive; ditto
 s32 inputLastSourceWasPad(void) { return 0; }           // Lua chaos input-source query; no input layer on the dedicated server
 
 void inputClearLastKey(void) { }
