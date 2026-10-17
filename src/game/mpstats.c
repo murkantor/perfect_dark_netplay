@@ -448,7 +448,11 @@ void mpstatsRecordDeath(s32 aplayernum, s32 vplayernum)
 					explosionCreateSimple(prop, &prop->pos, prop->rooms, exptype, aplayernum);
 
 					if (g_NetMode == NETMODE_SERVER) {
+						// sent immediately like the kill feed below, whose
+						// netbufStartWrite would discard an appended message
+						netbufStartWrite(&g_NetMsgRel);
 						netmsgSvcExplosionWrite(&g_NetMsgRel, exptype, &prop->pos, prop->rooms);
+						netSend(NULL, &g_NetMsgRel, true, NETCHAN_DEFAULT);
 					}
 				}
 			}
