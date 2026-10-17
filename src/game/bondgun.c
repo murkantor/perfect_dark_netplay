@@ -949,6 +949,40 @@ static void bgunRecordAnimRate(struct hand *hand, s32 animnum, f32 frame)
 	}
 }
 
+/**
+ * Limit an extrapolation of `ext` anim frames so it stops short of the next
+ * guncmd keyframe that changes part visibility or the anim's flow. The tick
+ * flips part visibility on the field BEFORE the anim reaches such a keyframe,
+ * so the old visibility is never shown at or past it - drawing past it shows
+ * e.g. the CMP150's inserted magazine after its bone has moved out of the gun.
+ */
+static f32 bgunClampAnimExtrapolation(struct hand *hand, f32 ext)
+{
+	struct guncmd *cmd = hand->unk0ce8;
+	f32 cur;
+	f32 lim = ext < 0.f ? -ext : ext;
+
+	if (cmd == NULL) {
+		return ext;
+	}
+
+	cur = bgun0f09815c(hand);
+
+	for (; cmd->type != GUNCMD_END; cmd++) {
+		if ((cmd->type == GUNCMD_SHOWPART || cmd->type == GUNCMD_HIDEPART
+					|| cmd->type == GUNCMD_WAITFORZRELEASED || cmd->type == GUNCMD_REPEATUNTILFULL)
+				&& cmd->unk02 > cur) {
+			f32 room = cmd->unk02 - cur - 0.01f;
+
+			if (room < lim) {
+				lim = room > 0.f ? room : 0.f;
+			}
+		}
+	}
+
+	return ext < 0.f ? -lim : lim;
+}
+
 static bool bgunExtrapolateAnim(struct hand *hand, struct anim *saved)
 {
 	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
@@ -962,7 +996,7 @@ static bool bgunExtrapolateAnim(struct hand *hand, struct anim *saved)
 		return false;
 	}
 
-	frame = anim->frame + snap->animrate * g_LvFieldPhase;
+	frame = anim->frame + bgunClampAnimExtrapolation(hand, snap->animrate * g_LvFieldPhase);
 	end = modelGetNumAnimFrames(&hand->gunmodel) - 1;
 
 	if (anim->endframe >= 0 && end > anim->endframe) {
