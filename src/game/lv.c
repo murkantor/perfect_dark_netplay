@@ -223,6 +223,8 @@ s32 var80084050 = 0;
 // stage's first frames can run zero ticks; musicTickEvents holds the music
 // queue until the first tick has queued its events (see there).
 s32 g_LvAwaitFirstTick = 0;
+// g_Vars.thisframestart240 at the last stage reset (musicTickEvents' hold)
+u32 g_LvResetFrame240 = 0;
 #endif
 
 s16 g_FadeNumFrames = 0;
@@ -695,6 +697,7 @@ void lvReset(s32 stagenum)
 	var80084050 = 0;
 #ifndef PLATFORM_N64
 	g_LvAwaitFirstTick = 1;
+	g_LvResetFrame240 = g_Vars.thisframestart240;
 #endif
 
 	g_Vars.lvframe60 = 0;

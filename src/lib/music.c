@@ -1191,17 +1191,20 @@ void musicTickEvents(void)
 		event = &g_MusicEventQueue[0];
 
 #ifndef PLATFORM_N64
-		// Hold the queue for the first fields of a solo stage. Closing the
-		// menu queues the level track at stage start, and an intro's AI stops
-		// it and queues the cutscene track a few fields later (dataDyne
-		// Infiltration: field 4). Processing the level PLAY first let its first
-		// note sound before the intro (user report); held, the intro's
-		// STOP/PLAY lands in the queue with it and the supersede pass above
-		// drops it unplayed. ~200ms later music start without an intro.
-		// Not in Combat Sim (no intros).
+		// Hold the queue for the first ~200ms after every stage reset (legal
+		// screen, title/menus, missions, Combat Sim). A stage's opening
+		// queues a track and then, a few fields later, a different one (e.g.
+		// closing the menu queues the level track and dataDyne Infiltration's
+		// intro AI stops it and queues the cutscene track at field 4).
+		// Processing the first PLAY on its own let its first note sound (user
+		// report); held, the later STOP/PLAY lands in the queue with it and the
+		// supersede pass above drops it unplayed. Timed on the always-running
+		// frame clock, so a context whose stage doesn't tick can't stall music.
 		extern s32 g_LvAwaitFirstTick;
+		extern u32 g_LvResetFrame240;
 
-		if (g_LvAwaitFirstTick || (g_Vars.lvframe60 < TICKS(12) && !g_Vars.normmplayerisrunning)) {
+		if ((g_LvAwaitFirstTick || (u32)(g_Vars.thisframestart240 - g_LvResetFrame240) < TICKS(12) * 4)
+				&& (u32)(g_Vars.thisframestart240 - g_LvResetFrame240) < 240) {
 			return;
 		}
 #endif
