@@ -2587,15 +2587,154 @@ void modelSetAnimFrame2WithChrStuff(struct model *model, f32 curframe, f32 endfr
 	}
 }
 
-void modelTickAnimQuarterSpeed(struct model *model, s32 lvupdate240, bool arg2)
+/**
+ * One quarter-field step of modelTickAnimQuarterSpeed's loop (`step` = 0.25 for
+ * a whole 1/240 quantum). Factored out so the Midas time scale can add one
+ * fractional step (0.25 * remainder); modelTickAnimQuarterSpeed still calls it
+ * with 0.25f, which is bit-identical to the old inline loop.
+ */
+static void modelTickAnimStep(struct model *model, struct anim *anim, f32 *frameptr, f32 *frame2ptr, f32 step, bool arg2)
 {
-	f32 frame;
-	f32 frame2;
+	f32 frame = *frameptr;
+	f32 frame2 = *frame2ptr;
 	f32 speed;
 	f32 speed2;
 	f32 startframe;
 	f32 endframe;
 	f32 realendframe;
+
+	if (anim->timeplay > 0) {
+		anim->elapseplay += step;
+
+		if (anim->elapseplay < anim->timeplay) {
+			anim->playspeed = anim->oldplay + (anim->newplay - anim->oldplay) * anim->elapseplay / anim->timeplay;
+		} else {
+			anim->timeplay = 0;
+			anim->playspeed = anim->newplay;
+		}
+	}
+
+	if (anim->timemerge > 0) {
+		anim->elapsemerge += anim->playspeed * step;
+
+		if (anim->elapsemerge == 0) {
+			anim->fracmerge = 1;
+		} else {
+			if (anim->elapsemerge < anim->timemerge) {
+				anim->fracmerge = (anim->timemerge - anim->elapsemerge) / anim->timemerge;
+			} else {
+				anim->timemerge = 0;
+				anim->fracmerge = 0;
+				anim->animnum2 = 0;
+			}
+		}
+	}
+
+	if (anim->timespeed > 0) {
+		anim->elapsespeed += anim->playspeed * step;
+
+		if (anim->elapsespeed < anim->timespeed) {
+			anim->speed = anim->oldspeed + (anim->newspeed - anim->oldspeed) * anim->elapsespeed / anim->timespeed;
+		} else {
+			anim->timespeed = 0;
+			anim->speed = anim->newspeed;
+		}
+	}
+
+	speed = anim->speed;
+	frame += anim->playspeed * speed * step;
+
+	if (anim->animnum2) {
+		if (anim->timespeed2 > 0) {
+			anim->elapsespeed2 += anim->playspeed * step;
+
+			if (anim->elapsespeed2 < anim->timespeed2) {
+				anim->speed2 = anim->oldspeed2 + (anim->newspeed2 - anim->oldspeed2) * anim->elapsespeed2 / anim->timespeed2;
+			} else {
+				anim->timespeed2 = 0;
+				anim->speed2 = anim->newspeed2;
+			}
+		}
+
+		speed2 = anim->speed2;
+		frame2 += anim->playspeed * speed2 * step;
+	}
+
+	if (anim->looping) {
+		realendframe = anim->endframe;
+
+		if (speed >= 0) {
+			endframe = animGetNumFrames(anim->animnum) - 1;
+			startframe = anim->loopframe;
+
+			if (realendframe >= 0 && endframe > realendframe) {
+				endframe = realendframe;
+			}
+		} else {
+			endframe = anim->loopframe;
+			startframe = animGetNumFrames(anim->animnum) - 1;
+
+			if (realendframe >= 0 && startframe > realendframe) {
+				startframe = realendframe;
+			}
+		}
+
+		if ((speed >= 0 && frame >= endframe) || (speed < 0 && frame <= endframe)) {
+			f32 prevnewspeed = anim->newspeed;
+			f32 prevoldspeed = anim->oldspeed;
+			f32 prevtimespeed = anim->timespeed;
+			f32 prevelapsespeed = anim->elapsespeed;
+
+			if (arg2) {
+				modelSetAnimFrame2WithChrStuff(model, anim->frame, endframe, 0, 0);
+			} else {
+				modelSetAnimFrame2(model, endframe, 0);
+			}
+
+			modelSetAnimation(model, anim->animnum, anim->flip, startframe, anim->speed, anim->loopmerge);
+
+			anim->looping = true;
+			anim->endframe = realendframe;
+
+			anim->newspeed = prevnewspeed;
+			anim->oldspeed = prevoldspeed;
+			anim->timespeed = prevtimespeed;
+			anim->elapsespeed = prevelapsespeed;
+
+			frame2 = frame;
+			frame = startframe + frame - endframe;
+
+			if (anim->flipfunc) {
+				anim->flipfunc();
+			}
+		}
+	}
+
+	*frameptr = frame;
+	*frame2ptr = frame2;
+}
+
+static void modelTickAnimApplyFrames(struct model *model, struct anim *anim, f32 frame, f32 frame2, bool arg2)
+{
+	if (arg2) {
+		if (anim->animnum2) {
+			modelSetAnimFrame2WithChrStuff(model, anim->frame, frame, anim->frame2, frame2);
+		} else {
+			modelSetAnimFrame2WithChrStuff(model, anim->frame, frame, 0, 0);
+		}
+	} else {
+		if (anim->animnum2) {
+			modelSetAnimFrame2(model, frame, frame2);
+		} else {
+			modelSetAnimFrame2(model, frame, 0);
+		}
+	}
+}
+
+void modelTickAnimQuarterSpeed(struct model *model, s32 lvupdate240, bool arg2)
+{
+	f32 frame;
+	f32 frame2;
 	struct anim *anim = model->anim;
 
 	if (anim && lvupdate240 > 0) {
@@ -2603,129 +2742,45 @@ void modelTickAnimQuarterSpeed(struct model *model, s32 lvupdate240, bool arg2)
 		frame2 = anim->frame2;
 
 		for (; lvupdate240 > 0; lvupdate240--) {
-			if (anim->timeplay > 0) {
-				anim->elapseplay += 0.25f;
-
-				if (anim->elapseplay < anim->timeplay) {
-					anim->playspeed = anim->oldplay + (anim->newplay - anim->oldplay) * anim->elapseplay / anim->timeplay;
-				} else {
-					anim->timeplay = 0;
-					anim->playspeed = anim->newplay;
-				}
-			}
-
-			if (anim->timemerge > 0) {
-				anim->elapsemerge += anim->playspeed * 0.25f;
-
-				if (anim->elapsemerge == 0) {
-					anim->fracmerge = 1;
-				} else {
-					if (anim->elapsemerge < anim->timemerge) {
-						anim->fracmerge = (anim->timemerge - anim->elapsemerge) / anim->timemerge;
-					} else {
-						anim->timemerge = 0;
-						anim->fracmerge = 0;
-						anim->animnum2 = 0;
-					}
-				}
-			}
-
-			if (anim->timespeed > 0) {
-				anim->elapsespeed += anim->playspeed * 0.25f;
-
-				if (anim->elapsespeed < anim->timespeed) {
-					anim->speed = anim->oldspeed + (anim->newspeed - anim->oldspeed) * anim->elapsespeed / anim->timespeed;
-				} else {
-					anim->timespeed = 0;
-					anim->speed = anim->newspeed;
-				}
-			}
-
-			speed = anim->speed;
-			frame += anim->playspeed * speed * 0.25f;
-
-			if (anim->animnum2) {
-				if (anim->timespeed2 > 0) {
-					anim->elapsespeed2 += anim->playspeed * 0.25f;
-
-					if (anim->elapsespeed2 < anim->timespeed2) {
-						anim->speed2 = anim->oldspeed2 + (anim->newspeed2 - anim->oldspeed2) * anim->elapsespeed2 / anim->timespeed2;
-					} else {
-						anim->timespeed2 = 0;
-						anim->speed2 = anim->newspeed2;
-					}
-				}
-
-				speed2 = anim->speed2;
-				frame2 += anim->playspeed * speed2 * 0.25f;
-			}
-
-			if (anim->looping) {
-				realendframe = anim->endframe;
-
-				if (speed >= 0) {
-					endframe = animGetNumFrames(anim->animnum) - 1;
-					startframe = anim->loopframe;
-
-					if (realendframe >= 0 && endframe > realendframe) {
-						endframe = realendframe;
-					}
-				} else {
-					endframe = anim->loopframe;
-					startframe = animGetNumFrames(anim->animnum) - 1;
-
-					if (realendframe >= 0 && startframe > realendframe) {
-						startframe = realendframe;
-					}
-				}
-
-				if ((speed >= 0 && frame >= endframe) || (speed < 0 && frame <= endframe)) {
-					f32 prevnewspeed = anim->newspeed;
-					f32 prevoldspeed = anim->oldspeed;
-					f32 prevtimespeed = anim->timespeed;
-					f32 prevelapsespeed = anim->elapsespeed;
-
-					if (arg2) {
-						modelSetAnimFrame2WithChrStuff(model, anim->frame, endframe, 0, 0);
-					} else {
-						modelSetAnimFrame2(model, endframe, 0);
-					}
-
-					modelSetAnimation(model, anim->animnum, anim->flip, startframe, anim->speed, anim->loopmerge);
-
-					anim->looping = true;
-					anim->endframe = realendframe;
-
-					anim->newspeed = prevnewspeed;
-					anim->oldspeed = prevoldspeed;
-					anim->timespeed = prevtimespeed;
-					anim->elapsespeed = prevelapsespeed;
-
-					frame2 = frame;
-					frame = startframe + frame - endframe;
-
-					if (anim->flipfunc) {
-						anim->flipfunc();
-					}
-				}
-			}
+			modelTickAnimStep(model, anim, &frame, &frame2, 0.25f, arg2);
 		}
 
-		if (arg2) {
-			if (anim->animnum2) {
-				modelSetAnimFrame2WithChrStuff(model, anim->frame, frame, anim->frame2, frame2);
-			} else {
-				modelSetAnimFrame2WithChrStuff(model, anim->frame, frame, 0, 0);
-			}
-		} else {
-			if (anim->animnum2) {
-				modelSetAnimFrame2(model, frame, frame2);
-			} else {
-				modelSetAnimFrame2(model, frame, 0);
-			}
-		}
+		modelTickAnimApplyFrames(model, anim, frame, frame2, arg2);
 	}
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Midas time scale: modelTickAnimQuarterSpeed over q quanta of real time, q
+ * fractional (whole quanta, then one step weighted by the remainder). Every
+ * per-step update is linear in the step, so the partial step is exact.
+ */
+void modelTickAnimQuarterSpeedF(struct model *model, f32 q, bool arg2)
+{
+	f32 frame;
+	f32 frame2;
+	struct anim *anim = model->anim;
+	s32 n;
+	f32 r;
+
+	if (anim && q > 0.f) {
+		n = (s32)q;
+		r = q - (f32)n;
+		frame = anim->frame;
+		frame2 = anim->frame2;
+
+		for (; n > 0; n--) {
+			modelTickAnimStep(model, anim, &frame, &frame2, 0.25f, arg2);
+		}
+
+		if (r > 0.f) {
+			modelTickAnimStep(model, anim, &frame, &frame2, 0.25f * r, arg2);
+		}
+
+		modelTickAnimApplyFrames(model, anim, frame, frame2, arg2);
+	}
+}
+#endif
 
 #if VERSION < VERSION_PAL_BETA
 /**

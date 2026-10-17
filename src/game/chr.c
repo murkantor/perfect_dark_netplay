@@ -2174,15 +2174,34 @@ void chr0f0220ec(struct chrdata *chr, s32 lvupdate240, bool arg2)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Midas time scale: on a real fractional frame, a chr on the frame's own
+	// step plays its animation (and so a guard's root-motion walk) over the real
+	// time, including zero-tick frames - it stepped at 240Hz. Not cutscenes,
+	// players, catch-up ticks or the chaos speed effect (they rewrite the step).
+	const bool animfrac = g_LvFracActive && lvupdate240 == g_LvFrame240
+		&& g_Vars.tickmode != TICKMODE_CUTSCENE && chr->prop && chr->prop->type != PROPTYPE_PLAYER;
+#endif
+
 	if (chr->chrflags & CHRCFLAG_DELAYANIM) {
 		chr->chrflags &= ~CHRCFLAG_DELAYANIM;
 	} else if (arg2) {
 		if ((chr->hidden & CHRHFLAG_00000800) == 0) {
 			modelGetRootPosition(model, &chr->prevpos);
+#ifndef PLATFORM_N64
+			if (animfrac) {
+				modelTickAnimQuarterSpeedF(model, g_LvUpdate60fFrac * 4.f, true);
+			} else
+#endif
 			modelTickAnimQuarterSpeed(model, lvupdate240, true);
 			modelUpdateInfo(model);
 		}
 	} else {
+#ifndef PLATFORM_N64
+		if (animfrac) {
+			modelTickAnimQuarterSpeedF(model, g_LvUpdate60fFrac * 4.f, false);
+		} else
+#endif
 		modelTickAnimQuarterSpeed(model, lvupdate240, false);
 	}
 }
