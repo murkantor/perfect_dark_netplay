@@ -1116,6 +1116,48 @@ void musicTickEvents(void)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		// Opening hold (see below). Processing in order, a PLAY for a tracktype
+		// that an earlier PLAY already started (no STOP in between) is just an
+		// "unpause" no-op. Held together in the queue, the supersede pass
+		// would instead let it REPLACE the earlier PLAY: the boot intro's
+		// cutscene track (STOP+PLAY) lost to the menu-close level track that
+		// follows it in the same frame (CI hub music over Jo's typing intro).
+		// Drop such later PLAYs first so the result matches in-order processing.
+		extern s32 g_LvAwaitFirstTick;
+		extern u32 g_LvResetFrame240;
+		const bool hold = (g_LvAwaitFirstTick || (u32)(g_Vars.thisframestart240 - g_LvResetFrame240) < TICKS(12) * 4)
+			&& (u32)(g_Vars.thisframestart240 - g_LvResetFrame240) < 240;
+
+		if (hold) {
+			for (i = 0; i < g_MusicEventQueueLength; i++) {
+				event = &g_MusicEventQueue[i];
+
+				if (event->eventtype != MUSICEVENTTYPE_PLAY || event->tracktype == TRACKTYPE_NONE) {
+					continue;
+				}
+
+				for (j = i - 1; j >= 0; j--) {
+					struct musicevent *earlier = &g_MusicEventQueue[j];
+
+					if (earlier->eventtype == MUSICEVENTTYPE_STOPALL) {
+						break;
+					}
+
+					if (earlier->eventtype == MUSICEVENTTYPE_SETINTERVAL || earlier->tracktype != event->tracktype) {
+						continue;
+					}
+
+					if (earlier->eventtype == MUSICEVENTTYPE_PLAY) {
+						event->tracktype = TRACKTYPE_NONE;
+					}
+
+					break;
+				}
+			}
+		}
+#endif
+
 		// Figure out which events can be removed from the queue due to later
 		// events superseding them. This loop just marks those events as
 		// removable by setting their tracktype to none.
@@ -1200,11 +1242,7 @@ void musicTickEvents(void)
 		// report); held, the later STOP/PLAY lands in the queue with it and the
 		// supersede pass above drops it unplayed. Timed on the always-running
 		// frame clock, so a context whose stage doesn't tick can't stall music.
-		extern s32 g_LvAwaitFirstTick;
-		extern u32 g_LvResetFrame240;
-
-		if ((g_LvAwaitFirstTick || (u32)(g_Vars.thisframestart240 - g_LvResetFrame240) < TICKS(12) * 4)
-				&& (u32)(g_Vars.thisframestart240 - g_LvResetFrame240) < 240) {
+		if (hold) {
 			return;
 		}
 #endif
