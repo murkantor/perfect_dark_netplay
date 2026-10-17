@@ -147,6 +147,55 @@ f32 g_StageTimeElapsed1f = 0;
 // lvupdate60f, so converted systems obey those exactly as before.
 f32 g_LvUpdate60fFrac = 0;
 f32 g_LvUpdate60fFracReal = 0;
+// 1 on a frame that took the real fractional time, 0 when it fell back to the
+// quantised value. Converted sites whose original form steps by integer fields
+// (lvupdate60, applySpeed) run that original code while this is 0, so every
+// fallback frame (netplay, pause, slow-mo...) stays bit-identical.
+s32 g_LvFracActive = 0;
+// the frame's global lvupdate240 (props running on a catch-up step swap their own in)
+s32 g_LvFrame240 = 0;
+
+/**
+ * Midas portLagStep: the per-quantum low-pass `x = x*d + in`, advanced by q
+ * quanta. A whole q runs the original loop (bit-exact - every fallback frame
+ * has a whole q, since g_LvUpdate60fFrac*4 == lvupdate240 there); a fractional
+ * q takes the closed form x*d^q + in*(1-d^q)/(1-d), which keeps the steady
+ * state at in/(1-d). `in` must be valid for the whole step.
+ */
+void lvLagStep(f32 *x, f32 d, f32 in, f32 q)
+{
+	extern float powf(float, float);
+	s32 n = (s32)q;
+
+	if (q <= 0.0f) {
+		return;
+	}
+
+	if ((f32)n == q) {
+		while (n-- > 0) {
+			*x = *x * d + in;
+		}
+		return;
+	}
+
+	if (1.0f - d <= 0.0f) {
+		return;
+	}
+
+	{
+		const f32 dn = powf(d, q);
+
+		*x = *x * dn + in * ((1.0f - dn) / (1.0f - d));
+	}
+}
+
+// powf for the converted sites (the decomp's own math.h shadows <math.h>)
+f32 lvPowf(f32 base, f32 exp)
+{
+	extern float powf(float, float);
+
+	return powf(base, exp);
+}
 #endif
 bool var80084040 = true;
 
@@ -3256,8 +3305,11 @@ void lvTick(void)
 			&& !g_ChaosTimeStop && g_ChaosFakeCrash240 <= 0
 			&& g_Vars.lvupdate240 == g_Vars.diffframe240) {
 		g_LvUpdate60fFrac = g_FrameDiff240f * 0.25f;
+		g_LvFracActive = 1;
+		g_LvFrame240 = g_Vars.lvupdate240;
 	} else {
 		g_LvUpdate60fFrac = g_Vars.lvupdate60f;
+		g_LvFracActive = 0;
 	}
 	g_LvUpdate60fFracReal = PALUPF(g_LvUpdate60fFrac);
 #endif

@@ -4220,18 +4220,17 @@ void bgunUpdateBlend(struct hand *hand, s32 handnum)
 
 	sp5c.x += handGetXShift(handnum);
 
-	for (i = 0; i < g_Vars.lvupdate240; i++) {
-		hand->damppossum.x = (PAL ? 0.9847f : 0.9872f) * hand->damppossum.x + sp5c.f[0];
-		hand->damppossum.y = (PAL ? 0.9847f : 0.9872f) * hand->damppossum.y + sp5c.f[1];
-		hand->damppossum.z = (PAL ? 0.9847f : 0.9872f) * hand->damppossum.z + sp5c.f[2];
+	// Midas time scale: the gun model's position/orientation lag advances every
+	// frame (whole quanta run the original per-quantum loop)
+	{
+		const f32 d = (PAL ? 0.9847f : 0.9872f);
+		const f32 q = (g_LvUpdate60fFrac * 4.f);
 
-		hand->damplooksum.x = (PAL ? 0.9847f : 0.9872f) * hand->damplooksum.x + sp50.f[0];
-		hand->damplooksum.y = (PAL ? 0.9847f : 0.9872f) * hand->damplooksum.y + sp50.f[1];
-		hand->damplooksum.z = (PAL ? 0.9847f : 0.9872f) * hand->damplooksum.z + sp50.f[2];
-
-		hand->dampupsum.x = (PAL ? 0.9847f : 0.9872f) * hand->dampupsum.x + sp44.f[0];
-		hand->dampupsum.y = (PAL ? 0.9847f : 0.9872f) * hand->dampupsum.y + sp44.f[1];
-		hand->dampupsum.z = (PAL ? 0.9847f : 0.9872f) * hand->dampupsum.z + sp44.f[2];
+		for (i = 0; i < 3; i++) {
+			lvLagStep(&hand->damppossum.f[i], d, sp5c.f[i], q);
+			lvLagStep(&hand->damplooksum.f[i], d, sp50.f[i], q);
+			lvLagStep(&hand->dampupsum.f[i], d, sp44.f[i], q);
+		}
 	}
 
 	hand->damppos.x = hand->damppossum.x * (PAL ? 0.01529997587204f : 0.012799978f) * 2;
@@ -4304,9 +4303,7 @@ void bgun0f09d8dc(f32 breathing, f32 arg1, f32 arg2, f32 arg3, f32 arg4)
 		player->gunposamplitude = 0.5f * sp50;
 	}
 
-	for (i = 0; i < g_Vars.lvupdate240; i++) {
-		player->gunampsum = (PAL ? 0.9847f : 0.9872f) * player->gunampsum + player->gunposamplitude;
-	}
+	lvLagStep(&player->gunampsum, (PAL ? 0.9847f : 0.9872f), player->gunposamplitude, (g_LvUpdate60fFrac * 4.f));
 
 	player->gunposamplitude = (PAL ? 0.01529997587204f : 0.012799978256226f) * player->gunampsum;
 
@@ -4314,12 +4311,10 @@ void bgun0f09d8dc(f32 breathing, f32 arg1, f32 arg2, f32 arg3, f32 arg4)
 		breathing = 0.016666667535901f * sp50;
 	}
 
-	for (i = 0; i < g_Vars.lvupdate240; i++) {
-		player->cyclesum = (PAL ? 0.9847f : 0.9872f) * player->cyclesum + breathing;
-	}
+	lvLagStep(&player->cyclesum, (PAL ? 0.9847f : 0.9872f), breathing, (g_LvUpdate60fFrac * 4.f));
 
 	breathing = player->cyclesum * (PAL ? 0.01529997587204f : 0.012799978256226f);
-	sp4c = breathing * g_Vars.lvupdate60freal;
+	sp4c = breathing * g_LvUpdate60fFracReal; // gun bob phase: real fractional time
 	dampt[0] = player->hands[0].dampt + sp4c;
 
 	while (dampt[0] >= 1.0f) {
@@ -4336,7 +4331,8 @@ void bgun0f09d8dc(f32 breathing, f32 arg1, f32 arg2, f32 arg3, f32 arg4)
 	}
 
 	if (player->syncchange + sp4c > 0.0f) {
-		player->gunsync += player->syncchange;
+		// (Midas time scale: per 60Hz field, not per render frame)
+		player->gunsync += g_LvFracActive ? player->syncchange * g_LvUpdate60fFrac : player->syncchange;
 	}
 
 	if (player->gunsync > 0.5f) {
@@ -5390,11 +5386,12 @@ struct defaultobj *bgunCreateThrownProjectile(s32 handnum, struct gset *gset)
 		bgunFreeWeapon(handnum);
 	}
 
-	// Add player movement to velocity
+	// Add player movement to velocity (this frame's movement, which now
+	// integrates real fractional time - divide by the same delta)
 	if (g_Vars.lvupdate240 > 0) {
-		velocity.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_Vars.lvupdate60freal;
-		velocity.y += (playerprop->pos.y - prevpos->y + extrapos->y) / g_Vars.lvupdate60freal;
-		velocity.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_Vars.lvupdate60freal;
+		velocity.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_LvUpdate60fFracReal;
+		velocity.y += (playerprop->pos.y - prevpos->y + extrapos->y) / g_LvUpdate60fFracReal;
+		velocity.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_LvUpdate60fFracReal;
 	}
 
 	obj = bgunCreateThrownProjectile2(g_Vars.currentplayer->prop->chr, gset, &spawnpos, spawnrooms, &sp1f4, &velocity);
@@ -5684,9 +5681,10 @@ void bgunCreateFiredProjectile(s32 handnum)
 			sp264.z = sp250.f[2] * g_Vars.lvupdate60freal + gundir.f[2] * sp25c;
 
 			if ((funcdef->base.base.flags & FUNCFLAG_FLYBYWIRE) == 0 && g_Vars.lvupdate240 > 0) {
-				sp264.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_Vars.lvupdate60freal;
-				sp264.y += (playerprop->pos.y - prevpos->y + extrapos->y) / g_Vars.lvupdate60freal;
-				sp264.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_Vars.lvupdate60freal;
+				// (movement divided by the delta it was integrated with)
+				sp264.x += (playerprop->pos.x - prevpos->x + extrapos->x) / g_LvUpdate60fFracReal;
+				sp264.y += (playerprop->pos.y - prevpos->y + extrapos->y) / g_LvUpdate60fFracReal;
+				sp264.z += (playerprop->pos.z - prevpos->z + extrapos->z) / g_LvUpdate60fFracReal;
 			}
 
 			mtx4Copy(&g_Vars.currentplayer->hands[handnum].posmtx, &sp210);
@@ -6039,14 +6037,18 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 		player->gunaimdamp = aimdamp;
 	}
 
-	for (l = 0; l < g_Vars.lvupdate240; l++) {
-		player->crosspossum[0] = player->crosspossum[0] * crossdamp + screenx;
-		player->crosspossum[1] = player->crosspossum[1] * crossdamp + screeny;
+	// Midas time scale: crosshair + gun-aim lag advance every frame (whole
+	// quanta run the original per-quantum loop)
+	{
+		const f32 q = (g_LvUpdate60fFrac * 4.f);
+
+		lvLagStep(&player->crosspossum[0], crossdamp, screenx, q);
+		lvLagStep(&player->crosspossum[1], crossdamp, screeny, q);
 
 		for (h = 0; h < 2; h++) {
 			hand = &player->hands[h];
-			hand->guncrosspossum[0] = (PAL ? 0.913f : 0.9269697f) * hand->guncrosspossum[0] + x[h];
-			hand->guncrosspossum[1] = (PAL ? 0.913f : 0.9269697f) * hand->guncrosspossum[1] + y[h];
+			lvLagStep(&hand->guncrosspossum[0], (PAL ? 0.913f : 0.9269697f), x[h], q);
+			lvLagStep(&hand->guncrosspossum[1], (PAL ? 0.913f : 0.9269697f), y[h], q);
 		}
 	}
 

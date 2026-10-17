@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/cheats.h"
+#include "game/lv.h"
 #include "game/inv.h"
 #include "game/bondgun.h"
 #include "game/game_0b0fd0.h"
@@ -317,6 +318,13 @@ void currentPlayerZoomOut(f32 fovpersec)
 			amount *= 0.5f;
 		}
 
+#ifndef PLATFORM_N64
+		if (g_LvFracActive) {
+			// Midas time scale: the same per-field factor, compounded over real
+			// fractional time (a per-frame factor compounded faster at high fps)
+			g_Vars.currentplayer->gunzoomfovs[index] *= lvPowf(1.0f + (amount / g_Vars.lvupdate60freal) * 0.1f, g_LvUpdate60fFracReal);
+		} else
+#endif
 		g_Vars.currentplayer->gunzoomfovs[index] *= 1.0f + amount * 0.1f;
 
 		if (g_Vars.currentplayer->gunzoomfovs[index] > ADJUST_ZOOM_FOV(60)) {
@@ -348,6 +356,11 @@ void currentPlayerZoomIn(f32 fovpersec)
 			amount *= 0.5f;
 		}
 
+#ifndef PLATFORM_N64
+		if (g_LvFracActive) {
+			g_Vars.currentplayer->gunzoomfovs[index] /= lvPowf(1.0f + (amount / g_Vars.lvupdate60freal) * 0.1f, g_LvUpdate60fFracReal);
+		} else
+#endif
 		g_Vars.currentplayer->gunzoomfovs[index] /= 1 + amount * 0.1f;
 
 		if (g_Vars.currentplayer->gunzoomfovs[index] < ADJUST_ZOOM_FOV(2)) {

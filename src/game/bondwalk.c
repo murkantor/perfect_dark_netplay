@@ -32,6 +32,10 @@
 #include "system.h"
 #include "utils.h"
 
+#ifndef PLATFORM_N64
+static void bwalkApplySpeedFrac(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel, f32 maxspeed, f32 n);
+#endif
+
 static inline void lerpcoord(struct coord *c, const struct coord *a, const struct coord *b, const f32 t) {
 	c->x = lerpf(a->x, b->x, t);
 	c->y = lerpf(a->y, b->y, t);
@@ -1225,10 +1229,10 @@ void bwalkUpdateVertical(void)
 			|| g_Vars.currentplayer->vv_ground > g_Vars.currentplayer->vv_manground) {
 		g_Vars.currentplayer->sumground = g_Vars.currentplayer->vv_manground / (PAL ? 0.054400026798248f : 0.045499980449677f);
 
-		for (i = 0; i < g_Vars.lvupdate240; i++) {
-			g_Vars.currentplayer->sumground =
-				g_Vars.currentplayer->sumground * (PAL ? 0.94559997320175f : 0.9545f) + g_Vars.currentplayer->vv_ground;
-		}
+		// Midas time scale: step-up easing advances every frame (whole quanta
+		// run the original loop)
+		lvLagStep(&g_Vars.currentplayer->sumground, (PAL ? 0.94559997320175f : 0.9545f),
+				g_Vars.currentplayer->vv_ground, (g_LvUpdate60fFrac * 4.f));
 
 		if (g_Vars.currentplayer->vv_manground < g_Vars.currentplayer->vv_ground) {
 			// Feet are lower than the ground
@@ -1283,8 +1287,9 @@ void bwalkUpdateVertical(void)
 			multiplier = 0.277777777f;
 		}
 
-		newfallspeed = fallspeed - g_Vars.lvupdate60freal * multiplier;
-		newmanground += g_Vars.lvupdate60freal * (fallspeed + newfallspeed) * 0.5f;
+		// Midas time scale: falling integrates real fractional time
+		newfallspeed = fallspeed - g_LvUpdate60fFracReal * multiplier;
+		newmanground += g_LvUpdate60fFracReal * (fallspeed + newfallspeed) * 0.5f;
 		fallspeed = newfallspeed;
 
 		if (newmanground < g_Vars.currentplayer->vv_ground) {
@@ -1631,6 +1636,13 @@ void bwalkUpdateCrouchOffset(void)
 		f32 prevcrouchoffsetrealsmall = g_Vars.currentplayer->crouchoffsetrealsmall;
 
 		// f32 *frac, f32 maxfrac, f32 *fracspeed, f32 accel, f32 decel, f32 maxspeed
+#ifndef PLATFORM_N64
+		if (g_LvFracActive) {
+			// Midas time scale: crouch eases on real time, not in whole 60Hz fields
+			bwalkApplySpeedFrac(&g_Vars.currentplayer->crouchoffset, targetoffset,
+					&g_Vars.currentplayer->crouchspeed, PALUPF(0.5f), PALUPF(0.5f), PALUPF(5.0f), g_LvUpdate60fFrac);
+		} else
+#endif
 		applySpeed(&g_Vars.currentplayer->crouchoffset, targetoffset,
 				&g_Vars.currentplayer->crouchspeed, PALUPF(0.5f), PALUPF(0.5f), PALUPF(5.0f));
 
@@ -1653,6 +1665,83 @@ void bwalkUpdateCrouchOffset(void)
 
 	g_Vars.currentplayer->guncloseroffset = g_Vars.currentplayer->crouchoffset / -90;
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Midas time scale: applySpeed (propobj.c, shared with doors and lifts) eases in
+ * whole 60Hz fields, so the crouch moved only on frames where a field completed.
+ * This is the same easing integrated over `n` fields of real (fractional) time,
+ * in sub-steps of at most one field so low frame rates stay close to the loop.
+ */
+static void bwalkApplySpeedFrac(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel, f32 maxspeed, f32 n)
+{
+	f32 speed = *speedptr;
+	s32 steps = (s32)n;
+	f32 dt;
+	s32 i;
+
+	if (n <= 0.f) {
+		return;
+	}
+
+	if ((f32)steps < n) {
+		steps++;
+	}
+
+	dt = n / (f32)steps;
+
+	for (i = 0; i < steps; i++) {
+		f32 limit = speed * speed * 0.5f / decel;
+		f32 distremaining = maxdist - *distdone;
+
+		if (distremaining > 0.0f) {
+			if (speed > 0.0f && distremaining <= limit) {
+				speed -= decel * dt;
+
+				if (speed < decel) {
+					speed = decel;
+				}
+			} else if (speed < maxspeed) {
+				speed += ((speed < 0.0f) ? decel : accel) * dt;
+
+				if (speed > maxspeed) {
+					speed = maxspeed;
+				}
+			}
+
+			if (speed * dt >= distremaining) {
+				*distdone = maxdist;
+				break;
+			}
+
+			*distdone += speed * dt;
+		} else {
+			if (speed < 0.0f && -distremaining <= limit) {
+				speed += decel * dt;
+
+				if (speed > -decel) {
+					speed = -decel;
+				}
+			} else if (speed > -maxspeed) {
+				speed -= ((speed > 0.0f) ? decel : accel) * dt;
+
+				if (speed < -maxspeed) {
+					speed = -maxspeed;
+				}
+			}
+
+			if (speed * dt <= distremaining) {
+				*distdone = maxdist;
+				break;
+			}
+
+			*distdone += speed * dt;
+		}
+	}
+
+	*speedptr = speed;
+}
+#endif
 
 void bwalkUpdateTheta(void)
 {
@@ -2002,11 +2091,23 @@ void bwalk0f0c69b8(void)
 			lvupdate240 = g_Vars.lvupdate60;
 		}
 
-		for (i = 0; i < lvupdate240; i++) {
-			spa8 += (dist - spa8) * PALUPF(0.1f);
-		}
+#ifndef PLATFORM_N64
+		if (g_LvFracActive) {
+			// Midas time scale: the per-field lean cap ramp, in closed form over
+			// real time (same 4-field clamp)
+			const f32 n = (g_LvUpdate60fFrac > 4.f) ? 4.f : g_LvUpdate60fFrac;
+			const f32 nr = (g_LvUpdate60fFracReal > PALUPF(4)) ? PALUPF(4) : g_LvUpdate60fFracReal;
 
-		spa8 += 3.75f * lvupdate60f;
+			spa8 = dist * (1.f - lvPowf(1.f - PALUPF(0.1f), n)) + 3.75f * nr;
+		} else
+#endif
+		{
+			for (i = 0; i < lvupdate240; i++) {
+				spa8 += (dist - spa8) * PALUPF(0.1f);
+			}
+
+			spa8 += 3.75f * lvupdate60f;
+		}
 
 		if (g_Vars.currentplayer->crouchoffset < -45.0f) {
 			spa8 *= 0.35f;
@@ -2020,7 +2121,8 @@ void bwalk0f0c69b8(void)
 			// so each frame applies ~50% of the remaining delta. Reaches
 			// near-target in ~3 frames instead of the vanilla 8-10 ramp,
 			// without the visual pop of a true 1-frame snap.
-			spa8 = dist * 0.5f;
+			// (Midas time scale: 50% per 60Hz field, not per render frame)
+			spa8 = g_LvFracActive ? dist * (1.f - lvPowf(0.5f, g_LvUpdate60fFrac)) : dist * 0.5f;
 		}
 #endif
 
@@ -2094,21 +2196,25 @@ void bwalk0f0c69b8(void)
 		}
 #endif
 
-		spcc.f[0] += (spd8 * g_Vars.currentplayer->bond2.unk00.f[0] - spdc * g_Vars.currentplayer->bond2.unk00.f[2]) * g_Vars.lvupdate60freal;
-		spcc.f[2] += (spd8 * g_Vars.currentplayer->bond2.unk00.f[2] + spdc * g_Vars.currentplayer->bond2.unk00.f[0]) * g_Vars.lvupdate60freal;
+		// Midas time scale: the walk displacement integrates real fractional
+		// time. The velocity (headpos) is the head anim's, updated on integer
+		// ticks and held between them, so the distance per second is unchanged.
+		// Every spcc term below uses the same delta.
+		spcc.f[0] += (spd8 * g_Vars.currentplayer->bond2.unk00.f[0] - spdc * g_Vars.currentplayer->bond2.unk00.f[2]) * g_LvUpdate60fFracReal;
+		spcc.f[2] += (spd8 * g_Vars.currentplayer->bond2.unk00.f[2] + spdc * g_Vars.currentplayer->bond2.unk00.f[0]) * g_LvUpdate60fFracReal;
 		spcc.f[0] += spb4;
 		spcc.f[2] += spb0;
 
 		bmoveUpdateMoveInitSpeed(&spcc);
 
 		if (debugIsTurboModeEnabled()) {
-			spcc.f[0] += (g_Vars.currentplayer->bond2.unk00.f[0] * g_Vars.currentplayer->speedforwards - g_Vars.currentplayer->bond2.unk00.f[2] * g_Vars.currentplayer->speedsideways) * g_Vars.lvupdate60freal * 10.0f;
-			spcc.f[2] += (g_Vars.currentplayer->bond2.unk00.f[2] * g_Vars.currentplayer->speedforwards + g_Vars.currentplayer->bond2.unk00.f[0] * g_Vars.currentplayer->speedsideways) * g_Vars.lvupdate60freal * 10.0f;
+			spcc.f[0] += (g_Vars.currentplayer->bond2.unk00.f[0] * g_Vars.currentplayer->speedforwards - g_Vars.currentplayer->bond2.unk00.f[2] * g_Vars.currentplayer->speedsideways) * g_LvUpdate60fFracReal * 10.0f;
+			spcc.f[2] += (g_Vars.currentplayer->bond2.unk00.f[2] * g_Vars.currentplayer->speedforwards + g_Vars.currentplayer->bond2.unk00.f[0] * g_Vars.currentplayer->speedsideways) * g_LvUpdate60fFracReal * 10.0f;
 		}
 
 		if (g_Vars.currentplayer->bondforcespeed.f[0] != 0.0f || g_Vars.currentplayer->bondforcespeed.f[2] != 0.0f) {
-			spcc.f[0] += g_Vars.currentplayer->bondforcespeed.f[0] * g_Vars.lvupdate60freal;
-			spcc.f[2] += g_Vars.currentplayer->bondforcespeed.f[2] * g_Vars.lvupdate60freal;
+			spcc.f[0] += g_Vars.currentplayer->bondforcespeed.f[0] * g_LvUpdate60fFracReal;
+			spcc.f[2] += g_Vars.currentplayer->bondforcespeed.f[2] * g_LvUpdate60fFracReal;
 		}
 
 		if (g_Vars.currentplayer->onladder) {
@@ -2116,7 +2222,7 @@ void bwalk0f0c69b8(void)
 
 			sp74 = -(spcc.f[0] * g_Vars.currentplayer->laddernormal.f[0] + spcc.f[2] * g_Vars.currentplayer->laddernormal.f[2]);
 
-			if (-4.0f * g_Vars.lvupdate60freal < sp74) {
+			if (-4.0f * g_LvUpdate60fFracReal < sp74) {
 				if (sp74 < 0.0f) {
 					spcc.f[0] += sp74 * g_Vars.currentplayer->laddernormal.f[0];
 					spcc.f[2] += sp74 * g_Vars.currentplayer->laddernormal.f[2];

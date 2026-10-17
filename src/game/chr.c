@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "game/bondmove.h"
 #include "game/cheats.h"
+#include "game/lv.h"
 #include "game/chraction.h"
 #include "game/debug.h"
 #include "game/chr.h"
@@ -689,8 +690,16 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 			arg2->x += chr->pushspeed[0] * VAR(lvupdate60freal);
 			arg2->z += chr->pushspeed[1] * VAR(lvupdate60freal);
 
+#ifndef PLATFORM_N64
+			// 0.9 per 60Hz field of this chr's step, matching the add above (it
+			// decayed once per call = once per rendered frame, so pushes died
+			// faster the higher the fps; identical at 60)
+			chr->pushspeed[0] *= lvPowf(0.9f, VAR(lvupdate60f));
+			chr->pushspeed[1] *= lvPowf(0.9f, VAR(lvupdate60f));
+#else
 			chr->pushspeed[0] *= 0.9f;
 			chr->pushspeed[1] *= 0.9f;
+#endif
 
 			if (chr->pushspeed[0] != 0.0f || chr->pushspeed[1] != 0.0f) {
 				f32 pushdist = sqrtf(chr->pushspeed[0] * chr->pushspeed[0] + chr->pushspeed[1] * chr->pushspeed[1]);
@@ -943,6 +952,21 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 							}
 						}
 					} else if (chr->manground <= chr->ground) {
+#ifndef PLATFORM_N64
+						if (g_LvFracActive && g_Vars.lvupdate240 == g_LvFrame240) {
+							// Midas time scale: the chr's height on stairs/slopes
+							// eases on real time instead of in 60Hz fields (only
+							// when this chr runs on the frame's own step, not a
+							// catch-up tick). The horizontal fall decay stays per
+							// field: it is applied with the integer step.
+							lvLagStep(&chr->sumground, (PAL ? 0.88120001554489f : 0.9f), chr->ground, g_LvUpdate60fFrac);
+
+							for (i = 0; i < g_Vars.lvupdate60; i++) {
+								chr->fallspeed.x *= (PAL ? 0.88120001554489f : 0.9f);
+								chr->fallspeed.z *= (PAL ? 0.88120001554489f : 0.9f);
+							}
+						} else
+#endif
 						for (i = 0; i < g_Vars.lvupdate60; i++) {
 							chr->sumground = chr->sumground * (PAL ? 0.88120001554489f : 0.9f) + chr->ground;
 							chr->fallspeed.x *= (PAL ? 0.88120001554489f : 0.9f);

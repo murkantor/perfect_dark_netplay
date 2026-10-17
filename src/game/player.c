@@ -2521,7 +2521,7 @@ void playerUpdateZoom(void)
 	struct stagetableentry *stage;
 
 	if (g_Vars.currentplayer->zoomintime < g_Vars.currentplayer->zoomintimemax) {
-		g_Vars.currentplayer->zoomintime += g_Vars.lvupdate60freal;
+		g_Vars.currentplayer->zoomintime += g_LvUpdate60fFracReal; // Midas time scale
 
 		if (g_Vars.currentplayer->zoomintime > g_Vars.currentplayer->zoomintimemax) {
 			g_Vars.currentplayer->zoomintime = g_Vars.currentplayer->zoomintimemax;

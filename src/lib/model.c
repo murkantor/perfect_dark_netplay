@@ -1640,6 +1640,11 @@ void modelSetMatricesWithAnim(struct modelrenderdata *renderdata, struct model *
 	f32 frac2;
 
 	if (anim && anim->animnum) {
+#ifdef PLATFORM_N64
+		// N64 multiplayer shortcut: fast animations skip the frame blend. On PC
+		// this snapped every run cycle to whole anim frames whenever 2+ players
+		// exist (remote netplay pawns count), so it is console-only now - the
+		// same fence chrTick's "always interpolate animation" already has.
 		if (PLAYERCOUNT() >= 2) {
 			frac = anim->frac;
 			frac2 = anim->frac2;
@@ -1654,6 +1659,7 @@ void modelSetMatricesWithAnim(struct modelrenderdata *renderdata, struct model *
 				anim->frac2 = 0;
 			}
 		}
+#endif
 
 		animLoadHeader(anim->animnum);
 		anim->frameslot1 = animLoadFrame(anim->animnum, anim->framea);
@@ -1676,10 +1682,12 @@ void modelSetMatricesWithAnim(struct modelrenderdata *renderdata, struct model *
 
 	modelSetMatrices(renderdata, model);
 
+#ifdef PLATFORM_N64
 	if (PLAYERCOUNT() >= 2 && anim && anim->animnum) {
 		anim->frac = frac;
 		anim->frac2 = frac2;
 	}
+#endif
 }
 
 s16 modelGetAnimNum(struct model *model)

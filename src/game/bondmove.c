@@ -843,6 +843,8 @@ f32 bmoveGetSpeedVertaLimit(f32 value)
 	return 0;
 }
 
+// (Midas time scale: the pitch/turn ramps below integrate real fractional time,
+// matching the vv_verta / yaw integration they feed)
 void bmoveUpdateSpeedVerta(f32 value)
 {
 	f32 mult = viGetFovY() / PLAYER_DEFAULT_FOV;
@@ -850,9 +852,9 @@ void bmoveUpdateSpeedVerta(f32 value)
 
 	if (value > 0) {
 		if (g_Vars.currentplayer->speedverta > 0) {
-			g_Vars.currentplayer->speedverta -= 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedverta -= 0.05f * g_LvUpdate60fFracReal * mult;
 		} else {
-			g_Vars.currentplayer->speedverta -= 0.0125f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedverta -= 0.0125f * g_LvUpdate60fFracReal * mult;
 		}
 
 		if (g_Vars.currentplayer->speedverta < limit) {
@@ -860,9 +862,9 @@ void bmoveUpdateSpeedVerta(f32 value)
 		}
 	} else if (value < 0) {
 		if (g_Vars.currentplayer->speedverta < 0) {
-			g_Vars.currentplayer->speedverta += 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedverta += 0.05f * g_LvUpdate60fFracReal * mult;
 		} else {
-			g_Vars.currentplayer->speedverta += 0.0125f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedverta += 0.0125f * g_LvUpdate60fFracReal * mult;
 		}
 
 		if (g_Vars.currentplayer->speedverta > limit) {
@@ -870,13 +872,13 @@ void bmoveUpdateSpeedVerta(f32 value)
 		}
 	} else {
 		if (g_Vars.currentplayer->speedverta > limit) {
-			g_Vars.currentplayer->speedverta -= 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedverta -= 0.05f * g_LvUpdate60fFracReal * mult;
 
 			if (g_Vars.currentplayer->speedverta < limit) {
 				g_Vars.currentplayer->speedverta = limit;
 			}
 		} else {
-			g_Vars.currentplayer->speedverta += 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedverta += 0.05f * g_LvUpdate60fFracReal * mult;
 
 			if (g_Vars.currentplayer->speedverta > limit) {
 				g_Vars.currentplayer->speedverta = limit;
@@ -905,9 +907,9 @@ void bmoveUpdateSpeedThetaControl(f32 value)
 
 	if (value > 0) {
 		if (g_Vars.currentplayer->speedthetacontrol > 0) {
-			g_Vars.currentplayer->speedthetacontrol -= 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedthetacontrol -= 0.05f * g_LvUpdate60fFracReal * mult;
 		} else {
-			g_Vars.currentplayer->speedthetacontrol -= 0.0125f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedthetacontrol -= 0.0125f * g_LvUpdate60fFracReal * mult;
 		}
 
 		if (g_Vars.currentplayer->speedthetacontrol < limit) {
@@ -915,9 +917,9 @@ void bmoveUpdateSpeedThetaControl(f32 value)
 		}
 	} else if (value < 0) {
 		if (g_Vars.currentplayer->speedthetacontrol < 0.0f) {
-			g_Vars.currentplayer->speedthetacontrol += 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedthetacontrol += 0.05f * g_LvUpdate60fFracReal * mult;
 		} else {
-			g_Vars.currentplayer->speedthetacontrol += 0.0125f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedthetacontrol += 0.0125f * g_LvUpdate60fFracReal * mult;
 		}
 
 		if (g_Vars.currentplayer->speedthetacontrol > limit) {
@@ -925,13 +927,13 @@ void bmoveUpdateSpeedThetaControl(f32 value)
 		}
 	} else {
 		if (g_Vars.currentplayer->speedthetacontrol > limit) {
-			g_Vars.currentplayer->speedthetacontrol -= 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedthetacontrol -= 0.05f * g_LvUpdate60fFracReal * mult;
 
 			if (g_Vars.currentplayer->speedthetacontrol < limit) {
 				g_Vars.currentplayer->speedthetacontrol = limit;
 			}
 		} else {
-			g_Vars.currentplayer->speedthetacontrol += 0.05f * g_Vars.lvupdate60freal * mult;
+			g_Vars.currentplayer->speedthetacontrol += 0.05f * g_LvUpdate60fFracReal * mult;
 
 			if (g_Vars.currentplayer->speedthetacontrol > limit) {
 				g_Vars.currentplayer->speedthetacontrol = limit;
@@ -2910,7 +2912,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				}
 
 				// Calculate new verta
-				newverta = g_Vars.currentplayer->vv_verta + (g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal + g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal);
+				newverta = g_Vars.currentplayer->vv_verta + (g_Vars.currentplayer->speedverta * g_LvUpdate60fFracReal + g_Vars.currentplayer->speedverta * g_LvUpdate60fFracReal);
 
 				if (g_Vars.currentplayer->vv_verta > lookahead && newverta > lookahead) {
 					g_Vars.currentplayer->vv_verta = newverta;
@@ -3285,8 +3287,9 @@ void bmoveUpdateMoveInitSpeed(struct coord *newpos)
 		if (g_Vars.currentplayer->moveinitspeed.x < 0.001f && g_Vars.currentplayer->moveinitspeed.x > -0.001f) {
 			g_Vars.currentplayer->moveinitspeed.x = 0;
 		} else {
-			g_Vars.currentplayer->moveinitspeed.x *= 0.9f;
-			newpos->x += g_Vars.currentplayer->moveinitspeed.x * g_Vars.lvupdate60freal;
+			// Midas time scale: 0.9 per 60Hz field (it was per render frame)
+			g_Vars.currentplayer->moveinitspeed.x *= g_LvFracActive ? lvPowf(0.9f, g_LvUpdate60fFrac) : 0.9f;
+			newpos->x += g_Vars.currentplayer->moveinitspeed.x * g_LvUpdate60fFracReal;
 		}
 	}
 
@@ -3294,8 +3297,8 @@ void bmoveUpdateMoveInitSpeed(struct coord *newpos)
 		if (g_Vars.currentplayer->moveinitspeed.z < 0.001f && g_Vars.currentplayer->moveinitspeed.z > -0.001f) {
 			g_Vars.currentplayer->moveinitspeed.z = 0;
 		} else {
-			g_Vars.currentplayer->moveinitspeed.z *= 0.9f;
-			newpos->z += g_Vars.currentplayer->moveinitspeed.z * g_Vars.lvupdate60freal;
+			g_Vars.currentplayer->moveinitspeed.z *= g_LvFracActive ? lvPowf(0.9f, g_LvUpdate60fFrac) : 0.9f;
+			newpos->z += g_Vars.currentplayer->moveinitspeed.z * g_LvUpdate60fFracReal;
 		}
 	}
 }
@@ -3447,7 +3450,8 @@ void bmove0f0cc19c(struct coord *arg)
 	g_Vars.currentplayer->bond2.unk10.z = arg->z;
 
 	if (g_Vars.currentplayer->isdead && g_Vars.currentplayer->bondleandown > 0) {
-		g_Vars.currentplayer->bondleandown -= 0.25f;
+		// (Midas time scale: per 60Hz field, not per render frame)
+		g_Vars.currentplayer->bondleandown -= g_LvFracActive ? 0.25f * g_LvUpdate60fFrac : 0.25f;
 
 		if (g_Vars.currentplayer->bondleandown < 0) {
 			g_Vars.currentplayer->bondleandown = 0;
