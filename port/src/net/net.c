@@ -4441,6 +4441,39 @@ static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *c
 	return (dx * dx + dy * dy + dz * dz) <= (g_NetRelevancyDist * g_NetRelevancyDist);
 }
 
+/**
+ * Midas time scale (docs/PORT_TIMESCALE.md): real time since g_NetTick last
+ * advanced, in ticks [0, 1]. g_NetTick is a whole 60Hz count, so interpolating
+ * against it alone stepped every remote chr at 60Hz whatever the frame rate.
+ * Render-side only: it shifts WHERE between two snapshots a remote chr is
+ * drawn, never the simulation or anything on the wire. Computed once per frame.
+ */
+static f32 netTickSubFrac(void)
+{
+	extern f32 g_FrameDiff240f;
+	static u32 lastframe = 0;
+	static u32 lasttick = 0;
+	static f32 sub = 0.f;
+
+	if (g_Vars.thisframestartt != lastframe) {
+		lastframe = g_Vars.thisframestartt;
+		sub += g_FrameDiff240f * 0.25f;
+
+		if (g_NetTick != lasttick) {
+			sub -= (f32)(g_NetTick - lasttick);
+			lasttick = g_NetTick;
+		}
+
+		if (sub < 0.f) {
+			sub = 0.f;
+		} else if (sub > 1.f) {
+			sub = 1.f;
+		}
+	}
+
+	return sub;
+}
+
 void netChrInterpolate(struct chrdata *chr)
 {
 	if (!g_NetChrInterp || g_NetMode != NETMODE_CLIENT || !chr || !chr->prop) {
@@ -4525,7 +4558,11 @@ void netChrInterpolate(struct chrdata *chr)
 		// Normal case: interpolate the WHOLE pose between the bracketing snapshots,
 		// so body, facing and aim all reconstruct for the same past instant.
 		const u32 span = chr->netsnaps[inewer].tick - chr->netsnaps[iolder].tick;
-		const f32 t = (span > 0) ? (f32)(desired - chr->netsnaps[iolder].tick) / (f32)span : 1.f;
+		// + the sub-tick fraction so the pose moves every frame, not every tick
+		f32 t = (span > 0) ? ((f32)(desired - chr->netsnaps[iolder].tick) + netTickSubFrac()) / (f32)span : 1.f;
+		if (t > 1.f) {
+			t = 1.f;
+		}
 		out.pos.x          = netLerpf(chr->netsnaps[iolder].pos.x, chr->netsnaps[inewer].pos.x, t);
 		out.pos.y          = netLerpf(chr->netsnaps[iolder].pos.y, chr->netsnaps[inewer].pos.y, t);
 		out.pos.z          = netLerpf(chr->netsnaps[iolder].pos.z, chr->netsnaps[inewer].pos.z, t);

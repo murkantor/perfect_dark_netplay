@@ -30,6 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include "system.h"
 
 #include "glad/glad.h"
 #include "gfx_retro.h"
@@ -288,7 +290,8 @@ void gfx_retro_filter(int pixw, int pixh, int cmode, int clevels, int fx, float 
     if (s_loc_fx >= 0) glUniform1i(s_loc_fx, fx);
     if (s_loc_warp >= 0) glUniform1f(s_loc_warp, warp);
     if (s_loc_aspect >= 0) glUniform1f(s_loc_aspect, (float)fbw / (float)fbh);
-    if (s_loc_time >= 0) glUniform1f(s_loc_time, (float)(s_frames % 216000u) / 60.0f);
+    // real seconds (it was frames/60, so the CRT/VHS animation ran at fps speed)
+    if (s_loc_time >= 0) glUniform1f(s_loc_time, fmodf(sysGetSeconds(), 3600.0f));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_cap_tex);
     if (s_vao) {

@@ -125,37 +125,66 @@ Deliberately left alone:
 - Mauler charge (gameplay).
 - Recoil jitter (RNG on fire ticks).
 
-## Phase 2b: still to do (from the world audit)
+## Phase 2b (2026-10-17): doors, lifts, netplay remote chrs, UI at 60 tps
 
-Ranked by visual impact at high fps:
-1. **Lifts** step at 60 Hz and carry the player and camera, because
-   `applySpeed` loops in whole fields. This needs a render-side sub-field
-   offset for the lift *and* its riders, or a fractional `applySpeedF` that
-   keeps the discrete parts per field.
-2. **Doors** step at 60 Hz. Use a render-only `renderfrac = frac +
-   fracspeed*phase60` in `doorInitMatrices`, leaving logic and collision
-   untouched.
-3. **Chr animation and guard root motion** step at 240 Hz. Preferred fix for
-   SP: render-only animation phase extrapolation in `chrTick`'s
-   `needsupdate` block, saving and restoring `frac`/`frac2` and the root
-   offset around `modelSetMatricesWithAnim`, with no logic change. The
-   matrices are also shot hitboxes, so keep it local and off on the server.
-4. **Simulant movement** `bot0f1921f8` has the bug-16 loop. Closed form,
-   with its `lvupdate240 > 0` gate relaxed, SP only.
-5. **Projectiles** (with spin), sparks, shards, smoke: render-only
-   extrapolation by phase. Their logic stays per tick or field.
-6. **Netplay** steps the whole world at 60 Hz, so the fractional delta can
-   never help there. It needs render-only interpolation from
-   `g_TickInterpAlpha`: a fractional `desired` in `netChrInterpolate`, and
-   door and projectile render offsets.
-7. Player leftovers:
-   - the landing dip (a per-quantum loop with an integer countdown, which
-     needs the render-phase approach);
-   - the eye-height bob target (needs fractional head-anim ticks);
-   - gun animations and recoil pose, which step at 60 Hz (needs fractional
-     anim playback decoupled from the guncmd state machine);
-   - grab-mode and hoverbike movement and yaw, gated on integer time.
-8. Optional: a render thread and the vsync lock.
+- **Doors and lifts** stepped at 60 Hz: `applySpeed` eases in whole fields,
+  and lifts carry the player and camera. They now call `applySpeedTimed`
+  (propobj.c). On a real fractional frame, for a prop on the frame's own
+  step, that runs `applySpeedFrac`, the same easing integrated over real
+  time in sub-steps of at most one field. On any other frame it runs the
+  original loop. Lift riders are displaced from the new position as before,
+  so player and camera ride smoothly. Crouch uses the same helper.
+  `applySpeed` itself is untouched: AI turning, turret aim and hovercar bob
+  use it inside integer-gated logic, which is the bug-16 hazard.
+- **Netplay remote chrs.** `netChrInterpolate` timed its interpolation on the
+  whole-tick `g_NetTick`, so sims and enemies on a client stepped at 60 Hz.
+  `netTickSubFrac()` adds the real time since the last tick to the
+  interpolation target. This is render-side only: no simulation or wire
+  change.
+- **UI at 60 ticks/s.** Removing the 60 fps cap exposed UI code that
+  animates per rendered frame. Fixed:
+  - **menu dialogs**: the open/slide/resize/scroll 1-pixel nudges now fire
+    only on a frame where a 60 Hz field elapsed; the text wave, the MP
+    Ready pre-open and the hudpiece retarget step by fields;
+  - **list scroll nudge and marquee minimum** (menuitem.c);
+  - **radial weapon menu glide and expand** (`activemenutick.c`, once per
+    field);
+  - **hudmsg delay** and **Lua timed overlays**;
+  - **combat-boost transition** (`speedpillchange`, which also engages
+    slow-mo, so this was a gameplay bug);
+  - **lock-screen blur count** and the **Infiltration static roll**;
+  - **IR/FarSight scanline**;
+  - renderer clocks: the **retro post-FX time** (GL and SDL_GPU) and the
+    **chaos DVD bounce** now use real seconds.
+
+  Menu *input* still runs every frame, so no press is dropped or repeated.
+  Already time-based and left alone: hudmsg popups, health bar, damage
+  flash, crosshair, ammo HUD, screen fades, kill feed, chaos.lua (it uses
+  `pd.lvupdate()` fields).
+
+## Still to do (from the world audit)
+
+1. **Chr animation and guard root motion** step at 240 Hz (visible only above
+   240 fps). Preferred fix for SP: render-only animation phase extrapolation
+   around `modelSetMatricesWithAnim`. The matrices are also shot hitboxes,
+   so keep it local and off on the server.
+2. **Simulant movement** `bot0f1921f8` has the bug-16 loop. Closed form,
+   with the gate relaxed, SP only.
+3. **Projectiles** (with spin), sparks, shards and smoke: render-only
+   extrapolation by sub-field phase. Smoke and sparks step at 60 Hz.
+4. **Netplay**: the local camera and remote *players* (bwalkUpdateRemote)
+   still step at 60 Hz, because netplay pins the sim. This needs a view
+   delta that ignores the pin (the mouse bank then has to go) and
+   render-side remote-player smoothing.
+5. Player leftovers:
+   - the landing dip;
+   - the eye-height bob target;
+   - gun animations and recoil pose (60 Hz);
+   - grab-mode and hoverbike movement.
+6. Small per-frame UI counters left as they are, because they are input
+   grace windows, not animation: menu open inhibit, endscreen continue
+   delay, the radial menu's return and corner timers, file-op delay.
+7. Optional: a render thread and the vsync lock.
 
 ## Honest status
 
@@ -183,3 +212,12 @@ Phase 2a checklist (compile-verified only):
     between poses.
 11. Sims and guards on stairs move vertically smoothly. Pushes (melee,
     explosions) travel the same distance at 60 and 300 fps.
+
+Phase 2b checklist (compile-verified only):
+12. Uncapped: doors open/close smoothly, lifts glide, and you and the camera
+    ride a lift smoothly. Door/lift timing matches 60 fps.
+13. Netplay client: sims/enemies move smoothly at 120 fps (not stepping).
+14. Pause menu, inventory, objectives, end screens and front-end dialogs
+    open/slide at the same speed as at 60 fps. The radial weapon menu
+    glides normally. The combat boost blur takes as long as at 60 fps.
+

@@ -1890,7 +1890,8 @@ Gfx *lvRender(Gfx *gdl)
 
 			if (g_Vars.lockscreen) {
 				gdl = bviewDrawMotionBlur(gdl, 0xffffffff, 255);
-				g_Vars.lockscreen--;
+				// counts 60Hz fields, not rendered frames
+				g_Vars.lockscreen = (g_Vars.lockscreen > g_Vars.diffframe60) ? g_Vars.lockscreen - g_Vars.diffframe60 : 0;
 			} else if (var8009dfc0) {
 				gdl = viRenderViewportEdges(gdl);
 				gdl = bgScissorToViewport(gdl);
@@ -2267,7 +2268,8 @@ Gfx *lvRender(Gfx *gdl)
 
 								// Consider a single frame of static, separate
 								// to the main static above
-								if (rngRandom() % 60 == 1) {
+								// (1 in 60 per 60Hz field, not per frame)
+								if (g_Vars.diffframe60 > 0 && rngRandom() % 60 == 1) {
 									cutscenestatic = 255;
 									sndStart(var80095200, SFX_INFIL_STATIC_SHORT, NULL, -1, -1, -1, -1, -1);
 								}
@@ -2357,10 +2359,13 @@ Gfx *lvRender(Gfx *gdl)
 #else
 						if (g_Vars.currentplayernum == 0) {
 #endif
+							// (per 60Hz field: per rendered frame it ran the
+							// boost blur/fade - and the slow-mo it engages - at
+							// fps speed)
 							if (g_Vars.speedpillwant) {
-								g_Vars.speedpillchange++;
+								g_Vars.speedpillchange += g_Vars.diffframe60;
 							} else {
-								g_Vars.speedpillchange--;
+								g_Vars.speedpillchange -= g_Vars.diffframe60;
 							}
 						}
 

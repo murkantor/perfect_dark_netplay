@@ -3791,6 +3791,102 @@ void applySpeed(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel,
 	*speedptr = speed;
 }
 
+#ifndef PLATFORM_N64
+/**
+ * Midas time scale: applySpeed eases in whole 60Hz fields (g_Vars.lvupdate60),
+ * so whatever uses it moved only on frames where a field completed. This is the
+ * same easing integrated over `n` fields of real (fractional) time, in sub-steps
+ * of at most one field so low frame rates stay close to the loop.
+ */
+void applySpeedFrac(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel, f32 maxspeed, f32 n)
+{
+	f32 speed = *speedptr;
+	s32 steps = (s32)n;
+	f32 dt;
+	s32 i;
+
+	if (n <= 0.f) {
+		return;
+	}
+
+	if ((f32)steps < n) {
+		steps++;
+	}
+
+	dt = n / (f32)steps;
+
+	for (i = 0; i < steps; i++) {
+		f32 limit = speed * speed * 0.5f / decel;
+		f32 distremaining = maxdist - *distdone;
+
+		if (distremaining > 0.0f) {
+			if (speed > 0.0f && distremaining <= limit) {
+				speed -= decel * dt;
+
+				if (speed < decel) {
+					speed = decel;
+				}
+			} else if (speed < maxspeed) {
+				speed += ((speed < 0.0f) ? decel : accel) * dt;
+
+				if (speed > maxspeed) {
+					speed = maxspeed;
+				}
+			}
+
+			if (speed * dt >= distremaining) {
+				*distdone = maxdist;
+				break;
+			}
+
+			*distdone += speed * dt;
+		} else {
+			if (speed < 0.0f && -distremaining <= limit) {
+				speed += decel * dt;
+
+				if (speed > -decel) {
+					speed = -decel;
+				}
+			} else if (speed > -maxspeed) {
+				speed -= ((speed > 0.0f) ? decel : accel) * dt;
+
+				if (speed < -maxspeed) {
+					speed = -maxspeed;
+				}
+			}
+
+			if (speed * dt <= distremaining) {
+				*distdone = maxdist;
+				break;
+			}
+
+			*distdone += speed * dt;
+		}
+	}
+
+	*speedptr = speed;
+}
+#endif
+
+#ifndef PLATFORM_N64
+/**
+ * applySpeed for the visibly-moving users (crouch, doors, lifts): on a real
+ * fractional frame, for a prop running on the frame's own step, ease over the
+ * real time; otherwise (fallback frames: netplay, pause, slow-mo; catch-up
+ * props) the original whole-field loop, bit-exact. Not used for AI turning or
+ * turret aim: those run inside integer-gated logic, where a frame delta would
+ * lose the zero-tick frames' time.
+ */
+void applySpeedTimed(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel, f32 maxspeed)
+{
+	if (g_LvFracActive && g_Vars.lvupdate240 == g_LvFrame240) {
+		applySpeedFrac(distdone, maxdist, speedptr, accel, decel, maxspeed, g_LvUpdate60fFrac);
+	} else {
+		applySpeed(distdone, maxdist, speedptr, accel, decel, maxspeed);
+	}
+}
+#endif
+
 void applyRotation(f32 *angle, f32 maxrot, f32 *speed, f32 accel, f32 decel, f32 maxspeed)
 {
 	f32 tmp = maxrot - *angle;
@@ -8510,7 +8606,13 @@ void liftTick(struct prop *prop)
 			prevdist = lift->dist;
 #endif
 
+#ifndef PLATFORM_N64
+			// Midas time scale: lifts (and their riders, displaced from the new
+			// position below) move on real time - they stepped at 60Hz
+			applySpeedTimed(&lift->dist, segdist, &lift->speed, lift->accel, lift->accel, lift->maxspeed);
+#else
 			applySpeed(&lift->dist, segdist, &lift->speed, lift->accel, lift->accel, lift->maxspeed);
+#endif
 
 			// If arriving at the destination, set the distance explicitly
 			if (lift->speed < 1 && lift->speed > -1) {
@@ -21456,7 +21558,12 @@ bool doorCalcIntendedFrac(struct doorobj *door)
 			}
 		}
 
+#ifndef PLATFORM_N64
+		// Midas time scale: doors move on real time (they stepped at 60Hz)
+		applySpeedTimed(&door->frac, end, &door->fracspeed, door->accel, door->decel, door->maxspeed);
+#else
 		applySpeed(&door->frac, end, &door->fracspeed, door->accel, door->decel, door->maxspeed);
+#endif
 
 		if (door->frac >= door->maxfrac) {
 			door->frac = door->maxfrac;

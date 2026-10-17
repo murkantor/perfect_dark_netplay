@@ -1275,7 +1275,7 @@ void hudmsgsTick(void)
 		case HUDMSGSTATE_QUEUED:
 #if VERSION >= VERSION_NTSC_1_0
 			if (msg->flags & HUDMSGFLAG_DELAY) {
-				msg->timer++;
+				msg->timer += g_Vars.diffframe60; // per 60Hz field (was per frame)
 
 				if (msg->timer > 3) {
 					msg->flags &= ~HUDMSGFLAG_DELAY;

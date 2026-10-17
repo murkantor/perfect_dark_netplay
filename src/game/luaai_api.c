@@ -4345,7 +4345,9 @@ void luaTick(void)
 		if (o->oneframe) {
 			continue; /* drop stragglers */
 		}
-		if (--o->framesleft > 0) {
+		// timed overlays live secs*60 FIELDS (they aged per rendered frame)
+		o->framesleft -= g_Vars.diffframe60;
+		if (o->framesleft > 0) {
 			if (w != i) {
 				g_LuaOverlays[w] = *o;
 			}

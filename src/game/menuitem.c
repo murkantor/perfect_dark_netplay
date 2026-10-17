@@ -738,7 +738,7 @@ bool menuitemListTick(struct menuitem *item, struct menuinputs *inputs, u32 tick
 
 		data->list.curoffsety = f0;
 
-		if (data->list.curoffsety != data->list.targetoffsety && prev == data->list.curoffsety) {
+		if (data->list.curoffsety != data->list.targetoffsety && prev == data->list.curoffsety && g_Vars.diffframe60 > 0) {
 			if (data->list.curoffsety < data->list.targetoffsety) {
 				data->list.curoffsety++;
 			} else {
@@ -3523,7 +3523,8 @@ bool menuitemMarqueeTick(struct menuitem *item, union menuitemdata *data)
 	increment = g_Vars.diffframe60 / 2;
 
 	if (increment <= 0) {
-		increment = 1;
+		// the 1px minimum is per 60Hz field (it was per rendered frame)
+		increment = g_Vars.diffframe60;
 	}
 
 	data->marquee.totalmoved += increment;

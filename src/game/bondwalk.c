@@ -32,10 +32,6 @@
 #include "system.h"
 #include "utils.h"
 
-#ifndef PLATFORM_N64
-static void bwalkApplySpeedFrac(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel, f32 maxspeed, f32 n);
-#endif
-
 static inline void lerpcoord(struct coord *c, const struct coord *a, const struct coord *b, const f32 t) {
 	c->x = lerpf(a->x, b->x, t);
 	c->y = lerpf(a->y, b->y, t);
@@ -1636,14 +1632,8 @@ void bwalkUpdateCrouchOffset(void)
 		f32 prevcrouchoffsetrealsmall = g_Vars.currentplayer->crouchoffsetrealsmall;
 
 		// f32 *frac, f32 maxfrac, f32 *fracspeed, f32 accel, f32 decel, f32 maxspeed
-#ifndef PLATFORM_N64
-		if (g_LvFracActive) {
-			// Midas time scale: crouch eases on real time, not in whole 60Hz fields
-			bwalkApplySpeedFrac(&g_Vars.currentplayer->crouchoffset, targetoffset,
-					&g_Vars.currentplayer->crouchspeed, PALUPF(0.5f), PALUPF(0.5f), PALUPF(5.0f), g_LvUpdate60fFrac);
-		} else
-#endif
-		applySpeed(&g_Vars.currentplayer->crouchoffset, targetoffset,
+		// (Midas time scale: eases on real time - applySpeedTimed, propobj.c)
+		applySpeedTimed(&g_Vars.currentplayer->crouchoffset, targetoffset,
 				&g_Vars.currentplayer->crouchspeed, PALUPF(0.5f), PALUPF(0.5f), PALUPF(5.0f));
 
 		bwalkUpdateCrouchOffsetReal();
@@ -1666,82 +1656,6 @@ void bwalkUpdateCrouchOffset(void)
 	g_Vars.currentplayer->guncloseroffset = g_Vars.currentplayer->crouchoffset / -90;
 }
 
-#ifndef PLATFORM_N64
-/**
- * Midas time scale: applySpeed (propobj.c, shared with doors and lifts) eases in
- * whole 60Hz fields, so the crouch moved only on frames where a field completed.
- * This is the same easing integrated over `n` fields of real (fractional) time,
- * in sub-steps of at most one field so low frame rates stay close to the loop.
- */
-static void bwalkApplySpeedFrac(f32 *distdone, f32 maxdist, f32 *speedptr, f32 accel, f32 decel, f32 maxspeed, f32 n)
-{
-	f32 speed = *speedptr;
-	s32 steps = (s32)n;
-	f32 dt;
-	s32 i;
-
-	if (n <= 0.f) {
-		return;
-	}
-
-	if ((f32)steps < n) {
-		steps++;
-	}
-
-	dt = n / (f32)steps;
-
-	for (i = 0; i < steps; i++) {
-		f32 limit = speed * speed * 0.5f / decel;
-		f32 distremaining = maxdist - *distdone;
-
-		if (distremaining > 0.0f) {
-			if (speed > 0.0f && distremaining <= limit) {
-				speed -= decel * dt;
-
-				if (speed < decel) {
-					speed = decel;
-				}
-			} else if (speed < maxspeed) {
-				speed += ((speed < 0.0f) ? decel : accel) * dt;
-
-				if (speed > maxspeed) {
-					speed = maxspeed;
-				}
-			}
-
-			if (speed * dt >= distremaining) {
-				*distdone = maxdist;
-				break;
-			}
-
-			*distdone += speed * dt;
-		} else {
-			if (speed < 0.0f && -distremaining <= limit) {
-				speed += decel * dt;
-
-				if (speed > -decel) {
-					speed = -decel;
-				}
-			} else if (speed > -maxspeed) {
-				speed -= ((speed > 0.0f) ? decel : accel) * dt;
-
-				if (speed < -maxspeed) {
-					speed = -maxspeed;
-				}
-			}
-
-			if (speed * dt <= distremaining) {
-				*distdone = maxdist;
-				break;
-			}
-
-			*distdone += speed * dt;
-		}
-	}
-
-	*speedptr = speed;
-}
-#endif
 
 void bwalkUpdateTheta(void)
 {

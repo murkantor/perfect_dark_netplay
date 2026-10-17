@@ -1,6 +1,7 @@
 #define NOMINMAX
 
 #include <cmath>
+#include "system.h"
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -4730,6 +4731,18 @@ extern "C" void gfx_start_frame(void) {
     // then clear per-frame state so nothing leaks past a frame.
     g_HudvdActiveSlot = -1;
     gfx_hud_offset_x = gfx_hud_offset_y = 0;
+    float hudvd_dt60 = 1.0f; // real 60Hz fields since the last frame (bounce speed)
+    {
+        static double lastsecs = -1.0;
+        const double now = (double)sysGetMicroseconds() * 1e-6;
+
+        if (lastsecs >= 0.0) {
+            hudvd_dt60 = (float)((now - lastsecs) * 60.0);
+            if (hudvd_dt60 < 0.0f) hudvd_dt60 = 0.0f;
+            if (hudvd_dt60 > 4.0f) hudvd_dt60 = 4.0f;
+        }
+        lastsecs = now;
+    }
     if (g_HudvdOn) {
         for (int i = 0; i < HUDVD_SLOTS; i++) {
             HudvdSlot* s = &g_HudvdSlots[i];
@@ -4739,8 +4752,9 @@ extern "C" void gfx_start_frame(void) {
                 if (s->by0 < 0.0f && s->vy < 0.0f) s->vy = -s->vy;
                 if (s->by1 > HUDVD_VP_H && s->vy > 0.0f) s->vy = -s->vy;
             }
-            s->px += s->vx;
-            s->py += s->vy;
+            // velocity is px per 60Hz frame: scale by real elapsed time
+            s->px += s->vx * hudvd_dt60;
+            s->py += s->vy * hudvd_dt60;
             s->has_bbox = false;
         }
     }

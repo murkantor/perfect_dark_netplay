@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/dlights.h"
+#include "game/lv.h"
 #include "game/game_006900.h"
 #include "game/atan2f.h"
 #include "game/savebuffer.h"
@@ -2295,8 +2296,9 @@ Gfx *bviewDrawIrLens(Gfx *gdl)
 		scanbottom = viewtop;
 	}
 
-	scanincrement = (f32) scanrate * i / 240.0f;
-	fadeincrement = (f32) faderate * i / 240.0f;
+	// per 60Hz field of real time (it stepped once per rendered frame)
+	scanincrement = (f32) scanrate * i / 240.0f * g_LvUpdate60fFrac;
+	fadeincrement = (f32) faderate * i / 240.0f * g_LvUpdate60fFrac;
 
 	// This code runs on the first frame of IR use (90 != 0),
 	// and in debug versions developers could change the radius at runtime.

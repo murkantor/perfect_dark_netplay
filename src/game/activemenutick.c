@@ -422,6 +422,9 @@ void amTick(void)
 			s16 dist;
 			s16 dstradius;
 
+			// (UI at 60 ticks/s: the selection glide and the screen-change expand
+			// step once per elapsed 60Hz field, not per rendered frame)
+			for (s32 amfield = 0; amfield < g_Vars.diffframe60; amfield++) {
 			if (g_AmMenus[g_AmIndex].dstx != -123) {
 				s16 dist;
 
@@ -451,6 +454,7 @@ void amTick(void)
 
 			if (dist <= 1 && dist >= -1) {
 				g_AmMenus[g_AmIndex].xradius = dstradius;
+			}
 			}
 
 			// Update alpha of slots so they fade in

@@ -3676,7 +3676,7 @@ static void gfx_sdlgpu_retro_filter(int pixw, int pixh, int cmode, int clevels, 
     uni.fx = fx;
     uni.warp = warp;
     uni.aspect = (float)fb.w / (float)fb.h;
-    uni.time = (float)(retro.frame % 216000u) / 60.0f;
+    uni.time = fmodf(sysGetSeconds(), 3600.0f); // real seconds, not frames/60
 
     // draw it back pixelated + colour-crushed over the whole framebuffer
     const float rect[4] = { 0.0f, 0.0f, 1.0f, 1.0f };

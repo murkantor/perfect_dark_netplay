@@ -4524,7 +4524,13 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 	spd8.unk0c = inputs->unk0c;
 	spd8.unk10 = inputs->unk10;
 
+#ifndef PLATFORM_N64
+	// UI at 60 ticks/s (docs/PORT_TIMESCALE.md): text wave phase per elapsed
+	// field, not per rendered frame
+	dialog->unk54 += g_Vars.diffframe60;
+#else
 	dialog->unk54++;
+#endif
 	dialog->unk5c += g_Vars.diffframe60;
 	dialog->unk54 += dialog->unk5c / 9;
 	dialog->unk5c %= 9;
@@ -4657,7 +4663,9 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 			}
 		}
 
-		if ((s32)dialog->statefrac == oldfracint) {
+		// (UI at 60 ticks/s: the minimum 1px nudge only on a frame where a 60Hz
+		// field elapsed - per rendered frame it opened dialogs at fps speed)
+		if ((s32)dialog->statefrac == oldfracint && g_Vars.diffframe60 > 0) {
 			dialog->statefrac = oldfracint + 1.0f;
 		}
 
@@ -4671,7 +4679,7 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 	if (dialog->state == MENUDIALOGSTATE_PREOPEN) {
 		if (dialog->definition == &g_MpReadyMenuDialog) {
 			if (dialog->statefrac < 0.1f) {
-				dialog->statefrac += 0.04f;
+				dialog->statefrac += 0.04f * g_Vars.diffframe60; // per 60Hz field
 			} else {
 				dialog->state = MENUDIALOGSTATE_OPENING;
 				dialog->redrawtimer = 0.0f;
@@ -4763,7 +4771,7 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 			dialog->x = newx;
 
-			if (dialog->x != dialog->dstx && dialog->x == oldx) {
+			if (dialog->x != dialog->dstx && dialog->x == oldx && g_Vars.diffframe60 > 0) {
 				if (dialog->x < dialog->dstx) {
 					dialog->x++;
 				} else {
@@ -4787,7 +4795,7 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 			dialog->y = newy;
 
-			if (dialog->y != dialog->dsty && dialog->y == oldy) {
+			if (dialog->y != dialog->dsty && dialog->y == oldy && g_Vars.diffframe60 > 0) {
 				if (dialog->y < dialog->dsty) {
 					dialog->y++;
 				} else {
@@ -4812,7 +4820,7 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 		dialog->width = newwidth;
 
-		if (dialog->width != dialog->dstwidth && dialog->width == oldwidth) {
+		if (dialog->width != dialog->dstwidth && dialog->width == oldwidth && g_Vars.diffframe60 > 0) {
 			if (dialog->width < dialog->dstwidth) {
 				dialog->width++;
 			} else {
@@ -4837,7 +4845,7 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 		dialog->height = newheight;
 
-		if (dialog->height != dialog->dstheight && dialog->height == oldheight) {
+		if (dialog->height != dialog->dstheight && dialog->height == oldheight && g_Vars.diffframe60 > 0) {
 			if (dialog->height < dialog->dstheight) {
 				dialog->height++;
 			} else {
@@ -5051,7 +5059,7 @@ void dialogTick(struct menudialog *dialog, struct menuinputs *inputs, u32 tickfl
 
 			dialog->scroll = newscroll;
 
-			if (dialog->scroll != dialog->dstscroll && dialog->scroll == oldscroll) {
+			if (dialog->scroll != dialog->dstscroll && dialog->scroll == oldscroll && g_Vars.diffframe60 > 0) {
 				if (dialog->scroll < dialog->dstscroll) {
 					dialog->scroll++;
 				} else {
@@ -5864,7 +5872,7 @@ Gfx *menuRender(Gfx *gdl)
 
 		// Everyone 1 in 100 frames on average, calculate a new X/Y for the hudpiece
 		// Note: unintentional 64-bit float comparison done here
-		if (RANDOMFRAC() < 0.01) {
+		if (g_Vars.diffframe60 > 0 && RANDOMFRAC() < 0.01) { // (1 in 100 per 60Hz field, not per frame)
 			g_MenuData.hudpiece.newposx = RANDOMFRAC() * 80.0f + -205.5f - 40.0f;
 			g_MenuData.hudpiece.newposy = RANDOMFRAC() * 80.0f + 244.7f - 40.0f;
 		}
