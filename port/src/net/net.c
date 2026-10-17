@@ -4448,7 +4448,7 @@ static s32 netChrRelevantTo(const struct chrdata *chr, const struct netclient *c
  * Render-side only: it shifts WHERE between two snapshots a remote chr is
  * drawn, never the simulation or anything on the wire. Computed once per frame.
  */
-static f32 netTickSubFrac(void)
+f32 netTickSubFrac(void)
 {
 	extern f32 g_FrameDiff240f;
 	static u32 lastframe = 0;

@@ -185,8 +185,16 @@ static void bwalkUpdateRemote(void)
 		if (snap_newer && snap_older) {
 			// Interpolate between the two bracketing snapshots
 			const u32 span = snap_newer->tick - snap_older->tick;
-			const f32 t = (span > 0) ?
-				(f32)(desired_tick - snap_older->tick) / (f32)span : 1.f;
+			// Midas time scale: on a client the target also advances by the
+			// sub-tick fraction, so remote players move every frame (render-
+			// side: a client's copy of them only draws). A host's copy is the
+			// authoritative one hits are validated on, so it stays per tick.
+			const f32 sub = (g_NetMode == NETMODE_CLIENT) ? netTickSubFrac() : 0.f;
+			f32 t = (span > 0) ?
+				((f32)(desired_tick - snap_older->tick) + sub) / (f32)span : 1.f;
+			if (t > 1.f) {
+				t = 1.f;
+			}
 			lerpcoord(&target, &snap_older->pos, &snap_newer->pos, t);
 		} else if (snap_newer) {
 			// Only one snapshot available: lerp toward it
@@ -229,9 +237,21 @@ static void bwalkUpdateRemote(void)
 		const f32 moveticks = (snap_newer && snap_older) ?
 			(f32)(snap_newer->tick - snap_older->tick) : 1.f;
 		const f32 dt = (moveticks > 0.f) ? (1.f / moveticks) : 1.f;
-		delta.x = g_Vars.lvupdate60freal * (target.x - pl->prop->pos.x) * dt;
-		delta.y = g_Vars.lvupdate60freal * (target.y - pl->prop->pos.y) * dt;
-		delta.z = g_Vars.lvupdate60freal * (target.z - pl->prop->pos.z) * dt;
+		// Client: chase on real time every frame, not on whole ticks (see
+		// above). Closed form of the per-tick gain dt over n fractional ticks,
+		// so a 1-tick span still lands exactly on the (now smooth) target.
+		if (g_NetMode == NETMODE_CLIENT) {
+			const f32 gain = (dt > 1.f) ? 1.f : dt;
+			const f32 chase = 1.f - lvPowf(1.f - gain, g_LvViewFracReal);
+
+			delta.x = chase * (target.x - pl->prop->pos.x);
+			delta.y = chase * (target.y - pl->prop->pos.y);
+			delta.z = chase * (target.z - pl->prop->pos.z);
+		} else {
+			delta.x = g_Vars.lvupdate60freal * (target.x - pl->prop->pos.x) * dt;
+			delta.y = g_Vars.lvupdate60freal * (target.y - pl->prop->pos.y) * dt;
+			delta.z = g_Vars.lvupdate60freal * (target.z - pl->prop->pos.z) * dt;
+		}
 		bwalk0f0c63bc(&delta, pl->swaytarget == 0.0f, cdtype);
 		cl->lerpticks += g_Vars.lvupdate60;
 		if (cl && (g_NetTick % 60u) == 0u) {

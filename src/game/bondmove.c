@@ -455,7 +455,12 @@ static inline void bmoveProcessRemoteInput(const bool allowc1buttons)
 	// (yaw) wraps, so use the shortest-path lerp.
 	if (g_NetMode == NETMODE_CLIENT && !forceangle && snap_newer && snap_older) {
 		const u32 aspan = snap_newer->tick - snap_older->tick;
-		const f32 at = (aspan > 0) ? (f32)(desired_tick - snap_older->tick) / (f32)aspan : 1.f;
+		// (+ the sub-tick fraction: the remote player's facing turns every
+		// frame, not every 60Hz tick - Midas time scale, render-side)
+		f32 at = (aspan > 0) ? ((f32)(desired_tick - snap_older->tick) + netTickSubFrac()) / (f32)aspan : 1.f;
+		if (at > 1.f) {
+			at = 1.f;
+		}
 		pl->vv_theta = bmoveLerpAngle(snap_older->angles[0], snap_newer->angles[0], at);
 		pl->vv_verta = lerpf(snap_older->angles[1], snap_newer->angles[1], at);
 	} else {

@@ -158,6 +158,8 @@ struct netchrpose {
 // snapshots (or when g_NetChrInterp is 0), so they're safe to call on any chr.
 void netChrRecordSnapshot(struct chrdata *chr, const struct netchrpose *pose);
 void netChrInterpolate(struct chrdata *chr);
+// real time since g_NetTick last advanced, in ticks [0,1] (render-side smoothing)
+f32 netTickSubFrac(void);
 
 // Live toggle for the chr pose interpolation (console /chrinterp, default 1).
 // 0 reverts to the receive-time per-packet apply (for A/B comparison).
