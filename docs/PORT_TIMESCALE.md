@@ -213,8 +213,15 @@ Deliberately left alone:
    on the 1/240 clock (`lvupdate60freal`). They are smooth up to 240 fps
    and stall on zero-tick frames above that. Converting them means
    collision physics, so this is an accepted limit.
-3. **Doors/lifts in netplay** still step at 60 Hz (the netplay pin; their
-   logic is synced). This needs a render offset from the sub-tick fraction.
+3. ~~Doors in netplay~~ DONE (2c, clients only): `doorGetRenderFrac` plus
+   `doorCalcPose` (the pose half of `doorUpdateTiles`, factored out
+   bit-identically) draw moving doors at `frac + fracspeed*phase`.
+   Collision, sounds and the synced frac stay on the tick. Accepted limits:
+   - DOORFLAG_0004 shrink doors are a vertex edit in the tick, so they
+     still step;
+   - lifts still step in netplay. They carry the player, so a display
+     offset alone would jitter against the camera. A fix would mean
+     smoothing the local player's position in netplay as a whole.
 4. Player leftovers:
    - ~~the eye-height bob~~ DONE (2c): bondhead.c lags use `lvLagStep`, the
      head anim uses `modelTickAnimQuarterSpeedF`, and idle breathing uses
@@ -278,3 +285,5 @@ Phase 2c checklist (compile-verified only):
 20. Uncapped: bullet sparks, glass/wood shards and smoke drift smoothly;
     while paused they stay frozen.
 21. Uncapped above 240 fps: the walking head bob is smooth.
+22. Netplay client at 120+ fps: sliding/swinging doors open and close
+    smoothly, and their collision is unchanged.
