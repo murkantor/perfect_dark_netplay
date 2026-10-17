@@ -8307,18 +8307,37 @@ void doorUpdatePortalIfWindowed(struct prop *doorprop, s32 playercount)
 
 #define MTX(i) ((Mtxf *)((uintptr_t)matrices + i * sizeof(Mtxf)))
 
+static f32 doorGetRenderFrac(struct doorobj *door);
+static void doorCalcPose(struct doorobj *door, f32 frac, struct coord *pos, f32 rot[3][3]);
+static bool doorHasCalcPose(struct doorobj *door);
+
 void doorInitMatrices(struct prop *prop)
 {
 	struct doorobj *door = prop->door;
 	struct model *model = door->base.model;
 	Mtxf *matrices = model->matrices;
+	const f32 drawfrac = doorGetRenderFrac(door);
 
-	func0f08c424(door, matrices);
+	if (drawfrac != door->frac && doorHasCalcPose(door)) {
+		struct coord pos = prop->pos;
+		f32 rot[3][3];
+
+		doorCalcPose(door, drawfrac, &pos, rot);
+		mtx3ToMtx4(rot, matrices);
+		mtx4SetTranslation(&pos, matrices);
+
+		if (door->doorflags & DOORFLAG_FLIP) {
+			mtx00015edc(-1, matrices);
+		}
+	} else {
+		func0f08c424(door, matrices);
+	}
+
 	mtx00015be0(camGetWorldToScreenMtxf(), matrices);
 
 	if (model->definition->skel == &g_Skel11) {
 		union modelrodata *rodata;
-		f32 xrot = M_BADTAU - door->frac * 0.017450513318181f;
+		f32 xrot = M_BADTAU - drawfrac * 0.017450513318181f;
 
 		rodata = modelGetPartRodata(model->definition, MODELPART_0001);
 		mtx4LoadXRotation(xrot, MTX(1));
@@ -8332,12 +8351,12 @@ void doorInitMatrices(struct prop *prop)
 	} else if (model->definition->skel == &g_Skel13) {
 		union modelrodata *rodata;
 		f32 zrot1 = 0;
-		f32 zrot2 = door->frac * 0.017450513318181f;
+		f32 zrot2 = drawfrac * 0.017450513318181f;
 		f32 limit = door->maxfrac * 0.3f;
 		s32 i;
 
-		if (door->frac > limit) {
-			zrot1 = ((door->maxfrac * (door->frac - limit)) / (door->maxfrac - limit)) * 0.017450513318181f;
+		if (drawfrac > limit) {
+			zrot1 = ((door->maxfrac * (drawfrac - limit)) / (door->maxfrac - limit)) * 0.017450513318181f;
 		}
 
 		for (i = 0; i < 6; i++) {
@@ -20452,6 +20471,35 @@ void doorsCheckAutomatic(void)
 #endif
 }
 
+/**
+ * Midas time scale, netplay clients: doors tick on the 60Hz net tick, so a
+ * moving door is drawn g_LvFieldPhase (the time since the tick) further along
+ * at its current speed. Display only - the collision tiles, sounds and the
+ * synced frac stay on the tick. Not on a host/server (its door copy is the
+ * authoritative one shots are tested against) and not offline, where doors
+ * already move on real time (applySpeedTimed).
+ */
+static f32 doorGetRenderFrac(struct doorobj *door)
+{
+	f32 frac;
+
+	if (g_NetMode != NETMODE_CLIENT || g_LvFracActive || g_LvFieldPhase <= 0.f
+			|| door->fracspeed == 0.f
+			|| (door->mode != DOORMODE_OPENING && door->mode != DOORMODE_CLOSING)) {
+		return door->frac;
+	}
+
+	frac = door->frac + door->fracspeed * g_LvFieldPhase;
+
+	if (frac > door->maxfrac) {
+		frac = door->maxfrac;
+	} else if (frac < 0.f) {
+		frac = 0.f;
+	}
+
+	return frac;
+}
+
 void func0f08c424(struct doorobj *door, Mtxf *matrix)
 {
 	mtx3ToMtx4(door->base.realrot, matrix);
@@ -20477,20 +20525,25 @@ void doorGetBbox(struct doorobj *door, struct modelrodata_bbox *dst)
 	}
 }
 
-void doorUpdateTiles(struct doorobj *door)
+/**
+ * The pose half of doorUpdateTiles: the door's position and rotation at `frac`
+ * for the door types whose pose is derived from it (DOORFLAG_0080 translating
+ * doors, swinging/aztec chair/hull). doorUpdateTiles calls it with door->frac
+ * into the prop (bit-identical to the old inline block); the Midas time scale
+ * calls it with a render-only frac (doorGetRenderFrac).
+ */
+static void doorCalcPose(struct doorobj *door, f32 frac, struct coord *pos, f32 rot[3][3])
 {
-	struct modelrodata_bbox bbox;
 	Mtxf spdc;
-	struct geoblock *geo;
 	Mtxf sp98;
 	struct coord sp8c;
 	struct coord sp80;
 	struct pad pad;
 
 	if (door->doorflags & DOORFLAG_0080) {
-		door->base.prop->pos.x = door->unk98.x * door->frac + door->startpos.x;
-		door->base.prop->pos.y = door->unk98.y * door->frac + door->startpos.y;
-		door->base.prop->pos.z = door->unk98.z * door->frac + door->startpos.z;
+		pos->x = door->unk98.x * frac + door->startpos.x;
+		pos->y = door->unk98.y * frac + door->startpos.y;
+		pos->z = door->unk98.z * frac + door->startpos.z;
 	} else if (door->doortype == DOORTYPE_SWINGING
 			|| door->doortype == DOORTYPE_AZTECCHAIR
 			|| door->doortype == DOORTYPE_HULL) {
@@ -20532,33 +20585,50 @@ void doorUpdateTiles(struct doorobj *door)
 
 		if (door->doortype == DOORTYPE_AZTECCHAIR) {
 			if (door->base.flags & OBJFLAG_DOOR_OPENTOFRONT) {
-				mtx4LoadZRotation(M_BADTAU - door->frac * 0.017450513318181f, &sp98);
+				mtx4LoadZRotation(M_BADTAU - frac * 0.017450513318181f, &sp98);
 			} else {
-				mtx4LoadZRotation(door->frac * 0.017450513318181f, &sp98);
+				mtx4LoadZRotation(frac * 0.017450513318181f, &sp98);
 			}
 		} else if (door->doortype == DOORTYPE_HULL) {
 			if (door->base.flags & OBJFLAG_DOOR_OPENTOFRONT) {
-				guRotateF(sp98.m, 360 - door->frac, pad.normal.x, pad.normal.y, pad.normal.z);
+				guRotateF(sp98.m, 360 - frac, pad.normal.x, pad.normal.y, pad.normal.z);
 			} else {
-				guRotateF(sp98.m, door->frac, pad.normal.x, pad.normal.y, pad.normal.z);
+				guRotateF(sp98.m, frac, pad.normal.x, pad.normal.y, pad.normal.z);
 			}
 		} else {
 			if (door->base.flags & OBJFLAG_DOOR_OPENTOFRONT) {
-				mtx4LoadYRotation(M_BADTAU - door->frac * 0.017450513318181f, &sp98);
+				mtx4LoadYRotation(M_BADTAU - frac * 0.017450513318181f, &sp98);
 			} else {
-				mtx4LoadYRotation(door->frac * 0.017450513318181f, &sp98);
+				mtx4LoadYRotation(frac * 0.017450513318181f, &sp98);
 			}
 		}
 
 		mtx4MultMtx4InPlace(&sp98, &spdc);
 		mtx4LoadTranslation(&sp8c, &sp98);
 		mtx4MultMtx4InPlace(&sp98, &spdc);
-		mtx4ToMtx3(&spdc, door->base.realrot);
+		mtx4ToMtx3(&spdc, rot);
 
-		door->base.prop->pos.x = spdc.m[3][0];
-		door->base.prop->pos.y = spdc.m[3][1];
-		door->base.prop->pos.z = spdc.m[3][2];
+		pos->x = spdc.m[3][0];
+		pos->y = spdc.m[3][1];
+		pos->z = spdc.m[3][2];
 	}
+}
+
+static bool doorHasCalcPose(struct doorobj *door)
+{
+	return (door->doorflags & DOORFLAG_0080)
+		|| door->doortype == DOORTYPE_SWINGING
+		|| door->doortype == DOORTYPE_AZTECCHAIR
+		|| door->doortype == DOORTYPE_HULL;
+}
+
+void doorUpdateTiles(struct doorobj *door)
+{
+	struct modelrodata_bbox bbox;
+	Mtxf spdc;
+	struct geoblock *geo;
+
+	doorCalcPose(door, door->frac, &door->base.prop->pos, door->base.realrot);
 
 	doorGetBbox(door, &bbox);
 
