@@ -1,6 +1,7 @@
 #include <ultra64.h>
 #include "constants.h"
 #include "game/chraction.h"
+#include "game/lv.h"
 #include "game/cheats.h"
 #include "game/debug.h"
 #include "game/chr.h"
@@ -1399,6 +1400,65 @@ void bot0f1921f8(struct chrdata *chr, f32 *move)
 	}
 #endif
 }
+
+#ifndef PLATFORM_N64
+/**
+ * Midas time scale: bot0f1921f8 over q quanta of real time, q fractional. The
+ * per-quantum filter m' = d*m + s (move += m'*c) in closed form:
+ *   m_q   = d^q*m0 + s*(1-d^q)/(1-d)
+ *   sum   = s*q/(1-d) + (m0 - s/(1-d)) * d*(1-d^q)/(1-d)
+ * with c the per-quantum step (0.055 * a quarter field). A whole q equals the
+ * loop up to float rounding.
+ */
+void botMoveFrac(struct chrdata *chr, f32 *move, f32 q)
+{
+	const f32 d = (PAL ? 0.935f : 0.945f);
+	const f32 c = (PAL ? 0.065f : 0.055000007152557f) * PALUPF(0.25f);
+	f32 sp30[2];
+	f32 speedsideways;
+	f32 speedforwards;
+	f32 speed;
+	f32 sp50;
+	f32 dq;
+	f32 inv;
+	f32 m0;
+	s32 a;
+
+	move[0] = 0;
+	move[1] = 0;
+
+	if (!chr || !chr->aibot || q <= 0.f) {
+		return;
+	}
+
+	if (g_Vars.lvframe60 < 145) {
+		return;
+	}
+
+	speedsideways = chr->aibot->speedmultsideways;
+	speedforwards = chr->aibot->speedmultforwards;
+	speed = botCalculateMaxSpeed(chr);
+	speedsideways *= speed;
+	speedforwards *= speed;
+
+	sp50 = chrGetRotY(chr);
+
+	sp30[0] = speedsideways * cosf(sp50) + speedforwards * sinf(sp50);
+	sp30[1] = -speedsideways * sinf(sp50) + speedforwards * cosf(sp50);
+
+	dq = lvPowf(d, q);
+	inv = 1.f / (1.f - d);
+
+	for (a = 0; a < 2; a++) {
+		f32 *m = a == 0 ? &chr->aibot->moveratex : &chr->aibot->moveratey;
+		const f32 s = sp30[a];
+
+		m0 = *m;
+		move[a] = c * (s * q * inv + (m0 - s * inv) * d * (1.f - dq) * inv);
+		*m = dq * m0 + s * (1.f - dq) * inv;
+	}
+}
+#endif
 
 char *botGetCommandName(s32 command)
 {

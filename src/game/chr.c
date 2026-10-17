@@ -588,6 +588,17 @@ bool chr0f01f378(struct model *model, struct coord *arg1, struct coord *arg2, f3
 		if (chr->aibot) {
 			f32 move[2] = {0, 0};
 
+#ifndef PLATFORM_N64
+			// Midas time scale: on a real fractional frame, for a sim on the
+			// frame's own step (no forced slow updates), integrate its movement
+			// filter over the real time - including zero-tick frames, where the
+			// loop below moved it 0 (bug 16: sims stepped at 240Hz). The filter
+			// inputs come from integer-ticked AI and are held between ticks.
+			if (g_LvFracActive && lvupdate240 == g_LvFrame240
+					&& chr->aibot->forceslowupdates == 0 && g_LvUpdate60fFrac * 4.f < 25.f) {
+				botMoveFrac(chr, move, g_LvUpdate60fFrac * 4.f);
+			} else
+#endif
 			if (VAR(lvupdate240) > 0) {
 #if VERSION >= VERSION_NTSC_1_0
 				if (chr->aibot->forceslowupdates != 0) {

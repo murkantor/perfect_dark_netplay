@@ -27,6 +27,9 @@ f32 botCalculateMaxSpeed(struct chrdata *chr);
 
 #if VERSION >= VERSION_NTSC_1_0
 void bot0f1921f8(struct chrdata *chr, f32 *move, s32 numupdates, f32 arg3);
+#ifndef PLATFORM_N64
+void botMoveFrac(struct chrdata *chr, f32 *move, f32 q);
+#endif
 #else
 void bot0f1921f8(struct chrdata *chr, f32 *move);
 #endif
