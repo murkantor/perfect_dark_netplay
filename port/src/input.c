@@ -181,6 +181,10 @@ static f32 gyroDY = 0.f;
 static s32 mouseEnabled = 1;
 static s32 mouseX, mouseY;
 static s32 mouseDX, mouseDY;
+// Mouse motion banked since the last consumed sim tick, for consumers that run
+// on netplay's whole ticks (Slayer fly-by-wire sends a per-tick rate). The view
+// itself reads the per-frame mouseDX/DY.
+static s32 mouseTickDX, mouseTickDY;
 static u32 mouseButtons;
 static s32 mouseWheel = 0;
 
@@ -1482,12 +1486,23 @@ static inline void inputUpdateMouse(void)
 		mouseRemX -= ndx;
 		mouseRemY -= ndy;
 
-		if ((g_FixedTickEnabled || g_NetMode) && g_TickThisFrameAdvanced != 1) {
+		// (Netplay used to bank the view mouse too; the view now integrates
+		// real time every frame there, so it reads per-frame deltas. The
+		// tick bank below serves whole-tick consumers.)
+		if (g_FixedTickEnabled && g_TickThisFrameAdvanced != 1) {
 			mouseDX += ndx;
 			mouseDY += ndy;
 		} else {
 			mouseDX = ndx;
 			mouseDY = ndy;
+		}
+
+		if (g_TickThisFrameAdvanced != 1) {
+			mouseTickDX += ndx;
+			mouseTickDY += ndy;
+		} else {
+			mouseTickDX = ndx;
+			mouseTickDY = ndy;
 		}
 	} else {
 		mouseDX = mx - mouseX;
@@ -2012,6 +2027,24 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 		}
 		if (dx) *dx = mdx;
 		if (dy) *dy = mdy;
+}
+
+// inputMouseGetScaledDelta, but the motion banked since the last consumed sim
+// tick (see mouseTickDX)
+void inputMouseGetScaledTickDelta(f32 *dx, f32 *dy)
+{
+	f32 mdx = 0.f, mdy = 0.f;
+
+	if (mouseLocked && !inputControllersOnlyActive()) {
+		mdx = chaosSensMult * mouseSensX * ((f32)mouseTickDX / 3.5f) * INPUT_MOUSE_DEG_PER_COUNT;
+		mdy = chaosSensMult * mouseSensY * ((f32)mouseTickDY / 3.5f) * INPUT_MOUSE_DEG_PER_COUNT;
+	}
+	if (mouseLocked && gyroAimEnabled) {
+		mdx += gyroDX;
+		mdy += gyroDY;
+	}
+	if (dx) *dx = mdx;
+	if (dy) *dy = mdy;
 }
 
 void inputMouseGetAbsScaledDelta(f32* dx, f32* dy)

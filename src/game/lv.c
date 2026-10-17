@@ -154,6 +154,13 @@ f32 g_LvUpdate60fFracReal = 0;
 s32 g_LvFracActive = 0;
 // the frame's global lvupdate240 (props running on a catch-up step swap their own in)
 s32 g_LvFrame240 = 0;
+// The local VIEW's delta (camera yaw/pitch, mouse look): g_LvUpdate60fFrac, but
+// also real time through the netplay 60Hz pin. Netplay view angles are
+// client-authoritative and only sampled when a move is sent, so the view can
+// turn every frame while the sim keeps its whole-tick contract. Still falls
+// back on pause, slow motion and the det harness.
+f32 g_LvViewFrac = 0;
+f32 g_LvViewFracReal = 0;
 
 /**
  * Midas portLagStep: the per-quantum low-pass `x = x*d + in`, advanced by q
@@ -3317,6 +3324,18 @@ void lvTick(void)
 		g_LvFracActive = 0;
 	}
 	g_LvUpdate60fFracReal = PALUPF(g_LvUpdate60fFrac);
+
+	{
+		extern s32 g_FixedTickEnabled;
+
+		if (!g_LvFracActive && g_NetMode && g_DetMode == DET_OFF && !g_FixedTickEnabled
+				&& !lvIsPaused() && !mpIsPaused() && !g_LvSlomoEngaged) {
+			g_LvViewFrac = g_FrameDiff240f * 0.25f;
+		} else {
+			g_LvViewFrac = g_LvUpdate60fFrac;
+		}
+		g_LvViewFracReal = PALUPF(g_LvViewFrac);
+	}
 #endif
 
 	bgunTickBoost();

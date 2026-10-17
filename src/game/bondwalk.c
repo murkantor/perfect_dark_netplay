@@ -1672,8 +1672,10 @@ void bwalkUpdateTheta(void)
 #endif
 	// Midas time scale: yaw integrates real fractional time (lv.c), so the view
 	// turns on every frame at any fps
+	// (the local view's delta also runs through the netplay pin; a remote
+	// player's angle comes from the wire, so it keeps the sim delta)
 	rotateamount = g_Vars.currentplayer->speedtheta * mult
-		* g_LvUpdate60fFracReal * 0.0174505133f * 3.5f;
+		* (g_Vars.currentplayer->isremote ? g_LvUpdate60fFracReal : g_LvViewFracReal) * 0.0174505133f * 3.5f;
 
 #ifndef PLATFORM_N64
 	// CHEAT_MIRROR: the world renders left-right flipped, so invert ONLY the

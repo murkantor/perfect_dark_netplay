@@ -4300,7 +4300,13 @@ void playerTick(bool arg0)
 				// sit at any slot, not just 0)
 				if (netPlayerOwnsMouse()) {
 					f32 mdx, mdy;
-					inputMouseGetScaledDelta(&mdx, &mdy);
+					// netplay: the client sends a per-TICK rotation, so it needs
+					// the mouse banked since the last tick
+					if (g_NetMode) {
+						inputMouseGetScaledTickDelta(&mdx, &mdy);
+					} else {
+						inputMouseGetScaledDelta(&mdx, &mdy);
+					}
 					if (mdx || mdy) {
 						mdx *= 0.022f;
 						mdy *= 0.022f;

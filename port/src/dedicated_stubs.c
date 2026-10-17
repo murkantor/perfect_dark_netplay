@@ -94,6 +94,12 @@ s32 inputMouseBlocksAutoAim(void)
 	return 0;
 }
 
+void inputMouseGetScaledTickDelta(f32 *dx, f32 *dy)
+{
+	if (dx) { *dx = 0.0f; }
+	if (dy) { *dy = 0.0f; }
+}
+
 void inputMouseGetScaledDelta(f32 *dx, f32 *dy)
 {
 	if (dx) { *dx = 0.0f; }

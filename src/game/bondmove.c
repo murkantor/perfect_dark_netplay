@@ -1262,7 +1262,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	// back into exactly those degrees: 1/delta against the fractional time the
 	// camera now integrates (Midas time scale; was 4/lvupdate240). Zero time
 	// (paused / render-only netplay frame) keeps the old 4.
-	const f32 mlookscale = (g_LvUpdate60fFrac > 0.f) ? (1.f / g_LvUpdate60fFrac) : 4.f;
+	const f32 mlookscale = (g_LvViewFrac > 0.f) ? (1.f / g_LvViewFrac) : 4.f;
 	// netPlayerOwnsMouse: under netplay the local pawn can sit at any slot
 	// (no slot-0 swap on spectator-host servers), so the old
 	// currentplayernum == 0 gate left mouse aim dead for those players.
@@ -2968,7 +2968,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 #ifndef PLATFORM_N64
 			// Midas time scale: pitch integrates real fractional time, so the
 			// view moves on every frame at any fps
-			g_Vars.currentplayer->vv_verta += g_Vars.currentplayer->speedverta * g_LvUpdate60fFracReal * 3.5f;
+			g_Vars.currentplayer->vv_verta += g_Vars.currentplayer->speedverta * g_LvViewFracReal * 3.5f;
 #else
 			g_Vars.currentplayer->vv_verta += g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal * 3.5f;
 #endif
@@ -3125,8 +3125,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		{
 			extern s32 g_FixedTickEnabled;
 
-			// netplay banks the mouse too (input.c), so it holds here as well
-			if ((g_FixedTickEnabled || g_NetMode) && g_Vars.lvupdate240 <= 0) {
+			// only the fixed tick banks the view mouse now (input.c): netplay
+			// turns every frame, so its crosshair moves every frame too
+			if (g_FixedTickEnabled && g_Vars.lvupdate240 <= 0) {
 				return;
 			}
 		}

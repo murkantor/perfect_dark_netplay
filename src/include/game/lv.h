@@ -35,6 +35,8 @@ extern f32 g_LvUpdate60fFrac;
 extern f32 g_LvUpdate60fFracReal;
 extern s32 g_LvFracActive;
 extern s32 g_LvFrame240;
+extern f32 g_LvViewFrac;
+extern f32 g_LvViewFracReal;
 void lvLagStep(f32 *x, f32 d, f32 in, f32 q);
 f32 lvPowf(f32 base, f32 exp);
 #endif

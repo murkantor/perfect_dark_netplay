@@ -242,6 +242,7 @@ s32 inputControllerIsRawN64(s32 idx);
 s32 inputMouseBlocksAutoAim(void);
 
 void inputMouseGetScaledDelta(f32 *dx, f32 *dy);
+void inputMouseGetScaledTickDelta(f32 *dx, f32 *dy);
 
 // returns changes in mouse position since last frame, scaled by absolute sensitivity
 // returns 0, 0 when the mouse is not locked into the window
