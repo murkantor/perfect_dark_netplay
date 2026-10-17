@@ -199,6 +199,29 @@ Deliberately left alone:
   frame. Accepted side effect: `chr->prevpos` (AI arrival checks) spans one
   frame of motion, as it already did above 240 fps.
 
+## Phase 2d (2026-10-17): netplay position + tick-counter render bugs
+
+- **Netplay local camera position.** `playerTickNetCamPos` (player.c, via
+  the `playerTickCamInterp` hook, which works on a copy of `cam_pos`) lerps
+  the position between the last two ticks by `g_LvFieldPhase`. That adds up
+  to one tick of visual position lag, with no overshoot. Jumps over ~4 m
+  snap, and it is off while spectating. **Lifts** use the same lerp via
+  `liftGetRenderPos` (a side table, because `liftobj` is frozen setup
+  data), so a lift and its rider stay in step.
+- **Per-rendered-frame code keyed on tick counters** (user reports). This is
+  the same family as the HUD swish:
+  - stage music played twice: the play event ignored the port's
+    `AL_STARTING` state, which lasts for the audio-thread window, now
+    several frames long;
+  - a frame of the normal spawn before intros: the stage-entry
+    `lockscreen` hold counted 6 rendered frames, so it now counts fields;
+  - match-start hudmsgs duplicated: `scenarioTick` checked
+    `lvframenum == 5` on zero-tick frames.
+
+  **Gotcha for new code: anything that runs per rendered frame must not
+  key one-shots on `lvframenum`/`lvframe60` equality or count rendered
+  frames.**
+
 ## Still to do
 
 1. ~~Gun animations and recoil pose~~ DONE (2c, render-side):
@@ -231,9 +254,8 @@ Deliberately left alone:
    Collision, sounds and the synced frac stay on the tick. Accepted limits:
    - DOORFLAG_0004 shrink doors are a vertex edit in the tick, so they
      still step;
-   - lifts still step in netplay. They carry the player, so a display
-     offset alone would jitter against the camera. A fix would mean
-     smoothing the local player's position in netplay as a whole.
+   - ~~lifts in netplay~~ DONE together with the local camera position
+     (below).
 4. Player leftovers:
    - ~~the eye-height bob~~ DONE (2c): bondhead.c lags use `lvLagStep`, the
      head anim uses `modelTickAnimQuarterSpeedF`, and idle breathing uses
@@ -299,3 +321,7 @@ Phase 2c checklist (compile-verified only):
 21. Uncapped above 240 fps: the walking head bob is smooth.
 22. Netplay client at 120+ fps: sliding/swinging doors open and close
     smoothly, and their collision is unchanged.
+23. Combat Sim: the music plays once (not doubled). dataDyne Infiltration:
+    no spawn frame before the intro. One set of match-start messages.
+24. Netplay client and host at 120+ fps: walking/strafing is smooth, riding
+    lifts is smooth with no floor judder, and respawns snap.
