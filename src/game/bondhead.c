@@ -10,6 +10,7 @@
 #include "lib/model.h"
 #include "data.h"
 #include "types.h"
+#include "game/lv.h"
 
 struct headanim g_HeadAnims[] = {
 	{ ANIM_002B, 9.5, 27, 0, 0,   1.5 },
@@ -51,6 +52,18 @@ void bheadUpdatePos(struct coord *vel)
 		g_Vars.currentplayer->resetheadpos = false;
 	}
 
+#ifndef PLATFORM_N64
+	// Midas time scale: the per-1/240 head lag in closed form over the real
+	// time (bug 16: the loop ran 0 times on zero-tick frames)
+	if (g_LvFracActive) {
+		const f32 q = g_LvUpdate60fFrac * 4.f;
+		const f32 d = (PAL ? 0.9785f : 0.982f);
+
+		lvLagStep(&g_Vars.currentplayer->headpossum.x, d, vel->x, q);
+		lvLagStep(&g_Vars.currentplayer->headpossum.y, d, vel->y, q);
+		lvLagStep(&g_Vars.currentplayer->headpossum.z, d, vel->z, q);
+	} else
+#endif
 	for (i = 0; i < g_Vars.lvupdate240; i++) {
 		g_Vars.currentplayer->headpossum.x = vel->x + (PAL ? 0.9785f : 0.982f) * g_Vars.currentplayer->headpossum.x;
 		g_Vars.currentplayer->headpossum.y = vel->y + (PAL ? 0.9785f : 0.982f) * g_Vars.currentplayer->headpossum.y;
@@ -77,6 +90,19 @@ void bheadUpdateRot(struct coord *lookvel, struct coord *upvel)
 		g_Vars.currentplayer->resetheadrot = false;
 	}
 
+#ifndef PLATFORM_N64
+	if (g_LvFracActive) {
+		const f32 q = g_LvUpdate60fFrac * 4.f;
+		const f32 d = g_Vars.currentplayer->headdamp;
+
+		lvLagStep(&g_Vars.currentplayer->headlooksum.x, d, lookvel->x, q);
+		lvLagStep(&g_Vars.currentplayer->headlooksum.y, d, lookvel->y, q);
+		lvLagStep(&g_Vars.currentplayer->headlooksum.z, d, lookvel->z, q);
+		lvLagStep(&g_Vars.currentplayer->headupsum.x, d, upvel->x, q);
+		lvLagStep(&g_Vars.currentplayer->headupsum.y, d, upvel->y, q);
+		lvLagStep(&g_Vars.currentplayer->headupsum.z, d, upvel->z, q);
+	} else
+#endif
 	for (i = 0; i < g_Vars.lvupdate240; i++) {
 		g_Vars.currentplayer->headlooksum.x = lookvel->x + g_Vars.currentplayer->headdamp * g_Vars.currentplayer->headlooksum.x;
 		g_Vars.currentplayer->headlooksum.y = lookvel->y + g_Vars.currentplayer->headdamp * g_Vars.currentplayer->headlooksum.y;
@@ -147,6 +173,11 @@ void bheadUpdate(f32 arg0, f32 arg1)
 			g_Vars.currentplayer->resetheadtick = false;
 
 			modelSetAnimMergingEnabled(false);
+#ifndef PLATFORM_N64
+			if (g_LvFracActive) {
+				modelTickAnimQuarterSpeedF(&g_Vars.currentplayer->model, g_LvUpdate60fFrac * 4.f, true);
+			} else
+#endif
 			modelTickAnimQuarterSpeed(&g_Vars.currentplayer->model, g_Vars.lvupdate240, true);
 			modelSetAnimMergingEnabled(mergeenabled);
 			modelUpdateInfo(&g_Vars.currentplayer->model);
@@ -173,6 +204,15 @@ void bheadUpdate(f32 arg0, f32 arg1)
 		g_Vars.currentplayer->bondheadmatrices[0].m[3][0] += arg1;
 		g_Vars.currentplayer->bondheadmatrices[0].m[3][2] *= arg0;
 
+#ifndef PLATFORM_N64
+		// (root motion -> velocity over the time the anim actually advanced)
+		if (g_LvFracActive) {
+			if (g_LvUpdate60fFracReal > 0.f) {
+				g_Vars.currentplayer->bondheadmatrices[0].m[3][0] /= g_LvUpdate60fFracReal;
+				g_Vars.currentplayer->bondheadmatrices[0].m[3][2] /= g_LvUpdate60fFracReal;
+			}
+		} else
+#endif
 		if (g_Vars.lvupdate240 > 0) {
 			g_Vars.currentplayer->bondheadmatrices[0].m[3][0] /= g_Vars.lvupdate60freal;
 			g_Vars.currentplayer->bondheadmatrices[0].m[3][2] /= g_Vars.lvupdate60freal;
@@ -225,7 +265,7 @@ void bheadUpdate(f32 arg0, f32 arg1)
 		if (bmoveGetCrouchPos() != CROUCHPOS_SQUAT) {
 			g_Vars.currentplayer->standfrac +=
 				(0.0083333337679505f + 0.025000002235174f * g_Vars.currentplayer->bondbreathing)
-				* g_Vars.lvupdate60freal;
+				* (g_LvFracActive ? g_LvUpdate60fFracReal : g_Vars.lvupdate60freal);
 
 			if (g_Vars.currentplayer->standfrac >= 1) {
 				bheadUpdateIdleRoll();
