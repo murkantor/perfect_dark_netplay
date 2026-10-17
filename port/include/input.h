@@ -233,10 +233,13 @@ void inputMouseGetRawDelta(s32 *dx, s32 *dy);
 // Midas mouse units: degrees of look per raw count per Input.MouseSpeed unit
 // (speed 2.5 = 0.1 degree per count). PD's old factor was 0.022.
 #define INPUT_MOUSE_DEG_PER_COUNT 0.04f
-#define INPUT_MOUSE_DEG_PER_COUNT_PD 0.022f
 
 // pad idx is a raphnet adapter (a real N64 controller): one stick, read raw
 s32 inputControllerIsRawN64(s32 idx);
+
+// Midas per-device auto-aim: true while player 1 is on keyboard + mouse and
+// Input.MouseAutoAim is off
+s32 inputMouseBlocksAutoAim(void);
 
 void inputMouseGetScaledDelta(f32 *dx, f32 *dy);
 

@@ -104,7 +104,7 @@ static s32 fakeControllers = 0;
 // one-time migration of saved stick settings to the Midas defaults.
 static s32 raphnetRawEnabled = 1;
 static s32 inputFeelVersion = 0;
-#define INPUT_FEEL_VERSION 1
+#define INPUT_FEEL_VERSION 2
 
 #ifdef PD_ENABLE_RAPHNET_RAW
 // rumble on a raw pad is the Rumble Pak motor: on until this deadline (ms)
@@ -212,6 +212,11 @@ static s32 lastKey = 0;
 // in hand (movement is discrete C-buttons on kb/mouse but an analog stick on
 // a pad, where stealing a C-button does nothing).
 static s32 lastSourceWasPad = 0;
+// The same, for player 1 alone (the mouse owner): only player 1's pad (or raw
+// raphnet pad) counts, so a second player's pad can't flip it. Read by the
+// Midas per-device auto-aim gate (inputMouseBlocksAutoAim).
+static s32 p1SourceIsPad = 0;
+static s32 mouseAutoAim = 0;
 static char lastChar = 0;
 static s32 textInput = 0;
 // One-frame cooldown applied after text input ends. While text input was
@@ -725,6 +730,7 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 				lastKey = (mouseWheel < 0) + VK_MOUSE_WHEEL_UP;
 			}
 			lastSourceWasPad = 0;
+			p1SourceIsPad = 0;
 			break;
 
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -732,10 +738,12 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 				lastKey = VK_MOUSE_BEGIN - 1 + event->button.button;
 			}
 			lastSourceWasPad = 0;
+			p1SourceIsPad = 0;
 			break;
 
 		case SDL_EVENT_MOUSE_MOTION:
 			lastSourceWasPad = 0;
+			p1SourceIsPad = 0;
 			break;
 
 		case SDL_EVENT_KEY_DOWN:
@@ -743,6 +751,7 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 				lastKey = VK_KEYBOARD_BEGIN + event->key.scancode;
 			}
 			lastSourceWasPad = 0;
+			p1SourceIsPad = 0;
 			break;
 
 		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -755,6 +764,9 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 				}
 			}
 			lastSourceWasPad = 1;
+			if (inputControllerGetIndex(SDL_GetGamepadFromID(event->gbutton.which)) == 0) {
+				p1SourceIsPad = 1;
+			}
 			break;
 
 		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
@@ -772,6 +784,9 @@ static _Bool inputEventFilter(void *data, SDL_Event *event)
 			// past a deadzone shouldn't claim the player picked up the pad).
 			if (event->gaxis.value > 8000 || event->gaxis.value < -8000) {
 				lastSourceWasPad = 1;
+				if (inputControllerGetIndex(SDL_GetGamepadFromID(event->gaxis.which)) == 0) {
+					p1SourceIsPad = 1;
+				}
 			}
 			break;
 
@@ -976,16 +991,26 @@ s32 inputInit(void)
 	// values were tuned around the +/-127 mapping (saturating at ~64% of the
 	// stick), so they don't carry over. A negative scale (axis invert) keeps
 	// its sign.
-	if (inputFeelVersion < INPUT_FEEL_VERSION) {
+	if (inputFeelVersion < 1) {
 		for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
 			for (s32 a = 0; a < 4; ++a) {
 				padsCfg[i].deadzone[a] = DEFAULT_DEADZONE;
 				padsCfg[i].sens[a] = (padsCfg[i].sens[a] < 0.f) ? -1.f : 1.f;
 			}
 		}
-		sysLogPrintf(LOG_NOTE, "input: stick settings reset to the Midas defaults (InputFeelVersion %d)", INPUT_FEEL_VERSION);
-		inputFeelVersion = INPUT_FEEL_VERSION;
+		sysLogPrintf(LOG_NOTE, "input: stick settings reset to the Midas defaults (InputFeelVersion 1)");
 	}
+	// step 2: the aim-mode mouse crosshair is in Midas units now (Crosshair
+	// Speed 1.0 = Midas mouse_sens_aim 1.0) and the edge point is Midas's 0.72
+	if (inputFeelVersion < 2) {
+		for (s32 i = 0; i < MAX_LOCAL_PLAYERS; ++i) {
+			g_PlayerExtCfg[i].mouseaimspeedx = 1.0f;
+			g_PlayerExtCfg[i].mouseaimspeedy = 1.0f;
+			g_PlayerExtCfg[i].crosshairedgeboundary = 0.72f;
+		}
+		sysLogPrintf(LOG_NOTE, "input: crosshair speed / edge reset to the Midas defaults (InputFeelVersion 2)");
+	}
+	inputFeelVersion = INPUT_FEEL_VERSION;
 
 	if (!SDL_WasInit(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC)) {
 		SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
@@ -1191,6 +1216,11 @@ static s32 inputReadRaphnetRaw(s32 idx, OSContPad *npad)
 		return 0;
 	}
 
+	// raw pads raise no SDL events: a real press or push claims player 1
+	if (idx == 0 && (btn || x > 20 || x < -20 || y > 20 || y < -20)) {
+		p1SourceIsPad = 1;
+	}
+
 	// keyboard binds (and their digital stick) were read by the caller
 	npad->button |= btn;
 	if (x != 0) npad->stick_x = x;
@@ -1201,6 +1231,13 @@ static s32 inputReadRaphnetRaw(s32 idx, OSContPad *npad)
 #else
 	return 0;
 #endif
+}
+
+// Midas per-device auto-aim: off while player 1 is on keyboard + mouse,
+// unless Input.MouseAutoAim is set
+s32 inputMouseBlocksAutoAim(void)
+{
+	return !mouseAutoAim && !p1SourceIsPad;
 }
 
 s32 inputControllerIsRawN64(s32 idx)
@@ -2399,6 +2436,7 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 	configRegisterFloat("Input.GyroSpeedX", &gyroSensX, -30.f, 30.f);
 	configRegisterFloat("Input.GyroSpeedY", &gyroSensY, -30.f, 30.f);
 	configRegisterInt("Input.RaphnetRaw", &raphnetRawEnabled, 0, 1);
+	configRegisterInt("Input.MouseAutoAim", &mouseAutoAim, 0, 1);
 	configRegisterInt("Input.InputFeelVersion", &inputFeelVersion, 0, 1000);
 
 	char secname[] = "Input.Player1.Binds";

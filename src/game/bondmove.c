@@ -538,6 +538,41 @@ bool bmoveIsAutoMoveCentreEnabled(void)
 	return g_Vars.currentplayer->automovecentreenabled;
 }
 
+#ifndef PLATFORM_N64
+// Midas aim-mode mouse crosshair (docs/PORT_INPUT_MIDAS.md). Per local player:
+// the crosshair was seeded from the gun on aim entry, the mouse has moved it
+// this aim session, and where the combined (stick + mouse) crosshair sat last
+// tick, which drives the edge turn.
+// Crosshair travel per degree of mouse look, in the 4:3 band (Midas
+// AIM_CROSSHAIR_PER_DEG: full +/-0.65 reach in ~376 counts at speed 2.5).
+#define AIM_CROSSHAIR_PER_DEG 0.0173f
+#define AIM_CROSSHAIR_REACH 0.65f
+static u8 g_AimSeeded[MAX_PLAYERS];
+static u8 g_AimMouseMoved[MAX_PLAYERS];
+static f32 g_AimSwivelPos[MAX_PLAYERS][2];
+
+static void bmoveResetMouseAim(void)
+{
+	const s32 pn = g_Vars.currentplayernum;
+
+	g_Vars.currentplayer->swivelpos[0] = 0.f;
+	g_Vars.currentplayer->swivelpos[1] = 0.f;
+	if (pn >= 0 && pn < MAX_PLAYERS) {
+		g_AimSeeded[pn] = 0;
+		g_AimMouseMoved[pn] = 0;
+		g_AimSwivelPos[pn][0] = 0.f;
+		g_AimSwivelPos[pn][1] = 0.f;
+	}
+}
+
+// Midas: auto-aim is a pad aid. While the local mouse-owning player is on
+// keyboard + mouse it is off, unless Input.MouseAutoAim is set.
+static bool bmoveMouseBlocksAutoAim(void)
+{
+	return !g_Vars.currentplayer->isremote && netPlayerOwnsMouse() && inputMouseBlocksAutoAim();
+}
+#endif
+
 void bmoveSetAutoAimY(bool enabled)
 {
 	g_Vars.currentplayer->autoyaimenabled = enabled;
@@ -545,6 +580,12 @@ void bmoveSetAutoAimY(bool enabled)
 
 bool bmoveIsAutoAimYEnabled(void)
 {
+#ifndef PLATFORM_N64
+	if (bmoveMouseBlocksAutoAim()) {
+		return false;
+	}
+#endif
+
 	if (!g_Vars.normmplayerisrunning) {
 		return g_Vars.currentplayer->autoyaimenabled;
 	}
@@ -603,6 +644,12 @@ void bmoveSetAutoAimX(bool enabled)
 
 bool bmoveIsAutoAimXEnabled(void)
 {
+#ifndef PLATFORM_N64
+	if (bmoveMouseBlocksAutoAim()) {
+		return false;
+	}
+#endif
+
 	if (!g_Vars.normmplayerisrunning) {
 		return g_Vars.currentplayer->autoxaimenabled;
 	}
@@ -1365,8 +1412,9 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 			}
 		}
 
-		allowmcross = (PLAYER_EXTCFG().mouseaimmode == MOUSEAIM_CLASSIC) &&
-			(movedata.freelookdx || movedata.freelookdy || g_Vars.currentplayer->swivelpos[0] || g_Vars.currentplayer->swivelpos[1]);
+		// the mouse drives the aim-mode crosshair (Midas model, see the
+		// manual-aim block); it no longer needs motion this frame to count
+		allowmcross = (PLAYER_EXTCFG().mouseaimmode == MOUSEAIM_CLASSIC);
 		if (movedata.invertpitch) {
 			movedata.freelookdy = -movedata.freelookdy;
 		}
@@ -2024,32 +2072,53 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 
 #ifndef PLATFORM_N64
 					// Handle turning and looking (x/y) via mouselook when aiming
-					bool allowcross = allowmcross;
-					if (g_Vars.currentplayer->insightaimmode && allowcross && bgunGetWeaponNum(HAND_RIGHT) != WEAPON_HORIZONSCANNER) {
-						float edge_boundary = PLAYER_EXTCFG().crosshairedgeboundary;
-						if (g_Vars.currentplayer->swivelpos[0] > edge_boundary) {
-							movedata.aimturnrightspeed += (g_Vars.currentplayer->swivelpos[0] - edge_boundary) / (1.0f - edge_boundary);
-						} else if (g_Vars.currentplayer->swivelpos[0] < -edge_boundary) {
-							movedata.aimturnleftspeed += (g_Vars.currentplayer->swivelpos[0] + edge_boundary) / -(1.0f - edge_boundary);
-						}
-						f32 vertaup = 0.f, vertadown = 0.f;
-						if (g_Vars.currentplayer->swivelpos[1] > edge_boundary) {
-							vertaup = (g_Vars.currentplayer->swivelpos[1] - edge_boundary) / (1.0f - edge_boundary);
-						} else if (g_Vars.currentplayer->swivelpos[1] < -edge_boundary) {
-							vertadown = (g_Vars.currentplayer->swivelpos[1] + edge_boundary) / -(1.0f - edge_boundary);
-						}
-						// Uninvert pitch if needed
-						if (movedata.invertpitch) {
-							movedata.speedvertaup += vertadown;
-							movedata.speedvertadown += vertaup;
-						} else {
-							movedata.speedvertaup += vertaup;
-							movedata.speedvertadown += vertadown;
+					// Midas edge turn, mouse only: once the crosshair passes the
+					// edge point (CrosshairEdgeBoundary, Midas 0.72) of its
+					// reach, the view turns, ramping to full at the edge. Uses
+					// last tick's combined crosshair; combined with the stick's
+					// >60 edge turn by max, not by adding.
+					const s32 aimpn = g_Vars.currentplayernum;
+					if (g_Vars.currentplayer->insightaimmode && allowmcross && bgunGetWeaponNum(HAND_RIGHT) != WEAPON_HORIZONSCANNER
+							&& aimpn >= 0 && aimpn < MAX_PLAYERS) {
+						const f32 edge = PLAYER_EXTCFG().crosshairedgeboundary;
+						f32 push;
+
+						if (g_AimMouseMoved[aimpn] && edge < 1.0f) {
+							const f32 px = g_AimSwivelPos[aimpn][0];
+							const f32 py = g_AimSwivelPos[aimpn][1];
+
+							push = ((px < 0.f ? -px : px) / AIM_CROSSHAIR_REACH - edge) / (1.0f - edge);
+							if (push > 0.f && g_Vars.currentplayer->swivelpos[0] != 0.f) {
+								if (push > 1.f) push = 1.f;
+								if (px > 0.f) {
+									if (push > movedata.aimturnrightspeed) movedata.aimturnrightspeed = push;
+								} else {
+									if (push > movedata.aimturnleftspeed) movedata.aimturnleftspeed = push;
+								}
+							}
+
+							push = ((py < 0.f ? -py : py) / AIM_CROSSHAIR_REACH - edge) / (1.0f - edge);
+							if (push > 0.f && g_Vars.currentplayer->swivelpos[1] != 0.f) {
+								f32 vertaup = 0.f, vertadown = 0.f;
+								if (push > 1.f) push = 1.f;
+								if (py > 0.f) {
+									vertaup = push;
+								} else {
+									vertadown = push;
+								}
+								// Uninvert pitch if needed
+								if (movedata.invertpitch) {
+									f32 tmp = vertaup;
+									vertaup = vertadown;
+									vertadown = tmp;
+								}
+								if (vertaup > movedata.speedvertaup) movedata.speedvertaup = vertaup;
+								if (vertadown > movedata.speedvertadown) movedata.speedvertadown = vertadown;
+							}
 						}
 					} else {
-						// Reset mouse aim position when not aiming
-						g_Vars.currentplayer->swivelpos[0] = 0.f;
-						g_Vars.currentplayer->swivelpos[1] = 0.f;
+						// Reset mouse aim when not aiming
+						bmoveResetMouseAim();
 					}
 #endif
 
@@ -3049,22 +3118,72 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				return;
 			}
 		}
-		if (allowmcross) {
-			// joystick is inactive, move crosshair using the mouse
-			const f32 xcoeff = 320.f / 1080.f;
-			const f32 ycoeff = 240.f / 1080.f;
-			// the Midas mouse units made freelookd* larger; keep the aim
-			// crosshair at its old speed until it gets the Midas model too
-			const f32 unitcomp = INPUT_MOUSE_DEG_PER_COUNT_PD / INPUT_MOUSE_DEG_PER_COUNT;
-			const f32 xscale = (PLAYER_EXTCFG().mouseaimspeedx * xcoeff * unitcomp) / g_Vars.currentplayer->aspect;
-			const f32 yscale = PLAYER_EXTCFG().mouseaimspeedy * ycoeff * unitcomp;
-			f32 x = g_Vars.currentplayer->swivelpos[0] + movedata.freelookdx * xscale;
-			f32 y = g_Vars.currentplayer->swivelpos[1] + movedata.freelookdy * yscale;
-			x = (x < -1.f) ? -1.f : ((x > 1.f) ? 1.f : x);
-			y = (y < -1.f) ? -1.f : ((y > 1.f) ? 1.f : y);
-			g_Vars.currentplayer->swivelpos[0] = x;
-			g_Vars.currentplayer->swivelpos[1] = y;
-			bgunSwivelWithDamp(x, y, 0.01f);
+		{
+			// Midas aim-mode crosshair. The stick places the crosshair
+			// absolutely (vanilla glide); the mouse is relative, so its
+			// motion accumulates into an offset (swivelpos) clamped to the
+			// stick's +/-0.65 reach and added to the stick position. Once the
+			// mouse has moved it this aim session the crosshair SNAPS to the
+			// target instead of gliding (bondgun.c g_BgunCrossSnap).
+			struct player *player = g_Vars.currentplayer;
+			const s32 pn = g_Vars.currentplayernum;
+			const bool mouseaim = allowmcross && pn >= 0 && pn < MAX_PLAYERS
+				&& bgunGetWeaponNum(HAND_RIGHT) != WEAPON_HORIZONSCANNER;
+			f32 swx;
+			f32 swy;
+
+			if (mouseaim) {
+				if (!g_AimSeeded[pn]) {
+					// aim entry: start the crosshair where the gun points now
+					// (the sway filter's steady state) instead of the centre
+					const f32 d = player->guncrossdamp;
+
+					g_AimSeeded[pn] = 1;
+					if (d > 0.f && d < 1.f) {
+						player->swivelpos[0] = player->crosspossum[0] * (1.f - d);
+						player->swivelpos[1] = player->crosspossum[1] * (1.f - d);
+					}
+				}
+
+				if (movedata.freelookdx != 0.f || movedata.freelookdy != 0.f) {
+					// freelookd* is in rate units (degrees / 3.5). Same pixels
+					// per degree on both axes: a degree moves 0.0173 of the 4:3
+					// band (Midas), so X is in viewport half-widths over the
+					// aspect, Y in half-heights. CrosshairSpeed (MouseAimSpeed,
+					// Midas mouse_sens_aim) scales it, default 1.0.
+					const f32 perdeg = AIM_CROSSHAIR_PER_DEG * 3.5f * (4.f / 3.f);
+					const f32 aspect = (player->aspect > 0.f) ? player->aspect : (4.f / 3.f);
+
+					g_AimMouseMoved[pn] = 1;
+					player->swivelpos[0] += movedata.freelookdx * perdeg * PLAYER_EXTCFG().mouseaimspeedx / aspect;
+					player->swivelpos[1] += movedata.freelookdy * perdeg * PLAYER_EXTCFG().mouseaimspeedy;
+				} else if (!g_AimMouseMoved[pn] && (movedata.c1stickxraw || movedata.c1stickyraw)) {
+					// pad aim without the mouse: drop the entry seed so the
+					// stick glides as in vanilla
+					player->swivelpos[0] = 0.f;
+					player->swivelpos[1] = 0.f;
+				}
+
+				for (s32 a = 0; a < 2; a++) {
+					if (player->swivelpos[a] > AIM_CROSSHAIR_REACH) player->swivelpos[a] = AIM_CROSSHAIR_REACH;
+					if (player->swivelpos[a] < -AIM_CROSSHAIR_REACH) player->swivelpos[a] = -AIM_CROSSHAIR_REACH;
+				}
+			}
+
+			swx = (movedata.c1stickxraw * 0.65f) / 80.0f + (mouseaim ? player->swivelpos[0] : 0.f);
+			swy = (movedata.c1stickyraw * 0.65f) / 80.0f + (mouseaim ? player->swivelpos[1] : 0.f);
+			swx = (swx < -AIM_CROSSHAIR_REACH) ? -AIM_CROSSHAIR_REACH : ((swx > AIM_CROSSHAIR_REACH) ? AIM_CROSSHAIR_REACH : swx);
+			swy = (swy < -AIM_CROSSHAIR_REACH) ? -AIM_CROSSHAIR_REACH : ((swy > AIM_CROSSHAIR_REACH) ? AIM_CROSSHAIR_REACH : swy);
+
+			if (mouseaim) {
+				g_AimSwivelPos[pn][0] = swx;
+				g_AimSwivelPos[pn][1] = swy;
+			}
+
+			g_BgunCrossSnap = mouseaim && g_AimMouseMoved[pn]
+				&& (player->swivelpos[0] != 0.f || player->swivelpos[1] != 0.f);
+			bgunSwivelWithoutDamp(swx, swy);
+			g_BgunCrossSnap = false;
 			return;
 		}
 #endif

@@ -27,8 +27,28 @@ mouse scaling, `schedStartFrame`/`schedEndFrame`, or `raphnetraw.c`.
 | Raphnet | Controller Pak only; stick through SDL + deadzone + `/256` | true N64 poll bytes, ~160 Hz background thread, no deadzone or reshaping | `port/src/raphnetraw.c` |
 
 Unchanged on purpose: the game-side look math, FOV scaling, pitch inversion,
-auto-aim, and the stick-swap default. Aim-mode mouse crosshair speed is
-compensated back to its old value (`unitcomp` in bondmove.c) until Phase 2.
+and the stick-swap default.
+
+## Phase 2 (2026-10-17): aim mode + auto-aim
+
+| Piece | Before (PD) | Now (Midas) | Where |
+|---|---|---|---|
+| Mouse crosshair rate | `MouseAimSpeed*320/1080/aspect` per rate unit, reach +/-1 | 0.0173 of the 4:3 band per degree; same pixels per degree on both axes (X x(4/3)/aspect, Y x4/3); full +/-0.65 reach in ~376 counts at speed 2.5 | `AIM_CROSSHAIR_PER_DEG`, bondmove.c manual-aim block |
+| Crosshair Speed (`MouseAimSpeedX/Y`) | default 0.7 | default **1.0** = Midas `mouse_sens_aim` | mplayer.c defaults + migration |
+| Stick + mouse | mouse replaced the stick | stick position + mouse offset, clamped to +/-0.65 | same |
+| Aim entry | crosshair from the centre | seeded where the gun points (`crosspossum*(1-guncrossdamp)`); dropped if the pad aims first | same |
+| Mouse crosshair motion | low-pass at 0.01 | **snaps**: `crosspossum = target/(1-crossdamp)` this tick | `g_BgunCrossSnap`, `bgunSwivel` (bondgun.c) |
+| Shots vs crosshair | aim filter (`crosssum2` -> aimpos) lagged the crosshair by the weapon's aimdamp | solved from the crosshair: `crosssum2 = crosspossum*(1-crossdamp)/(1-aimdamp)` (local players, every swivel, as Midas) | `bgunSwivel` |
+| Edge turn | `(pos-0.7)/0.3` of +/-1, added to the stick's | `(|pos|/0.65 - edge)/(1-edge)`, edge default **0.72**, last tick's combined crosshair, max with the stick's | bondmove.c edge block |
+| Auto-aim | same for every device | off while player 1 is on keyboard + mouse (`Input.MouseAutoAim` 0); pads keep it | `bmoveIsAutoAimX/YEnabled`, `inputMouseBlocksAutoAim` |
+
+- **Player 1 device tracking.** `p1SourceIsPad` in input.c. It flips to pad
+  on player 1's own pad events, or on a real press or push on a raw raphnet
+  pad (raw pads raise no SDL events). It flips back on any keyboard or mouse
+  event. A second player's pad can't flip it.
+- **Migration step 2** (`Input.InputFeelVersion` 2). It sets every player's
+  Crosshair Speed X/Y to 1.0 and the edge point to 0.72. It does not reset
+  the sticks again.
 
 ## Worked numbers (defaults)
 
@@ -89,12 +109,8 @@ crosshair and move speeds, and CSP never replays input. So there is no
 protocol bump. Mixed builds differ only in how each player's own
 controls feel.
 
-## Not done yet (Phase 2)
+## Not ported (deliberate)
 
-- Midas aim-mode mouse crosshair: 0.0173 per degree times aim sensitivity,
-  +/-0.65 reach, snap past the CrosshairSpeed low-pass, 0.72 edge band,
-  seeded from the gun's sway.
-- Per-device auto-aim: off for KBM, on for pads.
 - Midas's FOV-ratio quirk (zoom below 60 divides by 60). Kai keeps
   fov/default-fov.
 - Midas's look-ahead tweaks. Look-ahead is off in Kai's PC mode anyway.
@@ -114,3 +130,8 @@ Compile-verified only. Runtime checklist:
 7. Controller Pak backup/restore through the same adapter still works (the pause).
 8. First launch resets stick deadzones/scale once (log line), and later
    changes stick.
+9. Aim mode, mouse: the crosshair starts on the gun, moves 1:1 with no glide,
+   crosses about 65% of the half-screen, and turns the view past 72%. Shots
+   land on the crosshair while turning.
+10. Aim mode, pad: the crosshair still glides (vanilla); hip fire is unchanged.
+11. Auto-aim: off on KBM, on as soon as player 1 touches the pad (SP and MP).

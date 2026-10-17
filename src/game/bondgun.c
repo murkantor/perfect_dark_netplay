@@ -5929,6 +5929,12 @@ void bgunCreateFiredProjectile(s32 handnum)
 #endif
 }
 
+#ifndef PLATFORM_N64
+// Set by bondmove around the mouse-driven aim-mode swivel: the crosshair lands
+// on its target this tick instead of gliding (Midas g_portAimCrosshairSnap).
+s32 g_BgunCrossSnap = false;
+#endif
+
 void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 {
 	f32 screenwidth = camGetScreenWidth();
@@ -6044,6 +6050,15 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 		}
 	}
 
+#ifndef PLATFORM_N64
+	// Midas: the mouse crosshair snaps to the filter's steady state for this
+	// target, skipping the CrosshairSpeed low-pass
+	if (g_BgunCrossSnap && 1.0f - crossdamp > 0.0f) {
+		player->crosspossum[0] = screenx / (1.0f - crossdamp);
+		player->crosspossum[1] = screeny / (1.0f - crossdamp);
+	}
+#endif
+
 	player->crosspos[0] = player->crosspossum[0] * (1.0f - crossdamp) * screenwidth * 0.5f + screenwidth * 0.5f;
 	player->crosspos[1] = player->crosspossum[1] * (1.0f - crossdamp) * screenheight * 0.5f + screenheight * 0.5f;
 
@@ -6086,6 +6101,19 @@ void bgunSwivel(f32 screenx, f32 screeny, f32 crossdamp, f32 aimdamp)
 		player->crosssum2[0] = player->crosssum2[0] * aimdamp + screenx;
 		player->crosssum2[1] = player->crosssum2[1] * aimdamp + screeny;
 	}
+
+#ifndef PLATFORM_N64
+	// Midas: shots go where the crosshair is. The aim filter (crosssum2 ->
+	// aimpos) is damped differently from the crosshair and lagged behind it
+	// while turning - with a mouse a visible aiming error. Solve it from the
+	// crosshair instead (local players; a remote player's crosshair is wire state).
+	if (!player->isremote && 1.0f - aimdamp != 0.0f) {
+		const f32 k = (1.0f - crossdamp) / (1.0f - aimdamp);
+
+		player->crosssum2[0] = player->crosspossum[0] * k;
+		player->crosssum2[1] = player->crosspossum[1] * k;
+	}
+#endif
 
 	player->crosspos2[0] = player->crosssum2[0] * (1.0f - aimdamp) * screenwidth * 0.5f + screenwidth * 0.5f;
 	player->crosspos2[1] = player->crosssum2[1] * (1.0f - aimdamp) * screenheight * 0.5f + screenheight * 0.5f;
