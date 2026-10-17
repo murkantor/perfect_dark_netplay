@@ -201,11 +201,11 @@ Deliberately left alone:
 
 ## Still to do
 
-1. **Gun animations and recoil pose** step at 60 Hz. The gun model anim
-   advances by whole fields (`animframeinc = lvupdate60`) inside the
-   integer-gated `bgunTickHand`, and it drives the guncmd state machine
-   (keyframes, sounds). This needs a render-side phase rather than a logic
-   change.
+1. ~~Gun animations and recoil pose~~ DONE (2c, render-side):
+   `g_LvFieldPhase` (lv.c) plus per-hand tick snapshots (`bgunrendersnap`,
+   bondgun.c). The anim is drawn `rate*phase` frames on and restored after
+   the matrix build. The kick tween is re-evaluated at frames+phase. The
+   firing shake is rolled once per field and held.
 2. **Projectiles** (with spin), sparks, shards and smoke: render-only
    extrapolation by sub-field phase. Smoke and sparks step at 60 Hz.
 3. **Doors/lifts in netplay** still step at 60 Hz (the netplay pin; their
@@ -262,4 +262,6 @@ Phase 2c checklist (compile-verified only):
 17. Netplay client: remote players move and turn smoothly.
 18. Uncapped offline: sims and guards walk/run with smooth animation, and
     speeds and paths match 60 fps.
-
+19. Uncapped: reloads/equips/fire anims smooth, no pop at the end of a
+    reload; recoil kick smooth; the firing shake looks like 60 fps (not
+    buzzing).
