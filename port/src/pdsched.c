@@ -244,6 +244,16 @@ void schedSubmitTask(OSSched *sc, OSScTask *t)
 void schedStartFrame(OSSched *sc)
 {
 	videoStartFrame();
+
+	// Midas input timing: sample right after the frame-start event pump, so
+	// the tick that runs next reads input this fresh. (Sampling in
+	// schedEndFrame, before the swap and the vsync / frame-cap wait, made
+	// every tick read input up to a frame old.) joyReadData stays 1:1 with
+	// mainTick's joyDebugJoy consume.
+	inputUpdate();
+	joyStartReadData(&g_PiMesgQueue);
+	joyReadData();
+	joy00014238();
 	if (g_Vars.diffframe60) {
 		if (g_NetMode) {
 			// Netplay ceiling (configurable, default 120): g_NetTick advances per
@@ -361,7 +371,6 @@ void schedEndFrame(OSSched *sc)
 		viHandleRetrace();
 	}
 
-	inputUpdate();
 	conTick();
 	luaTick();
 
@@ -370,10 +379,6 @@ void schedEndFrame(OSSched *sc)
 		g_NetDebugDraw = !g_NetDebugDraw;
 	}
 	netDebugKey = newKey;
-
-	joyStartReadData(&g_PiMesgQueue);
-	joyReadData();
-	joy00014238();
 
 	if (g_Vars.diffframe60) {
 		netEndFrame();

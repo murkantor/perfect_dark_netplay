@@ -22,6 +22,7 @@
 // client) flips the option.
 #include "bss.h"
 #include "data.h"
+#include "raphnetraw.h"
 #include "constants.h"
 #include "types.h"
 
@@ -29,9 +30,22 @@
 
 #define MAX_BIND_STR 256
 
-#define TRIG_THRESHOLD (30 * 256)
-#define DEFAULT_DEADZONE 4096
-#define DEFAULT_DEADZONE_RY 6144
+// Midas input feel (docs/PORT_INPUT_MIDAS.md): 10% deadzones on every axis
+// and a 10% trigger point, the Project Midas defaults.
+#define TRIG_THRESHOLD 3276
+#define DEFAULT_DEADZONE 3277
+#define DEFAULT_DEADZONE_RY 3277
+
+// Stick reach in N64 units. A real N64 stick tops out around +/-80, and the
+// game's tuning (/70 turn saturation, the >60 aim edge-turn, the /80 aim
+// crosshair) assumes that reach. Mapping the pad's full throw onto +/-127
+// (the old /256) saturated turning at ~64% of the stick; Midas maps it onto
+// +/-85 (max 84), and then applies the N64 octagon gate.
+#define INPUT_N64_STICK_MAX 85
+#define INPUT_N64_STICK_DIAG 130
+
+// raphnet adapters (raw N64 pads)
+#define RAPHNET_VID 0x289b
 
 #define WHEEL_UP_MASK SDL_BUTTON_MASK(VK_MOUSE_WHEEL_UP - VK_MOUSE_BEGIN + 1)
 #define WHEEL_DN_MASK SDL_BUTTON_MASK(VK_MOUSE_WHEEL_DN - VK_MOUSE_BEGIN + 1)
@@ -71,6 +85,8 @@ static struct controllercfg {
 	s32 hasTrigRumble;  // runtime capability, not config-bound
 	s32 hasLED;         // runtime capability, not config-bound
 	s32 hasGyro;        // runtime capability, not config-bound
+	s32 isRaphnet;      // runtime: SDL face of a raphnet adapter (VID 289b)
+	s32 raphnetChan;    // runtime: adapter channel for the raw path
 } padsCfg[INPUT_MAX_CONTROLLERS] = {
 	CONTROLLERCFG_DEFAULT,
 	CONTROLLERCFG_DEFAULT,
@@ -82,6 +98,19 @@ static u32 binds[MAXCONTROLLERS][CK_TOTAL_COUNT][INPUT_MAX_BINDS];
 static char bindStrs[MAXCONTROLLERS][CK_TOTAL_COUNT][MAX_BIND_STR];
 
 static s32 fakeControllers = 0;
+
+// Input.RaphnetRaw: read raphnet pads through the raw N64 poll path
+// (raphnetraw.c) instead of the OS joystick stack. Input.InputFeelVersion:
+// one-time migration of saved stick settings to the Midas defaults.
+static s32 raphnetRawEnabled = 1;
+static s32 inputFeelVersion = 0;
+#define INPUT_FEEL_VERSION 1
+
+#ifdef PD_ENABLE_RAPHNET_RAW
+// rumble on a raw pad is the Rumble Pak motor: on until this deadline (ms)
+static u64 rawRumbleUntil[INPUT_MAX_CONTROLLERS];
+static s32 rawRumbleOn[INPUT_MAX_CONTROLLERS];
+#endif
 static s32 firstController = 0;
 static s32 connectedMask = 0;
 
@@ -414,6 +443,17 @@ static inline SDL_JoystickID inputControllerGetId(SDL_Gamepad *ctrl)
 	return SDL_GetJoystickID(SDL_GetGamepadJoystick(ctrl));
 }
 
+// A dual-port adapter shows up as two SDL pads with the raphnet VID: the
+// first one (in player order) is adapter channel 0, the next channel 1.
+static void inputAssignRaphnetChannels(void)
+{
+	s32 chan = 0;
+
+	for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
+		padsCfg[i].raphnetChan = padsCfg[i].isRaphnet ? chan++ : -1;
+	}
+}
+
 static inline void inputInitController(const s32 cidx, const s32 jidx)
 {
 	// SDL3 replaced SDL_GameControllerHasRumble() with a gamepad property
@@ -422,6 +462,8 @@ static inline void inputInitController(const s32 cidx, const s32 jidx)
 	padsCfg[cidx].hasTrigRumble = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false);
 	padsCfg[cidx].hasLED = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
 	padsCfg[cidx].hasGyro = SDL_GamepadHasSensor(pads[cidx], SDL_SENSOR_GYRO);
+	padsCfg[cidx].isRaphnet = (SDL_GetGamepadVendor(pads[cidx]) == RAPHNET_VID);
+	inputAssignRaphnetChannels();
 
 	sysLogPrintf(LOG_NOTE, "input: pad %d caps: rumble=%d trigrumble=%d rgbled=%d gyro=%d",
 		cidx, padsCfg[cidx].rumbleOn, padsCfg[cidx].hasTrigRumble, padsCfg[cidx].hasLED, padsCfg[cidx].hasGyro);
@@ -479,6 +521,8 @@ static inline void inputCloseController(const s32 cidx)
 	padsCfg[cidx].hasTrigRumble = 0;
 	padsCfg[cidx].hasLED = 0;
 	padsCfg[cidx].hasGyro = 0;
+	padsCfg[cidx].isRaphnet = 0;
+	inputAssignRaphnetChannels();
 	padLEDState[cidx] = 0xffffffff;
 	if (cidx == 0) {
 		gyroAccX = gyroAccY = gyroDX = gyroDY = 0.f;
@@ -922,6 +966,27 @@ s32 inputInit(void)
 #endif
 	}
 
+	// Midas mouse: relative motion is the raw device counts - no OS pointer
+	// speed/acceleration curve, no warp-based emulation, no SDL rescale.
+	SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "0");
+	SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_WARP_MOTION, "0");
+	SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SPEED_SCALE, "1");
+
+	// One-time move of saved stick settings to the Midas defaults: the old
+	// values were tuned around the +/-127 mapping (saturating at ~64% of the
+	// stick), so they don't carry over. A negative scale (axis invert) keeps
+	// its sign.
+	if (inputFeelVersion < INPUT_FEEL_VERSION) {
+		for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
+			for (s32 a = 0; a < 4; ++a) {
+				padsCfg[i].deadzone[a] = DEFAULT_DEADZONE;
+				padsCfg[i].sens[a] = (padsCfg[i].sens[a] < 0.f) ? -1.f : 1.f;
+			}
+		}
+		sysLogPrintf(LOG_NOTE, "input: stick settings reset to the Midas defaults (InputFeelVersion %d)", INPUT_FEEL_VERSION);
+		inputFeelVersion = INPUT_FEEL_VERSION;
+	}
+
 	if (!SDL_WasInit(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC)) {
 		SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
 	}
@@ -978,12 +1043,17 @@ static inline bool inputControllersOnlyActive(void)
 	return g_Vars.mplayerisrunning && (g_MpSetup.options & MPOPTION_CONTROLLERS_ONLY);
 }
 
-static inline s32 inputBindPressed(const s32 idx, const u32 ck)
+static inline s32 inputBindPressedEx(const s32 idx, const u32 ck, const bool skipJoy)
 {
 	const bool ctrlOnly = inputControllersOnlyActive();
 	for (s32 i = 0; i < INPUT_MAX_BINDS; ++i) {
 		const u32 vk = binds[idx][ck][i];
 		if (!vk) {
+			continue;
+		}
+		// raw raphnet pad: its buttons come from the N64 poll, and the
+		// adapter's own joystick face goes stale while raw polling owns it
+		if (skipJoy && vk >= VK_JOY_BEGIN) {
 			continue;
 		}
 		// In controllers-only mode, ignore any bind that's a keyboard or
@@ -998,6 +1068,11 @@ static inline s32 inputBindPressed(const s32 idx, const u32 ck)
 		}
 	}
 	return 0;
+}
+
+static inline s32 inputBindPressed(const s32 idx, const u32 ck)
+{
+	return inputBindPressedEx(idx, ck, false);
 }
 
 // Chaos "XBLA mode" (pd.deadzone): a runtime deadzone floor in raw axis units
@@ -1052,6 +1127,85 @@ static inline s32 inputAxisScale(s32 x, const s32 deadzoneCfg, const f32 scale)
 		x *= scale * chaosSensMult;
 		return (x > 32767) ? 32767 : ((x < -32768) ? -32768 : x);
 	}
+}
+
+// Full-range axis (after deadzone + sensitivity) to N64 units, +/-84.
+// Integer division truncates toward zero, as in Midas.
+static inline s32 inputAxisToN64(const s32 v)
+{
+	return v * INPUT_N64_STICK_MAX / 32768;
+}
+
+// The N64 stick's octagonal gate: each axis at most 85, |x| + |y| at most 130.
+static inline void inputStickGate(s32 *x, s32 *y)
+{
+	if (*x > INPUT_N64_STICK_MAX) *x = INPUT_N64_STICK_MAX;
+	if (*x < -INPUT_N64_STICK_MAX) *x = -INPUT_N64_STICK_MAX;
+	if (*y > INPUT_N64_STICK_MAX) *y = INPUT_N64_STICK_MAX;
+	if (*y < -INPUT_N64_STICK_MAX) *y = -INPUT_N64_STICK_MAX;
+
+	const s32 sum = abs(*x) + abs(*y);
+	if (sum > INPUT_N64_STICK_DIAG) {
+		*x = *x * INPUT_N64_STICK_DIAG / sum;
+		*y = *y * INPUT_N64_STICK_DIAG / sum;
+	}
+}
+
+// Move stick only (Midas inputCircleToOctagon): a modern round gate reaches
+// only about (60,60) on a diagonal against the N64's (65,65), so stretch the
+// circle onto the octagon. 1.0 on a cardinal, ~1.08 at 45 degrees.
+static inline void inputCircleToOctagon(s32 *x, s32 *y)
+{
+	const f64 ax = abs(*x);
+	const f64 ay = abs(*y);
+	const f64 r = SDL_sqrt(ax * ax + ay * ay);
+
+	if (r <= 0.0) {
+		return;
+	}
+
+	f64 edge = 130.0 * r / (ax + ay);           // diagonal faces
+	f64 f = 85.0 * r / ((ax > ay) ? ax : ay);  // cardinal faces
+	if (f < edge) {
+		edge = f;
+	}
+	f = edge / 85.0;
+	*x = (s32)((f64)*x * f + ((*x < 0) ? -0.5 : 0.5));
+	*y = (s32)((f64)*y * f + ((*y < 0) ? -0.5 : 0.5));
+}
+
+// raphnet pad read through the raw N64 poll. Returns 1 if it filled npad.
+static s32 inputReadRaphnetRaw(s32 idx, OSContPad *npad)
+{
+#ifdef PD_ENABLE_RAPHNET_RAW
+	const struct controllercfg *cfg = &padsCfg[idx];
+	u16 btn = 0;
+	s8 x = 0;
+	s8 y = 0;
+
+	if (!raphnetRawEnabled || !cfg->isRaphnet || cfg->raphnetChan < 0
+			|| cfg->raphnetChan >= RAPHNET_RAW_MAX_CHAN || !portRaphnetAvailable()) {
+		return 0;
+	}
+	if (portRaphnetPoll(cfg->raphnetChan, &btn, &x, &y) != 1) {
+		return 0;
+	}
+
+	// keyboard binds (and their digital stick) were read by the caller
+	npad->button |= btn;
+	if (x != 0) npad->stick_x = x;
+	if (y != 0) npad->stick_y = y;
+	npad->rstick_x = 0;
+	npad->rstick_y = 0;
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+s32 inputControllerIsRawN64(s32 idx)
+{
+	return idx >= 0 && idx < INPUT_MAX_CONTROLLERS && pads[idx] && padsCfg[idx].isRaphnet;
 }
 
 // (Chaos "Inverted Look" used to live here as an input-layer dy flip; it now
@@ -1127,18 +1281,20 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		return 0;
 	}
 
+	const struct controllercfg *cfg = &padsCfg[idx];
+	const bool rawpad = pads[idx] && cfg->isRaphnet && raphnetRawEnabled;
+
 	for (u32 i = 0; i < CONT_NUM_BUTTONS; ++i) {
-		if (inputBindPressed(idx, i)) {
+		if (inputBindPressedEx(idx, i, rawpad)) {
 			npad->button |= 1U << i;
 		}
 	}
 
-	const s32 xdiff = (inputBindPressed(idx, CK_STICK_XPOS) - inputBindPressed(idx, CK_STICK_XNEG));
-	const s32 ydiff = (inputBindPressed(idx, CK_STICK_YPOS) - inputBindPressed(idx, CK_STICK_YNEG));
-	npad->stick_x = xdiff < 0 ? -0x80 : (xdiff > 0 ? 0x7F : 0);
-	npad->stick_y = ydiff < 0 ? -0x80 : (ydiff > 0 ? 0x7F : 0);
-
-	const struct controllercfg *cfg = &padsCfg[idx];
+	// digital stick binds count as full N64 reach (Midas: +/-85)
+	const s32 xdiff = (inputBindPressedEx(idx, CK_STICK_XPOS, rawpad) - inputBindPressedEx(idx, CK_STICK_XNEG, rawpad));
+	const s32 ydiff = (inputBindPressedEx(idx, CK_STICK_YPOS, rawpad) - inputBindPressedEx(idx, CK_STICK_YNEG, rawpad));
+	npad->stick_x = xdiff < 0 ? -INPUT_N64_STICK_MAX : (xdiff > 0 ? INPUT_N64_STICK_MAX : 0);
+	npad->stick_y = ydiff < 0 ? -INPUT_N64_STICK_MAX : (ydiff > 0 ? INPUT_N64_STICK_MAX : 0);
 
 	if (cfg->cancelCButtons) {
 		// opposite C buttons cancel each other out
@@ -1155,6 +1311,32 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		return 0;
 	}
 
+	if (cfg->isRaphnet) {
+		// A raphnet adapter is a real N64 pad: one stick, read 1:1 in N64
+		// units with no deadzone or reshaping (the game's own +/-5 still
+		// applies). Raw N64 poll when available, else the adapter's SDL face
+		// at /256 - the stick swap never applies to a single stick.
+		if (!rawpad || !inputReadRaphnetRaw(idx, npad)) {
+			if (rawpad) {
+				// raw path down (adapter reconnecting): fall back to the SDL
+				// face, buttons included
+				for (u32 i = 0; i < CONT_NUM_BUTTONS; ++i) {
+					if (inputBindPressed(idx, i)) {
+						npad->button |= 1U << i;
+					}
+				}
+			}
+			const s32 rx = SDL_GetGamepadAxis(pads[idx], SDL_GAMEPAD_AXIS_LEFTX) / 0x100;
+			const s32 ry = -SDL_GetGamepadAxis(pads[idx], SDL_GAMEPAD_AXIS_LEFTY) / 0x100;
+			if (!npad->stick_x && rx) npad->stick_x = (rx > 127) ? 127 : rx;
+			if (!npad->stick_y && ry) npad->stick_y = (ry > 127) ? 127 : ry;
+			npad->rstick_x = 0;
+			npad->rstick_y = 0;
+		}
+		inputChaosDelayApply(idx, npad);
+		return 0;
+	}
+
 	s32 leftX = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[0][0]);
 	s32 leftY = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[0][1]);
 	s32 rightX = SDL_GetGamepadAxis(pads[idx], cfg->axisMap[1][0]);
@@ -1165,13 +1347,13 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 	rightX = inputAxisScale(rightX, cfg->deadzone[cfg->axisMap[1][0]], cfg->sens[cfg->axisMap[1][0]]);
 	rightY = inputAxisScale(rightY, cfg->deadzone[cfg->axisMap[1][1]], cfg->sens[cfg->axisMap[1][1]]);
 
-	if (!npad->stick_x && leftX) {
-		npad->stick_x = leftX / 0x100;
-	}
-
-	s32 stickY = -leftY / 0x100;
-	if (!npad->stick_y && stickY) {
-		npad->stick_y = (stickY == 128) ? 127 : stickY;
+	// main stick (the look stick in PC mode): N64 units + octagon gate
+	{
+		s32 sx = npad->stick_x ? npad->stick_x : inputAxisToN64(leftX);
+		s32 sy = npad->stick_y ? npad->stick_y : -inputAxisToN64(leftY);
+		inputStickGate(&sx, &sy);
+		npad->stick_x = sx;
+		npad->stick_y = sy;
 	}
 
 	if (cfg->stickCButtons) {
@@ -1183,14 +1365,14 @@ s32 inputReadController(s32 idx, OSContPad *npad)
 		npad->rstick_x = 0;
 		npad->rstick_y = 0;
 	} else {
-		// rstick is an analog input
-		if (rightX) {
-			npad->rstick_x = rightX / 0x100;
-		}
-		s32 rStickY = -rightY / 0x100;
-		if (rStickY) {
-			npad->rstick_y = (rStickY == 128) ? 127 : rStickY;
-		}
+		// rstick is an analog input (the move stick in PC mode): N64 units,
+		// round gate stretched onto the octagon, then the gate
+		s32 rx = inputAxisToN64(rightX);
+		s32 ry = -inputAxisToN64(rightY);
+		inputCircleToOctagon(&rx, &ry);
+		inputStickGate(&rx, &ry);
+		npad->rstick_x = rx;
+		npad->rstick_y = ry;
 	}
 
 	inputChaosDelayApply(idx, npad);
@@ -1247,8 +1429,10 @@ static inline void inputUpdateMouse(void)
 		// version of this fix overwrote on those, still discarding most of
 		// the motion (user: "still slow at 600fps"). Gated to the OFFLINE
 		// fixed tick: without it every frame advances (old behaviour
-		// bit-identical), netplay keeps its own long-standing input timing,
-		// and the chaos TimeStop bank (lv.c) can't double-count.
+		// bit-identical) and the chaos TimeStop bank (lv.c) can't double-count.
+		// Netplay banks too (Midas input pass): it pins a 60Hz tick, so at
+		// 120fps every other frame is render-only and overwriting there
+		// dropped about half the mouse motion.
 		extern s32 g_TickThisFrameAdvanced;
 		extern s32 g_FixedTickEnabled;
 		s32 ndx;
@@ -1261,7 +1445,7 @@ static inline void inputUpdateMouse(void)
 		mouseRemX -= ndx;
 		mouseRemY -= ndy;
 
-		if (g_FixedTickEnabled && g_NetMode == 0 && g_TickThisFrameAdvanced != 1) {
+		if ((g_FixedTickEnabled || g_NetMode) && g_TickThisFrameAdvanced != 1) {
 			mouseDX += ndx;
 			mouseDY += ndy;
 		} else {
@@ -1388,6 +1572,23 @@ void inputUpdate(void)
 	if (gyroAimEnabled) {
 		inputUpdateGyro();
 	}
+
+#ifdef PD_ENABLE_RAPHNET_RAW
+	// raw raphnet pads: drive the Rumble Pak motor from the inputRumble deadline
+	{
+		const u64 now = SDL_GetTicks();
+		for (s32 i = 0; i < INPUT_MAX_CONTROLLERS; ++i) {
+			if (!pads[i] || !padsCfg[i].isRaphnet || padsCfg[i].raphnetChan < 0 || !raphnetRawEnabled) {
+				continue;
+			}
+			const s32 on = rawRumbleUntil[i] > now;
+			if (on != rawRumbleOn[i]) {
+				rawRumbleOn[i] = on;
+				portRaphnetRumble(padsCfg[i].raphnetChan, on);
+			}
+		}
+	}
+#endif
 }
 
 s32 inputControllerConnected(s32 idx)
@@ -1403,6 +1604,11 @@ s32 inputRumbleSupported(s32 idx)
 	if (idx < 0 || idx >= INPUT_MAX_CONTROLLERS) {
 		return 0;
 	}
+#ifdef PD_ENABLE_RAPHNET_RAW
+	if (pads[idx] && padsCfg[idx].isRaphnet && raphnetRawEnabled) {
+		return 1; // Rumble Pak via the raw path (silently a no-op without one)
+	}
+#endif
 	return padsCfg[idx].rumbleOn;
 }
 
@@ -1415,6 +1621,15 @@ void inputRumble(s32 idx, f32 strength, f32 time)
 	if (padsCfg[idx].rumbleScale <= 0.f) {
 		return;
 	}
+
+#ifdef PD_ENABLE_RAPHNET_RAW
+	// raw raphnet pad: the Rumble Pak is an on/off motor (inputUpdateRawRumble)
+	if (padsCfg[idx].isRaphnet && raphnetRawEnabled && padsCfg[idx].raphnetChan >= 0) {
+		const u64 now = SDL_GetTicks();
+		rawRumbleUntil[idx] = (strength > 0.f && time > 0.f) ? now + (u64)(time * 1000.f) : 0;
+		return;
+	}
+#endif
 
 	if (padsCfg[idx].rumbleOn) {
 		strength *= padsCfg[idx].rumbleScale;
@@ -1744,9 +1959,12 @@ void inputMouseGetScaledDelta(f32* dx, f32* dy)
 		// callers (bondmove camera, eyespy, etc.) read zeros and fall back
 		// to the right stick. Done here rather than at the call sites so
 		// every consumer is covered without per-site edits.
+		// Midas units: speed 2.5 = 0.1 degree per count (INPUT_MOUSE_DEG_PER_COUNT
+		// per speed unit; was 0.022). The /3.5 is the rate unit bondmove's
+		// *3.5 per tick turns back into degrees.
 		if (mouseLocked && !inputControllersOnlyActive()) {
-				mdx = chaosSensMult * mouseSensX * ((f32)mouseDX / 3.5f) * 0.022f;
-				mdy = chaosSensMult * mouseSensY * ((f32)mouseDY / 3.5f) * 0.022f;
+				mdx = chaosSensMult * mouseSensX * ((f32)mouseDX / 3.5f) * INPUT_MOUSE_DEG_PER_COUNT;
+				mdy = chaosSensMult * mouseSensY * ((f32)mouseDY / 3.5f) * INPUT_MOUSE_DEG_PER_COUNT;
 		}
 		// Gyro aim rides the same gameplay gate (mouseLocked = in-game, not
 		// in menus/console) but is controller input, so it is deliberately
@@ -2180,6 +2398,8 @@ PD_CONSTRUCTOR static void inputConfigInit(void)
 	configRegisterInt("Input.GyroAim", &gyroAimEnabled, 0, 1);
 	configRegisterFloat("Input.GyroSpeedX", &gyroSensX, -30.f, 30.f);
 	configRegisterFloat("Input.GyroSpeedY", &gyroSensY, -30.f, 30.f);
+	configRegisterInt("Input.RaphnetRaw", &raphnetRawEnabled, 0, 1);
+	configRegisterInt("Input.InputFeelVersion", &inputFeelVersion, 0, 1000);
 
 	char secname[] = "Input.Player1.Binds";
 	char keyname[256] = { 0 };

@@ -475,6 +475,17 @@ if(PD_ENABLE_RAPHNET)
   list(APPEND LIBS hidapi::hidapi)
 endif()
 
+# Raphnet RAW pad input (port/src/raphnetraw.c, from Project Midas): the true N64
+# poll bytes over the adapter's vendor HID interface. Win32 HID API on Windows
+# (SDL's hidapi filters that interface out), SDL hidapi elsewhere. No extra deps.
+option(PD_ENABLE_RAPHNET_RAW "Raphnet adapter raw N64 pad input" ON)
+if(PD_ENABLE_RAPHNET_RAW AND NOT DEDICATED_SERVER AND NOT NINTENDO_SWITCH)
+  add_definitions(-DPD_ENABLE_RAPHNET_RAW=1)
+  if(WIN32)
+    list(APPEND LIBS hid setupapi)
+  endif()
+endif()
+
 # Sources
 
 file(GLOB_RECURSE SRC_PORT "${CMAKE_SOURCE_DIR}/port/*.c")

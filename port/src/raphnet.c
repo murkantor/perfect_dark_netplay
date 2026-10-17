@@ -7,6 +7,7 @@
 #include "system.h"
 #include "raphnet.h"
 #include "mempak.h"
+#include "raphnetraw.h"
 
 /*
  * Raphnet N64-to-USB adapter transport (USB-HID).
@@ -106,6 +107,12 @@ raphnet_dev *raphnetOpen(void)
 		return NULL;
 	}
 
+#ifdef PD_ENABLE_RAPHNET_RAW
+	// the raw pad poller (raphnetraw.c) shares the adapter: park it for the
+	// whole pak transfer so the two never interleave SI exchanges
+	portRaphnetPause(1);
+#endif
+
 	struct hid_device_info *list = hid_enumerate(RAPHNET_VID, 0x0);
 	struct hid_device_info *cur;
 	struct hid_device_info *best = NULL;
@@ -150,6 +157,9 @@ raphnet_dev *raphnetOpen(void)
 
 	if (!handle) {
 		sysLogPrintf(LOG_WARNING, "raphnet: no adapter found / could not open (VID %04x)", RAPHNET_VID);
+#ifdef PD_ENABLE_RAPHNET_RAW
+		portRaphnetPause(0);
+#endif
 		return NULL;
 	}
 
@@ -163,6 +173,9 @@ void raphnetClose(raphnet_dev *dev)
 		hid_close(dev->handle);
 		dev->handle = NULL;
 	}
+#ifdef PD_ENABLE_RAPHNET_RAW
+	portRaphnetPause(0);
+#endif
 }
 
 /*

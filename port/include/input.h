@@ -230,6 +230,14 @@ void inputMouseGetRawDelta(s32 *dx, s32 *dy);
 
 // returns changes in mouse position since last frame, scaled by sensitivity
 // returns 0, 0 when the mouse is not locked into the window
+// Midas mouse units: degrees of look per raw count per Input.MouseSpeed unit
+// (speed 2.5 = 0.1 degree per count). PD's old factor was 0.022.
+#define INPUT_MOUSE_DEG_PER_COUNT 0.04f
+#define INPUT_MOUSE_DEG_PER_COUNT_PD 0.022f
+
+// pad idx is a raphnet adapter (a real N64 controller): one stick, read raw
+s32 inputControllerIsRawN64(s32 idx);
+
 void inputMouseGetScaledDelta(f32 *dx, f32 *dy);
 
 // returns changes in mouse position since last frame, scaled by absolute sensitivity

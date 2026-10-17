@@ -4423,7 +4423,7 @@ void playerTick(bool arg0)
 				}
 
 #ifndef PLATFORM_N64
-				targetspeed += rsticky / 127.f * 12.f;
+				targetspeed += rsticky / 84.f * 12.f; // full N64 reach (input.c maps the pad to +/-84)
 				if (targetspeed > 12) {
 					targetspeed = 12;
 				}

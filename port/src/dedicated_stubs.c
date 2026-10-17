@@ -84,6 +84,11 @@ void inputMouseGetRawDelta(s32 *dx, s32 *dy)
 	if (dy) { *dy = 0; }
 }
 
+s32 inputControllerIsRawN64(s32 idx)
+{
+	return 0;
+}
+
 void inputMouseGetScaledDelta(f32 *dx, f32 *dy)
 {
 	if (dx) { *dx = 0.0f; }

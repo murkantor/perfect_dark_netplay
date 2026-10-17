@@ -1235,6 +1235,18 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 #ifndef PLATFORM_N64
 	c2stickx = allowc1x ? (s8) joyGetRStickX(contpad1) : 0;
 	c2sticky = allowc1y ? (s8) joyGetRStickY(contpad1) : 0;
+
+	// Midas input feel: the move stick gets Rare's +/-5 dead band too, as the
+	// look stick does below (c1stick*safe). The 2.x styles re-read c2 from
+	// the second pad and strip it themselves.
+	c2stickx = (c2stickx < -5) ? c2stickx + 5 : ((c2stickx > 5) ? c2stickx - 5 : 0);
+	c2sticky = (c2sticky < -5) ? c2sticky + 5 : ((c2sticky > 5) ? c2sticky - 5 : 0);
+
+	// A raphnet pad is real N64 hardware with one stick: it plays Rare's own
+	// control style, as in Midas. PC mode expects a second (look) stick.
+	if (controlmode == CONTROLMODE_PC && inputControllerIsRawN64(contpad1)) {
+		controlmode = CONTROLMODE_11;
+	}
 #endif
 
 	c1buttons = allowc1buttons ? joyGetButtons(contpad1, 0xffffffff) : 0;
@@ -2373,7 +2385,7 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 						movedata.rleanright = g_Vars.currentplayer->insightaimmode && (c1buttons & srmask);
 #ifndef PLATFORM_N64
 						if (controlmode == CONTROLMODE_PC && g_Vars.currentplayer->insightaimmode) {
-							movedata.analoglean = c2stickx / 127.f;
+							movedata.analoglean = c2stickx / 80.f; // N64 reach (85) less the dead band
 						}
 #endif
 					}
@@ -3032,7 +3044,8 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 		{
 			extern s32 g_FixedTickEnabled;
 
-			if (g_FixedTickEnabled && g_NetMode == 0 && g_Vars.lvupdate240 <= 0) {
+			// netplay banks the mouse too (input.c), so it holds here as well
+			if ((g_FixedTickEnabled || g_NetMode) && g_Vars.lvupdate240 <= 0) {
 				return;
 			}
 		}
@@ -3040,8 +3053,11 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 			// joystick is inactive, move crosshair using the mouse
 			const f32 xcoeff = 320.f / 1080.f;
 			const f32 ycoeff = 240.f / 1080.f;
-			const f32 xscale = (PLAYER_EXTCFG().mouseaimspeedx * xcoeff) / g_Vars.currentplayer->aspect;
-			const f32 yscale = PLAYER_EXTCFG().mouseaimspeedy * ycoeff;
+			// the Midas mouse units made freelookd* larger; keep the aim
+			// crosshair at its old speed until it gets the Midas model too
+			const f32 unitcomp = INPUT_MOUSE_DEG_PER_COUNT_PD / INPUT_MOUSE_DEG_PER_COUNT;
+			const f32 xscale = (PLAYER_EXTCFG().mouseaimspeedx * xcoeff * unitcomp) / g_Vars.currentplayer->aspect;
+			const f32 yscale = PLAYER_EXTCFG().mouseaimspeedy * ycoeff * unitcomp;
 			f32 x = g_Vars.currentplayer->swivelpos[0] + movedata.freelookdx * xscale;
 			f32 y = g_Vars.currentplayer->swivelpos[1] + movedata.freelookdy * yscale;
 			x = (x < -1.f) ? -1.f : ((x > 1.f) ? 1.f : x);
