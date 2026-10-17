@@ -1360,7 +1360,14 @@ void hudmsgsTick(void)
 				msg->timer = 0;
 			} else {
 				// Most HUD messages play a swish sound effect
+				// (Midas time scale: also needs a 60Hz field to have elapsed this
+				// frame - the timer below advances by whole fields, so above 60fps
+				// it stays 0 for several frames and the swish restarted on each of
+				// them, stacking up loud. Identical at 60fps.)
 				if (msg->timer == 0
+#ifndef PLATFORM_N64
+						&& g_Vars.lvupdate60 > 0
+#endif
 						&& !lvIsPaused()
 						&& !mpIsPaused()
 #if VERSION >= VERSION_NTSC_1_0
