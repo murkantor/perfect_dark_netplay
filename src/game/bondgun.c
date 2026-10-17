@@ -983,123 +983,32 @@ static f32 bgunClampAnimExtrapolation(struct hand *hand, f32 ext)
 	return ext < 0.f ? -lim : lim;
 }
 
-/**
- * Anims with ANIMFLAG_HASREPEATFRAMES store runs of frames that reuse the
- * previous frame's data (animGetRemappedFrame returns -1). Animation compressed
- * that way (every 2nd/3rd frame a repeat) holds then jumps a whole run at once:
- * a stepped 30/20Hz look at any frame rate, and a move-hold-move burst once it
- * is drawn between ticks (laptop gun, CMP150/sniper reloads, shotgun/Reaper/
- * FarSight fire, crossbow/detonator equips...). Draw `frame` interpolated
- * between the real keyframes either side of a SHORT run instead. Longer runs
- * are deliberate holds and stay as authored, and the far keyframe must not lie
- * past `limit` (the next part show/hide keyframe).
- */
-#define BGUN_MAX_SMOOTHED_REPEAT_SPAN 3
-
-static bool bgunSmoothRepeatFrames(struct anim *anim, f32 frame, f32 limit, f32 end, struct anim *saved)
-{
-	const s16 animnum = anim->animnum;
-	s32 fa = frame >= 0.f ? (s32)frame : -1;
-	s32 a;
-	s32 b;
-
-	if (fa < 0 || fa + 1 > end) {
-		return false;
-	}
-
-	animLoadHeader(animnum);
-
-	if (animGetRemappedFrame(animnum, fa) >= 0 && animGetRemappedFrame(animnum, fa + 1) >= 0) {
-		return false;
-	}
-
-	for (a = fa; a > 0 && fa - a < BGUN_MAX_SMOOTHED_REPEAT_SPAN && animGetRemappedFrame(animnum, a) < 0; a--);
-
-	if (animGetRemappedFrame(animnum, a) < 0) {
-		return false;
-	}
-
-	for (b = fa + 1; b < end && b - a < BGUN_MAX_SMOOTHED_REPEAT_SPAN && animGetRemappedFrame(animnum, b) < 0; b++);
-
-	if (b - a > BGUN_MAX_SMOOTHED_REPEAT_SPAN || b > end || b > limit || animGetRemappedFrame(animnum, b) < 0) {
-		return false;
-	}
-
-	*saved = *anim;
-	anim->framea = a;
-	anim->frameb = b;
-	anim->frac = (frame - a) / (f32)(b - a);
-	anim->frame = frame;
-
-	return true;
-}
-
 static bool bgunExtrapolateAnim(struct hand *hand, struct anim *saved)
 {
 	struct bgunrendersnap *snap = bgunGetRenderSnap(hand);
 	struct anim *anim = hand->gunmodel.anim;
-	bool extrap;
 	f32 frame;
-	f32 room;
 	f32 end;
 
-	if (anim == NULL || anim->animnum == 0 || anim->animnum2) {
+	if (snap == NULL || anim == NULL || g_LvFieldPhase <= 0.f
+			|| snap->animstamp != g_Vars.lvframe60 + 1
+			|| snap->animrate == 0.f || anim->animnum != snap->animnum || anim->animnum2) {
 		return false;
 	}
 
+	frame = anim->frame + bgunClampAnimExtrapolation(hand, snap->animrate * g_LvFieldPhase);
 	end = modelGetNumAnimFrames(&hand->gunmodel) - 1;
 
 	if (anim->endframe >= 0 && end > anim->endframe) {
 		end = anim->endframe;
 	}
 
-	// keyframe-space room before the next part show/hide keyframe
-	room = bgunClampAnimExtrapolation(hand, 1000.f);
-
-	extrap = snap != NULL && g_LvFieldPhase > 0.f
-		&& snap->animstamp == g_Vars.lvframe60 + 1
-		&& snap->animrate != 0.f && anim->animnum == snap->animnum;
-
-	frame = anim->frame;
-
-	if (extrap) {
-		f32 ext = snap->animrate * g_LvFieldPhase;
-
-		if (ext > room) {
-			ext = room;
-		} else if (ext < -room) {
-			ext = -room;
-		}
-
-		frame += ext;
-
-		if (frame > end) {
-			frame = end;
-		}
-
-		if (frame < 0.f) {
-			frame = 0.f;
-		}
+	if (frame > end) {
+		frame = end;
 	}
 
-	if (g_Anims[anim->animnum].flags & ANIMFLAG_HASREPEATFRAMES) {
-		// diagnostic (once per anim): which gun anims carry repeat frames
-		static u8 logged[0x800 / 8];
-		const s32 an = anim->animnum;
-
-		if (an >= 0 && an < 0x800 && (logged[an >> 3] & (1 << (an & 7))) == 0) {
-			logged[an >> 3] |= 1 << (an & 7);
-			sysLogPrintf(LOG_NOTE, "TIMESCALE: gun anim 0x%x has repeat frames (smoothed)", an);
-		}
-	}
-
-	if (anim->speed > 0.f && (g_Anims[anim->animnum].flags & ANIMFLAG_HASREPEATFRAMES)
-			&& bgunSmoothRepeatFrames(anim, frame, anim->frame + room, end, saved)) {
-		return true;
-	}
-
-	if (!extrap) {
-		return false;
+	if (frame < 0.f) {
+		frame = 0.f;
 	}
 
 	*saved = *anim;
