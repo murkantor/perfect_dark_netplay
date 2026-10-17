@@ -7,6 +7,9 @@
 void frametimeInit(void);
 void frametimeApply(s32 diffframe60, s32 diffframe240, s32 frametime);
 void frametimeCalculate(void);
+#ifndef PLATFORM_N64
+extern f32 g_FrameDiff240f;
+#endif
 void func0f16cf94(void);
 
 extern const char var7f1b78c0[];

@@ -1256,7 +1256,11 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 	f32 increment2;
 	f32 newverta;
 #ifndef PLATFORM_N64
-	const f32 mlookscale = g_Vars.lvupdate240 ? (4.f / (f32)g_Vars.lvupdate240) : 4.f;
+	// mouse degrees -> a rate the per-frame integration (x3.5 x delta) turns
+	// back into exactly those degrees: 1/delta against the fractional time the
+	// camera now integrates (Midas time scale; was 4/lvupdate240). Zero time
+	// (paused / render-only netplay frame) keeps the old 4.
+	const f32 mlookscale = (g_LvUpdate60fFrac > 0.f) ? (1.f / g_LvUpdate60fFrac) : 4.f;
 	// netPlayerOwnsMouse: under netplay the local pawn can sit at any slot
 	// (no slot-0 swap on spectator-host servers), so the old
 	// currentplayernum == 0 gate left mouse aim dead for those players.
@@ -2959,7 +2963,13 @@ void bmoveProcessInput(bool allowc1x, bool allowc1y, bool allowc1buttons, bool i
 				bmoveUpdateSpeedVerta(0);
 			}
 
+#ifndef PLATFORM_N64
+			// Midas time scale: pitch integrates real fractional time, so the
+			// view moves on every frame at any fps
+			g_Vars.currentplayer->vv_verta += g_Vars.currentplayer->speedverta * g_LvUpdate60fFracReal * 3.5f;
+#else
 			g_Vars.currentplayer->vv_verta += g_Vars.currentplayer->speedverta * g_Vars.lvupdate60freal * 3.5f;
+#endif
 		}
 	}
 

@@ -45,6 +45,7 @@
 #include "game/inv.h"
 #include "game/lang.h"
 #include "game/lv.h"
+#include "game/timing.h"
 #include "game/menu.h"
 #include "game/mplayer/ingame.h"
 #include "game/mplayer/mplayer.h"
@@ -138,6 +139,15 @@ s32 g_NumReasonsToEndMpMatch = 0;
 s32 g_LvSplitMask = 0;
 #endif
 f32 g_StageTimeElapsed1f = 0;
+#ifndef PLATFORM_N64
+// Midas time scale (docs/PORT_TIMESCALE.md): the level's REAL elapsed time this
+// frame in 60 Hz fields, fractional, for the continuous systems converted to
+// it (camera turn/pitch, mouse look). On any frame whose time was overridden -
+// pause, slow motion, the chaos time effects, the netplay / det pin - it equals
+// lvupdate60f, so converted systems obey those exactly as before.
+f32 g_LvUpdate60fFrac = 0;
+f32 g_LvUpdate60fFracReal = 0;
+#endif
 bool var80084040 = true;
 
 u32 g_MiscSfxSounds[] = {
@@ -3236,6 +3246,21 @@ void lvTick(void)
 	g_Vars.lvframe240 += g_Vars.lvupdate240;
 	g_Vars.lvupdate60frealprev = g_Vars.lvupdate60freal;
 	g_Vars.lvupdate60freal = PALUPF(g_Vars.lvupdate60f);
+
+#ifndef PLATFORM_N64
+	// Real fractional time only on a plain frame (no pause / slow-mo / chaos
+	// time effect / pin, and nothing else rewrote lvupdate240 this frame).
+	// Above 240 fps lvupdate240 is often 0 while real time still passed: the
+	// fractional delta keeps converted systems moving on those frames.
+	if (!lvIsPaused() && !mpIsPaused() && !detTickPinActive() && !g_LvSlomoEngaged
+			&& !g_ChaosTimeStop && g_ChaosFakeCrash240 <= 0
+			&& g_Vars.lvupdate240 == g_Vars.diffframe240) {
+		g_LvUpdate60fFrac = g_FrameDiff240f * 0.25f;
+	} else {
+		g_LvUpdate60fFrac = g_Vars.lvupdate60f;
+	}
+	g_LvUpdate60fFracReal = PALUPF(g_LvUpdate60fFrac);
+#endif
 
 	bgunTickBoost();
 	hudmsgsTick();

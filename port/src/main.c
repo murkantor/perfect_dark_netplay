@@ -164,6 +164,19 @@ int main(int argc, const char **argv)
 	// guards and the headless gameplay-tick path are always taken.
 	g_NetDedicatedMode = 1;
 #endif
+	// Midas time scale (docs/PORT_TIMESCALE.md): clients render as fast as
+	// Video.FramerateLimit (Max FPS) and vsync allow. The engine's own 1/60
+	// wait (Game.TickRateDivisor, default 1 = a hard 60 fps cap) and the fixed
+	// logic tick (Game.FixedTick + its camera interpolation) are retired: the
+	// keys still load but are forced off. The dedicated server keeps its own
+	// pacing (headlessPace) untouched.
+	if (!g_NetDedicatedMode) {
+		extern s32 g_FixedTickEnabled;
+
+		g_TickRateDiv = 0;
+		g_FixedTickEnabled = 0;
+	}
+
 	if (g_NetDedicatedMode) {
 		sysLogPrintf(LOG_NOTE, "starting dedicated server (mode %d: %s)",
 				g_NetDedicatedMode,

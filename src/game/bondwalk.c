@@ -28,6 +28,7 @@
 #include "types.h"
 #ifndef PLATFORM_N64
 #include "net/net.h"
+#include "game/lv.h"
 #include "system.h"
 #include "utils.h"
 
@@ -1666,8 +1667,10 @@ void bwalkUpdateTheta(void)
 	// Same turn speed for all heights
 	mult = 1.f;
 #endif
+	// Midas time scale: yaw integrates real fractional time (lv.c), so the view
+	// turns on every frame at any fps
 	rotateamount = g_Vars.currentplayer->speedtheta * mult
-		* g_Vars.lvupdate60freal * 0.0174505133f * 3.5f;
+		* g_LvUpdate60fFracReal * 0.0174505133f * 3.5f;
 
 #ifndef PLATFORM_N64
 	// CHEAT_MIRROR: the world renders left-right flipped, so invert ONLY the

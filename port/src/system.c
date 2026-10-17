@@ -167,9 +167,29 @@ s32 sysArgGetInt(const char *arg, s32 defval)
 
 u64 sysGetMicroseconds(void)
 {
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return ((u64)tv.tv_sec * USEC_IN_SEC + (u64)tv.tv_usec) - startTick;
+	// Midas time scale: a monotonic high-resolution clock. gettimeofday is wall
+	// time (NTP can step it) and, depending on the CRT, as coarse as 1-15.6 ms,
+	// which is most of a frame at a few hundred fps. All callers only take
+	// differences from startTick.
+#ifdef PLATFORM_WIN32
+	static LARGE_INTEGER freq;
+	LARGE_INTEGER now;
+
+	if (freq.QuadPart == 0) {
+		QueryPerformanceFrequency(&freq);
+	}
+	QueryPerformanceCounter(&now);
+	{
+		// split, or count * 1e6 overflows after ~21 days of uptime
+		const u64 q = (u64)now.QuadPart;
+		const u64 f = (u64)freq.QuadPart;
+		return ((q / f) * USEC_IN_SEC + (q % f) * USEC_IN_SEC / f) - startTick;
+	}
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ((u64)ts.tv_sec * USEC_IN_SEC + (u64)ts.tv_nsec / 1000) - startTick;
+#endif
 }
 
 float sysGetSeconds(void)

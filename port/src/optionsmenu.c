@@ -912,7 +912,7 @@ static MenuItemHandlerResult menuhandlerFramerateLimit(s32 operation, struct men
 	case MENUOP_GETSLIDERLABEL:
 		// NOTE: data->slider.label length must not exceed 15.
 		if (data->slider.value == 0) {
-			strcpy(data->slider.label, "Off");
+			strcpy(data->slider.label, "Uncapped");
 		} else {
 			sprintf(data->slider.label, "%d FPS", data->slider.value);
 		}
@@ -1324,68 +1324,6 @@ static MenuItemHandlerResult menuhandlerGeMuzzleFlashes(s32 operation, struct me
 	return 0;
 }
 
-static MenuItemHandlerResult menuhandlerUncapTickrate(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	switch (operation) {
-	case MENUOP_GET:
-		return (g_TickRateDiv == 0);
-	case MENUOP_SET:
-		g_TickRateDiv = !data->checkbox.value;
-		break;
-	}
-
-	return 0;
-}
-
-static MenuItemHandlerResult menuhandlerLogicTickRate(s32 operation, struct menuitem *item, union handlerdata *data)
-{
-	// Fixed logic tick rate (the /forcetick machinery, det.c): "Off" =
-	// vanilla variable-step sim at render rate; a rate pins the SIM to that
-	// many fixed steps per real second while RENDERING continues every frame
-	// (frames between ticks are no-advance frames — detPinTimestep's
-	// real-time accumulator). Config Game.FixedTick / Game.FixedTickRate;
-	// /forcetick <n> sets any exact rate. Netplay force-overrides to 60Hz in
-	// detPinTimestep regardless of this setting (sim-step contract).
-	// NOTE: visuals between ticks are NOT yet interpolated — at low rates the
-	// world updates at the tick rate even though frames keep presenting
-	// (interpolation is the planned phase 2).
-	static const s32 rates[] = { 0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 };
-	static const char *opts[] = {
-		"Off", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60"
-	};
-	s32 i;
-
-	switch (operation) {
-	case MENUOP_GETOPTIONCOUNT:
-		data->dropdown.value = ARRAYCOUNT(opts);
-		break;
-	case MENUOP_GETOPTIONTEXT:
-		return (intptr_t)opts[data->dropdown.value];
-	case MENUOP_SET:
-		if (data->checkbox.value == 0) {
-			g_FixedTickEnabled = 0;
-		} else {
-			g_FixedTickEnabled = 1;
-			g_FixedTickRate = rates[data->checkbox.value];
-		}
-		break;
-	case MENUOP_GETSELECTEDINDEX:
-		data->dropdown.value = 0;
-		if (g_FixedTickEnabled) {
-			// nearest listed rate at or below the live value (an exact
-			// /forcetick 47 shows as 45; the console value stays in effect
-			// until the dropdown is changed)
-			for (i = 1; i < (s32)ARRAYCOUNT(rates); i++) {
-				if (g_FixedTickRate >= rates[i]) {
-					data->dropdown.value = i;
-				}
-			}
-		}
-	}
-
-	return 0;
-}
-
 static MenuItemHandlerResult menuhandlerCenterHUD(s32 operation, struct menuitem *item, union handlerdata *data)
 {
 	static const char *opts[] = {
@@ -1630,25 +1568,9 @@ struct menuitem g_ExtendedVideoMenuItems[] = {
 		MENUITEMTYPE_SLIDER,
 		0,
 		MENUITEMFLAG_LITERAL_TEXT | MENUITEMFLAG_SLIDER_WIDE | MENUITEMFLAG_SLIDER_DEFERRED,
-		(uintptr_t)"Framerate Limit",
+		(uintptr_t)"Max FPS", // Midas time scale: the one rate knob (0 = uncapped)
 		VIDEO_MAX_FPS,
 		menuhandlerFramerateLimit,
-	},
-	{
-		MENUITEMTYPE_CHECKBOX,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Uncap Tickrate",
-		0,
-		menuhandlerUncapTickrate,
-	},
-	{
-		MENUITEMTYPE_DROPDOWN,
-		0,
-		MENUITEMFLAG_LITERAL_TEXT,
-		(uintptr_t)"Logic Tick Rate",
-		0,
-		menuhandlerLogicTickRate,
 	},
 	{
 		MENUITEMTYPE_CHECKBOX,

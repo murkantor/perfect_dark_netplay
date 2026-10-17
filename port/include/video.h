@@ -4,12 +4,10 @@
 #include <PR/ultratypes.h>
 #include <PR/gbi.h>
 
-// maximum framerate; if the game runs faster than this, things will break
-#if PAL
-#define VIDEO_MAX_FPS 200
-#else
-#define VIDEO_MAX_FPS 240
-#endif
+// top of the Max FPS slider (0 = uncapped is always available). It used to be
+// the 1/240 s (PAL 1/200) sim quantum; above that the integer tick is 0 on some
+// frames, which the Midas time scale handles (docs/PORT_TIMESCALE.md).
+#define VIDEO_MAX_FPS 500
 
 typedef struct {
 	s32 width;

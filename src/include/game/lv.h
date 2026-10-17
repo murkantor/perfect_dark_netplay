@@ -30,6 +30,9 @@ s32 lvSlomoScaleTick(s32 ticks);
 // or combat boost). detPinTimestep halves the pinned fixed-tick / netplay
 // step from it; on net clients it's wire-driven via SVC_TIMESCALE.
 extern s32 g_LvSlomoEngaged;
+// Midas time scale: real fractional level time this frame (lv.c)
+extern f32 g_LvUpdate60fFrac;
+extern f32 g_LvUpdate60fFracReal;
 #endif
 
 u32 getVar80084040(void);

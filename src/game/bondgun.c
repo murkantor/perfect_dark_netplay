@@ -9695,7 +9695,15 @@ void bgunTickGameplay2(void)
 		bgunTickMaulerCharge();
 	}
 
+#ifndef PLATFORM_N64
+	// Only a PAUSED zero frame stops the hand loops (Reaper spin, laser stream,
+	// Mauler charge). Render-only frames (netplay, and above 240 fps the integer
+	// tick is 0 on about half the frames) stopped and restarted them every
+	// frame. Same gate as lvUpdateMiscSfx.
+	if (g_Vars.lvupdate240 == 0 && (lvIsPaused() || mpIsPaused())) {
+#else
 	if (g_Vars.lvupdate240 == 0) {
+#endif
 		for (i = 0; i < 2; i++) {
 			hand = &player->hands[i];
 
