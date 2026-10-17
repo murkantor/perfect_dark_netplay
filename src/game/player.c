@@ -5227,6 +5227,59 @@ void playerAllocateMatrices(struct coord *cam_pos, struct coord *cam_look, struc
 // under netplay (its own view conventions; the pin runs 60Hz there anyway).
 s32 g_TickCamInterpEnabled = 1;
 
+/**
+ * Midas time scale, netplay: the sim is pinned to the 60Hz net tick, so the
+ * local player's position (and so the camera position) only moves on ticks,
+ * while the view angles already update every frame (g_LvViewFrac). Render the
+ * camera position interpolated between the last two ticks by the time since
+ * the tick (g_LvFieldPhase = netTickSubFrac) - up to one tick of visual
+ * position lag, no overshoot on stops/collisions, and server corrections get
+ * smoothed over a tick. A copy only: the sim's cam_pos is untouched.
+ * Teleports (respawn, > ~4m) snap. Not while spectating another player.
+ */
+static void playerTickNetCamPos(struct coord *campos)
+{
+	static struct coord prevpos[4];
+	static struct coord curpos[4];
+	static s32 primed[4];
+	const s32 pn = g_Vars.currentplayernum;
+	f32 dx, dy, dz;
+	f32 a;
+
+	if (pn < 0 || pn > 3) {
+		return;
+	}
+
+	if (!primed[pn] || g_Vars.lvupdate240 > 0) {
+		prevpos[pn] = primed[pn] ? curpos[pn] : *campos;
+		curpos[pn] = *campos;
+		primed[pn] = 1;
+	}
+
+	dx = curpos[pn].x - prevpos[pn].x;
+	dy = curpos[pn].y - prevpos[pn].y;
+	dz = curpos[pn].z - prevpos[pn].z;
+
+	if (dx * dx + dy * dy + dz * dz > 400.0f * 400.0f) {
+		prevpos[pn] = curpos[pn];
+	}
+
+	// only while the net pin drives the view (pause/slow-mo/det: raw pose)
+	a = g_LvFieldPhase;
+
+	if (g_LvViewFrac == g_LvUpdate60fFrac || a <= 0.f || g_NetSpectateChr != NULL) {
+		return;
+	}
+
+	if (a > 1.f) {
+		a = 1.f;
+	}
+
+	campos->x = prevpos[pn].x + dx * a;
+	campos->y = prevpos[pn].y + dy * a;
+	campos->z = prevpos[pn].z + dz * a;
+}
+
 static void playerTickCamInterp(struct coord *campos, struct coord *camlook, struct coord *camup)
 {
 	extern s32 g_FixedTickEnabled;
@@ -5241,6 +5294,11 @@ static void playerTickCamInterp(struct coord *campos, struct coord *camlook, str
 	f32 a;
 	f32 dx, dy, dz;
 	f32 mag;
+
+	if (g_NetMode && g_TickCamInterpEnabled) {
+		playerTickNetCamPos(campos);
+		return;
+	}
 
 	if (!g_TickCamInterpEnabled || !g_FixedTickEnabled || g_NetMode
 			|| pn < 0 || pn > 3) {

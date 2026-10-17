@@ -11457,6 +11457,96 @@ void hangingmonitorInitMatrices(struct prop *prop)
 	mtx00015be0(matrices, &matrices[4]);
 }
 
+/**
+ * Midas time scale, netplay: lifts move on the 60Hz net tick while the local
+ * camera position is drawn interpolated between ticks (playerTickNetCamPos).
+ * Draw lifts the same way - prev/cur tick positions, by the time since the
+ * tick - so a lift and the player riding it stay in step (both one tick
+ * behind) instead of the floor juddering against a smooth camera. Kept in a
+ * side table keyed by prop: liftobj is setup-file data (frozen layout).
+ */
+#define LIFTRENDER_MAX 32
+
+static struct {
+	struct prop *prop;
+	s32 stamp;
+	struct coord prev;
+	struct coord cur;
+} g_LiftRender[LIFTRENDER_MAX];
+
+static void liftGetRenderPos(struct prop *prop, struct coord *out)
+{
+	s32 i;
+	s32 slot = -1;
+	f32 dx, dy, dz;
+	f32 a = g_LvFieldPhase;
+
+	static s32 lastframe60 = 0;
+
+	*out = prop->pos;
+
+	if (!g_NetMode) {
+		return;
+	}
+
+	// a new stage restarts lvframe60 (lvframe240 is never reset): drop the
+	// previous stage's lifts
+	if (g_Vars.lvframe60 < lastframe60) {
+		for (i = 0; i < LIFTRENDER_MAX; i++) {
+			g_LiftRender[i].prop = NULL;
+		}
+	}
+
+	lastframe60 = g_Vars.lvframe60;
+
+	for (i = 0; i < LIFTRENDER_MAX; i++) {
+		if (g_LiftRender[i].prop == prop) {
+			slot = i;
+			break;
+		}
+
+		if (slot < 0 && g_LiftRender[i].prop == NULL) {
+			slot = i;
+		}
+	}
+
+	if (slot < 0) {
+		return;
+	}
+
+	if (g_LiftRender[slot].prop != prop) {
+		g_LiftRender[slot].prop = prop;
+		g_LiftRender[slot].stamp = g_Vars.lvframe240;
+		g_LiftRender[slot].prev = prop->pos;
+		g_LiftRender[slot].cur = prop->pos;
+	} else if (g_Vars.lvupdate240 > 0 && g_LiftRender[slot].stamp != g_Vars.lvframe240) {
+		g_LiftRender[slot].stamp = g_Vars.lvframe240;
+		g_LiftRender[slot].prev = g_LiftRender[slot].cur;
+		g_LiftRender[slot].cur = prop->pos;
+	}
+
+	dx = g_LiftRender[slot].cur.x - g_LiftRender[slot].prev.x;
+	dy = g_LiftRender[slot].cur.y - g_LiftRender[slot].prev.y;
+	dz = g_LiftRender[slot].cur.z - g_LiftRender[slot].prev.z;
+
+	if (dx * dx + dy * dy + dz * dz > 400.0f * 400.0f) {
+		g_LiftRender[slot].prev = g_LiftRender[slot].cur;
+		return;
+	}
+
+	if (g_LvViewFrac == g_LvUpdate60fFrac || a <= 0.f) {
+		return;
+	}
+
+	if (a > 1.f) {
+		a = 1.f;
+	}
+
+	out->x = g_LiftRender[slot].prev.x + dx * a;
+	out->y = g_LiftRender[slot].prev.y + dy * a;
+	out->z = g_LiftRender[slot].prev.z + dz * a;
+}
+
 void objInitMatrices(struct prop *prop)
 {
 	struct defaultobj *obj = prop->obj;
@@ -11465,8 +11555,14 @@ void objInitMatrices(struct prop *prop)
 	if (obj->type == OBJTYPE_DOOR) {
 		doorInitMatrices(prop);
 	} else {
+		struct coord drawpos = prop->pos;
+
+		if (obj->type == OBJTYPE_LIFT) {
+			liftGetRenderPos(prop, &drawpos);
+		}
+
 		mtx3ToMtx4(obj->realrot, &mtx);
-		mtx4SetTranslation(&prop->pos, &mtx);
+		mtx4SetTranslation(&drawpos, &mtx);
 		mtx00015be4(camGetWorldToScreenMtxf(), &mtx, obj->model->matrices);
 
 		if (obj->type == OBJTYPE_CCTV) {
