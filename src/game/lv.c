@@ -218,6 +218,13 @@ u32 g_MiscSfxSounds[] = {
 
 s32 var80084050 = 0;
 
+#ifndef PLATFORM_N64
+// Set at stage reset, cleared on the stage's first ticked frame. Uncapped, a
+// stage's first frames can run zero ticks; musicTickEvents holds the music
+// queue until the first tick has queued its events (see there).
+s32 g_LvAwaitFirstTick = 0;
+#endif
+
 s16 g_FadeNumFrames = 0;
 f32 g_FadeFrac = -1;
 u32 g_FadePrevColour = 0;
@@ -686,6 +693,9 @@ void lvReset(s32 stagenum)
 	var80084040 = true;
 	g_Vars.lvframenum = 0;
 	var80084050 = 0;
+#ifndef PLATFORM_N64
+	g_LvAwaitFirstTick = 1;
+#endif
 
 	g_Vars.lvframe60 = 0;
 	g_Vars.lvupdate240 = 4;
@@ -3319,6 +3329,9 @@ void lvTick(void)
 
 	if (g_Vars.lvupdate240 > 0) {
 		g_Vars.lvframenum++;
+#ifndef PLATFORM_N64
+		g_LvAwaitFirstTick = 0;
+#endif
 	}
 
 	g_Vars.lvupdate60f = g_Vars.lvupdate240 * 0.25f;

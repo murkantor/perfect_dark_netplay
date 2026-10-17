@@ -1190,6 +1190,20 @@ void musicTickEvents(void)
 		// or every frame if the interval timer is disabled
 		event = &g_MusicEventQueue[0];
 
+#ifndef PLATFORM_N64
+		// Hold the queue until a new stage's first tick has run. The stage's
+		// level-track PLAY and its intro's STOP+PLAY (AI, first tick) used to
+		// land in the queue on the same frame, so the supersede pass above
+		// dropped the first PLAY unprocessed. Uncapped, the first frames can
+		// run zero ticks: the level track's first note then sounded before
+		// the intro cutscene stopped it (dataDyne Infiltration).
+		extern s32 g_LvAwaitFirstTick;
+
+		if (g_LvAwaitFirstTick) {
+			return;
+		}
+#endif
+
 		if (g_MusicInterval240 == 0 || g_MusicSleepRemaining240 < g_Vars.diffframe240) {
 			g_MusicSleepRemaining240 = g_MusicInterval240;
 
