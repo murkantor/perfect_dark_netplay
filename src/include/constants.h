@@ -3183,8 +3183,9 @@ _Static_assert(MAX_PLAYERS <= 16, "obj->hidden owner/attacker field is 4 bits - 
 // hi-bit is read — see mpsetupfileLoadWad). 8 aliases Combat (safe); free
 // safe ids: 9 (HTB), 10 (HTM), 11 (PAC), 13 (CTC), 14 (Graffiti); 12 (KoH)
 // and 15 (Zones) alias rows WITH readsavefuncs — using them would clobber
-// that scenario's saved slot. ALSO: the 80-byte setup block is now 100% full
-// (640/640 bits) — any further saved field needs MPSETUP_BLOCKSIZE enlarged.
+// that scenario's saved slot. ALSO: the setup block was enlarged to 96 bytes in
+// mpsetups v11 (656/768 bits used) - new saved fields go at the wad tail behind a
+// version >= 12 gate.
 #endif
 
 // Number of rows in g_MpScenarios[] (scenarios.c). g_MpSetup.scenario indexes
@@ -5232,7 +5233,8 @@ enum weaponnum {
 
 #define MPSETUP_MAXSETUPS 128
 #define MPSETUP_MAXNAME 17
-#define MPSETUP_BLOCKSIZE 80
+#define MPSETUP_BLOCKSIZE 96 // v11+ (mpsetups.c); grown from 80 for the 8-bit bot head/body
+#define MPSETUP_BLOCKSIZE_V10 80 // block size in v1-10 mpsetups files
 
 // Port-only: saved Combat Sim custom weapon presets. Stored in mpsetups.bin
 // v2 as an appended section after the existing setup blocks. Per-slot

@@ -442,9 +442,10 @@ end
 local MENU_STAGES = {
   [0x26] = true, -- STAGE_CITRAINING (hub)
   [0x4e] = true, -- STAGE_TEST_OLD
-  [0x5c] = true, -- STAGE_TITLE
-  [0x5d] = true, -- STAGE_BOOTPAKMENU / STAGE_4MBMENU
-  [0x5e] = true, -- STAGE_CREDITS
+  [0x66] = true, -- STAGE_TITLE (0x5c before the AIO arenas took 0x5c-0x65)
+  [0x67] = true, -- STAGE_BOOTPAKMENU
+  [0x68] = true, -- STAGE_CREDITS
+  [0x69] = true, -- STAGE_4MBMENU
 }
 
 -- Cheats chaos turned on, remembered in the persist KV — which is C-owned and

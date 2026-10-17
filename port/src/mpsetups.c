@@ -18,18 +18,24 @@ MP Setup File Format
 	[version{1}]
 	[defaultsetup{1}]
 	[numsetups{1}]
-	# setups
-	[setup_1{80}]
+	# setups (blocks are 80 bytes in v1-10 files, MPSETUP_BLOCKSIZE = 96 from v11)
+	[setup_1{96}]
 	...
-	[setup_n{80}]
-	# weapon presets (v2+)
+	[setup_n{96}]
+	# per-setup wad versions (v11+). Older files have none: every block is
+	# assumed to be the file's version. A block keeps its version until it is
+	# re-saved, so upgrading the file never re-labels an old-layout block.
+	[blockversion_1{1}]
+	...
+	[blockversion_n{1}]
+	# weapon presets (v2+, g_MpSetupFile only)
 	[numweaponpresets{1}]
 	[preset_1{sizeof(struct mpweaponpreset)}]
 	...
 	[preset_m{sizeof(struct mpweaponpreset)}]
  */
 
-#define MPSETUP_VERSION 10 // v10: + scenario high bit (1 bit tail — scenarios 8-15, e.g. Race; block now 100% FULL). v9: + global Lives mode/count (5 bits). v7: + paintclaimtime (4 bits). v6: portoptions folded into options' high 32 bits
+#define MPSETUP_VERSION 11 // v11: 96-byte blocks + per-block versions; 8-bit bot head/body (AIO characters). v10: + scenario high bit (1 bit tail — scenarios 8-15, e.g. Race; block now 100% FULL). v9: + global Lives mode/count (5 bits). v7: + paintclaimtime (4 bits). v6: portoptions folded into options' high 32 bits
 
 #define MPSETUP_EXPORTDIR "$S/exported/"
 #define MPSETUP_FILENAME "mpsetups"
@@ -371,8 +377,31 @@ static s32 mpsetupDeserialize(FILE *f, struct mpsetupfile *setupfile)
 	rx += fread(&setupfile->defaultsetup, sizeof(setupfile->defaultsetup), 1, f);
 	rx += fread(&setupfile->numsetups, sizeof(setupfile->numsetups), 1, f);
 
+	if (setupfile->numsetups > MPSETUP_MAXSETUPS) {
+		setupfile->numsetups = MPSETUP_MAXSETUPS;
+	}
+
+	// v1-10 blocks are 80 bytes; the rest of the (larger) block reads as zero,
+	// which every version-gated wad field treats as "absent"
+	const size_t blocksize = setupfile->version >= 11 ? MPSETUP_BLOCKSIZE : MPSETUP_BLOCKSIZE_V10;
+
 	for (int i = 0; i < setupfile->numsetups; ++i) {
-		rx += fread(setupfile->setups[i].bytes, sizeof(setupfile->setups[i].bytes), 1, f);
+		memset(setupfile->setups[i].bytes, 0, sizeof(setupfile->setups[i].bytes));
+		rx += fread(setupfile->setups[i].bytes, blocksize, 1, f);
+	}
+
+	// per-block versions. Missing (older file) or unreadable/zero entries fall
+	// back to the file version - version 0 would mean the N64 pak layout.
+	memset(setupfile->blockversions, 0, sizeof(setupfile->blockversions));
+
+	if (setupfile->version >= 11 && setupfile->numsetups > 0) {
+		rx += fread(setupfile->blockversions, setupfile->numsetups, 1, f);
+	}
+
+	for (int i = 0; i < MPSETUP_MAXSETUPS; ++i) {
+		if (setupfile->blockversions[i] == 0 || setupfile->blockversions[i] > MPSETUP_VERSION) {
+			setupfile->blockversions[i] = setupfile->version;
+		}
 	}
 
 	// v2+ tail: custom weapon presets. Only populated when this is the
@@ -406,12 +435,20 @@ static s32 mpsetupSerialize(FILE *f, struct mpsetupfile *setupfile)
 {
 	s32 wx = 0;
 
+	// always written in the current layout (block sizes + block versions);
+	// each block's own wad version is preserved in blockversions[]
+	setupfile->version = MPSETUP_VERSION;
+
 	wx += fwrite(&setupfile->version, sizeof(setupfile->version), 1, f);
 	wx += fwrite(&setupfile->defaultsetup, sizeof(setupfile->defaultsetup), 1, f);
 	wx += fwrite(&setupfile->numsetups, sizeof(setupfile->numsetups), 1, f);
 
 	for (int i = 0; i < setupfile->numsetups; ++i) {
-		wx += fwrite(setupfile->setups[i].bytes, sizeof(setupfile->setups[i].bytes), 1, f);
+		wx += fwrite(setupfile->setups[i].bytes, MPSETUP_BLOCKSIZE, 1, f);
+	}
+
+	if (setupfile->numsetups > 0) {
+		wx += fwrite(setupfile->blockversions, setupfile->numsetups, 1, f);
 	}
 
 	// v2+ tail: only attach weapon presets when serialising the active

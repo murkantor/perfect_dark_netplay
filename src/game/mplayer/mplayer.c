@@ -5420,7 +5420,9 @@ void mpsetupfileLoadWad(struct savebuffer *buffer, u8 version)
 			g_MpSetup.chrslots |= MPCHRSLOT(i + MAX_PLAYERS);
 		}
 
-		if (version > 1) {
+		// v11+: 8 bits (the AIO character tables pass 0x7f). AIO upstream gates
+		// this on its own mpsetups v2, which is a different numbering.
+		if (version >= 11) {
 			g_BotConfigsArray[i].base.mpheadnum = savebufferReadBits(buffer, 8);
 			g_BotConfigsArray[i].base.mpbodynum = savebufferReadBits(buffer, 8);
 		} else {
@@ -5622,10 +5624,8 @@ void mpsetupfileSaveWad(struct savebuffer *buffer)
 	savebufferOr(buffer, g_MpSetup.elimlives, 4);
 	// v10: scenario high bit (scenarios 8-15, e.g. Race — see load side).
 	savebufferOr(buffer, (g_MpSetup.scenario >> 3) & 1, 1);
-	// NOTE: the 80-byte setup block is now 100% full (640/640 bits). The
-	// next saved field needs MPSETUP_BLOCKSIZE enlarged + a version-aware
-	// mpsetupDeserialize (old files read 80-byte blocks) + import-path tail
-	// zeroing.
+	// NOTE: v11 grew the block to 96 bytes (656/768 bits used). A new field
+	// goes here behind a version >= 12 read gate.
 #endif
 }
 
