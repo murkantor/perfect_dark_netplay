@@ -206,14 +206,24 @@ Deliberately left alone:
    bondgun.c). The anim is drawn `rate*phase` frames on and restored after
    the matrix build. The kick tween is re-evaluated at frames+phase. The
    firing shake is rolled once per field and held.
-2. **Projectiles** (with spin), sparks, shards and smoke: render-only
-   extrapolation by sub-field phase. Smoke and sparks step at 60 Hz.
+2. ~~Sparks, shards, smoke~~ DONE (2c): each is drawn `g_LvFieldPhase`
+   along its current motion (a copy of the smoke puff, and local coords for
+   shards and sparks; the tick state is untouched). Explosions are texture
+   flipbooks and stay stepped. **Projectiles** (rockets, grenades) are left
+   on the 1/240 clock (`lvupdate60freal`). They are smooth up to 240 fps
+   and stall on zero-tick frames above that. Converting them means
+   collision physics, so this is an accepted limit.
 3. **Doors/lifts in netplay** still step at 60 Hz (the netplay pin; their
    logic is synced). This needs a render offset from the sub-tick fraction.
 4. Player leftovers:
-   - the landing dip;
-   - the eye-height bob target (needs fractional head-anim ticks);
-   - grab-mode and hoverbike movement.
+   - ~~the eye-height bob~~ DONE (2c): bondhead.c lags use `lvLagStep`, the
+     head anim uses `modelTickAnimQuarterSpeedF`, and idle breathing uses
+     FracReal;
+   - the landing dip (`crouchtime240` countdown + `sumcrouch` lag in
+     bondwalk.c) stays on 1/240 quanta. It feeds eye height and so
+     collision, through an integer countdown. It is smooth up to 240 fps
+     and is an accepted limit;
+   - grab-mode and hoverbike movement (1/240 quanta, same limit).
 5. Small per-frame UI counters that are input grace windows: left as they
    are.
 6. Optional: a render thread and the vsync lock.
@@ -265,3 +275,6 @@ Phase 2c checklist (compile-verified only):
 19. Uncapped: reloads/equips/fire anims smooth, no pop at the end of a
     reload; recoil kick smooth; the firing shake looks like 60 fps (not
     buzzing).
+20. Uncapped: bullet sparks, glass/wood shards and smoke drift smoothly;
+    while paused they stay frozen.
+21. Uncapped above 240 fps: the walking head bob is smooth.
