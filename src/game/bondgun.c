@@ -9538,7 +9538,7 @@ void bgun0f0a5550(s32 handnum)
 		{
 			bool a0 = true;
 			struct modelrenderdata renderdata = {NULL, true, 3};
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 			bool a3 = false;
 #endif
 			s32 spcc;
@@ -9596,7 +9596,15 @@ void bgun0f0a5550(s32 handnum)
 				a0 = false;
 			}
 
-#if VERSION >= VERSION_PAL_BETA
+#if !defined(PLATFORM_N64)
+			// Midas time scale: gun anims are now drawn at fractional frames
+			// (between ticks), which on NTSC never happened - frames were whole.
+			// PAL (fractional frames at its 1.2x speed) needed the C matrix
+			// builder with translation tweening; the asm fast path tweens joint
+			// rotations only, so sliding parts (magazines, laptop gun) stepped
+			// while the rest moved. Use it for every gun anim.
+			a3 = 1;
+#elif VERSION >= VERSION_PAL_BETA
 			switch (modelGetAnimNum(&hand->gunmodel)) {
 			case ANIM_GUN_CROSSBOW_EQUIP:
 			case ANIM_GUN_LAPTOP_EQUIP:
@@ -9632,7 +9640,7 @@ void bgun0f0a5550(s32 handnum)
 					renderdata.unk00 = &sp84;
 					renderdata.unk10 = player->hands[HAND_RIGHT].unk0dd8;
 
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 					var8005efd8_2 = true;
 
 					if (a3) {
@@ -9664,7 +9672,7 @@ void bgun0f0a5550(s32 handnum)
 					spc4++;
 				}
 			} else {
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 				var8005efd8_2 = true;
 
 				if (a3) {

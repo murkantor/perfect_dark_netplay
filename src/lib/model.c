@@ -79,7 +79,7 @@
  * rwdata (such as the selected head).
  */
 
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 u8 var8005efb0_2 = 0;
 #endif
 
@@ -91,7 +91,7 @@ bool var8005efbc = false;
 f32 var8005efc0 = 0;
 bool (*var8005efc4)(struct model *model, struct modelnode *node) = NULL;
 
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 bool var8005efd8_2 = false;
 #endif
 
@@ -1141,7 +1141,7 @@ void modelUpdatePositionNodeMtx(struct modelrenderdata *renderdata, struct model
 				animGetRotTranslateScale(animpart, anim->flip, skel, anim->animnum, anim->frameslot2, &rot2, &translate2, &scale2);
 				modelTweenRot(&rot1, &rot2, spe0);
 
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 				if (sp128 || var8005efd8_2)
 #else
 				if (sp128)
@@ -1621,7 +1621,7 @@ void modelSetMatrices(struct modelrenderdata *renderdata, struct model *model)
 	}
 #endif
 
-#if VERSION >= VERSION_PAL_BETA
+#if VERSION >= VERSION_PAL_BETA || !defined(PLATFORM_N64)
 	if (var8005efb0_2 || !modelasm00018680(renderdata, model)) {
 		modelUpdateMatrices(renderdata, model);
 	}
