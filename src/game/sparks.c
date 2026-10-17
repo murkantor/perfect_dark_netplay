@@ -13,6 +13,7 @@
 #include "lib/mtx.h"
 #include "data.h"
 #include "types.h"
+#include "game/lv.h"
 
 struct spark g_Sparks[100];
 s32 g_NextSparkIndex;
@@ -461,20 +462,34 @@ Gfx *sparksRender(Gfx *gdl)
 							f2 = sqrtf(spark->speed.f[0] * spark->speed.f[0] + spark->speed.f[1] * spark->speed.f[1] + spark->speed.f[2] * spark->speed.f[2]);
 							f2 = (sp120 + (type->unk04 + group->age * type->unk08)) / f2;
 
-							vertices[0].x = spark->pos.x;
-							vertices[0].y = spark->pos.y;
-							vertices[0].z = spark->pos.z;
+#ifndef PLATFORM_N64
+							// Midas time scale: sparks tick in whole 60Hz fields;
+							// draw them g_LvFieldPhase of a field further along
+							struct coord sparkpos;
+
+							sparkpos.x = spark->pos.x + spark->speed.x * g_LvFieldPhase;
+							sparkpos.y = spark->pos.y + spark->speed.y * g_LvFieldPhase;
+							sparkpos.z = spark->pos.z + spark->speed.z * g_LvFieldPhase;
+#define spark_pos sparkpos
+#else
+#define spark_pos spark->pos
+#endif
+
+							vertices[0].x = spark_pos.x;
+							vertices[0].y = spark_pos.y;
+							vertices[0].z = spark_pos.z;
 							vertices[0].colour = 4;
 
-							vertices[1].x = spark->pos.x + spark->speed.f[0] * f2;
-							vertices[1].y = spark->pos.y + spark->speed.f[1] * f2;
-							vertices[1].z = spark->pos.z + spark->speed.f[2] * f2;
+							vertices[1].x = spark_pos.x + spark->speed.f[0] * f2;
+							vertices[1].y = spark_pos.y + spark->speed.f[1] * f2;
+							vertices[1].z = spark_pos.z + spark->speed.f[2] * f2;
 							vertices[1].colour = 0;
 
-							vertices[2].x = spark->pos.x + spark->speed.f[0] * f2;
-							vertices[2].y = spark->pos.y + spark->speed.f[1] * f2;
-							vertices[2].z = spark->pos.z + spark->speed.f[2] * f2;
+							vertices[2].x = spark_pos.x + spark->speed.f[0] * f2;
+							vertices[2].y = spark_pos.y + spark->speed.f[1] * f2;
+							vertices[2].z = spark_pos.z + spark->speed.f[2] * f2;
 							vertices[2].colour = 0;
+#undef spark_pos
 
 							vertices[0].s = 128;
 							vertices[0].t = -256;

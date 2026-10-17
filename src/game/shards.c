@@ -12,6 +12,7 @@
 #include "lib/mtx.h"
 #include "lib/rng.h"
 #include "types.h"
+#include "game/lv.h"
 
 s32 g_MaxShards;
 struct shard *g_Shards;
@@ -255,7 +256,23 @@ Gfx *shardsRenderWood(Gfx *gdl)
 				if (render) {
 					struct shard *shard = (struct shard *) ((u8 *)g_Shards + i * sizeof(struct shard));
 
+#ifndef PLATFORM_N64
+					// Midas time scale: shards tick in whole 60Hz fields; draw
+					// them g_LvFieldPhase of a field further along (display only)
+					struct coord drawpos;
+					struct coord drawrot;
+
+					drawpos.x = shard->pos.x + shard->vel.x * g_LvFieldPhase;
+					drawpos.y = shard->pos.y + shard->vel.y * g_LvFieldPhase;
+					drawpos.z = shard->pos.z + shard->vel.z * g_LvFieldPhase;
+					drawrot.x = shard->rot.x + shard->rotspeed.x * g_LvFieldPhase;
+					drawrot.y = shard->rot.y + shard->rotspeed.y * g_LvFieldPhase;
+					drawrot.z = shard->rot.z + shard->rotspeed.z * g_LvFieldPhase;
+
+					mtx4LoadRotationAndTranslation(&drawpos, &drawrot, &shardmtx);
+#else
 					mtx4LoadRotationAndTranslation(&shard->pos, &shard->rot, &shardmtx);
+#endif
 
 					shardmtx.m[3][0] -= g_Vars.currentplayer->globaldrawworldoffset.x;
 					shardmtx.m[3][1] -= g_Vars.currentplayer->globaldrawworldoffset.y;
@@ -377,7 +394,23 @@ Gfx *shardsRenderGlass(Gfx *gdl)
 				if (render) {
 					struct shard *shard = (struct shard *) ((u8 *)g_Shards + i * sizeof(struct shard));
 
+#ifndef PLATFORM_N64
+					// Midas time scale: shards tick in whole 60Hz fields; draw
+					// them g_LvFieldPhase of a field further along (display only)
+					struct coord drawpos;
+					struct coord drawrot;
+
+					drawpos.x = shard->pos.x + shard->vel.x * g_LvFieldPhase;
+					drawpos.y = shard->pos.y + shard->vel.y * g_LvFieldPhase;
+					drawpos.z = shard->pos.z + shard->vel.z * g_LvFieldPhase;
+					drawrot.x = shard->rot.x + shard->rotspeed.x * g_LvFieldPhase;
+					drawrot.y = shard->rot.y + shard->rotspeed.y * g_LvFieldPhase;
+					drawrot.z = shard->rot.z + shard->rotspeed.z * g_LvFieldPhase;
+
+					mtx4LoadRotationAndTranslation(&drawpos, &drawrot, &shardmtx);
+#else
 					mtx4LoadRotationAndTranslation(&shard->pos, &shard->rot, &shardmtx);
+#endif
 
 					shardmtx.m[3][0] -= g_Vars.currentplayer->globaldrawworldoffset.x;
 					shardmtx.m[3][1] -= g_Vars.currentplayer->globaldrawworldoffset.y;

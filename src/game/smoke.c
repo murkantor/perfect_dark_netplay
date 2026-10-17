@@ -15,6 +15,7 @@
 #include "lib/mtx.h"
 #include "data.h"
 #include "types.h"
+#include "game/lv.h"
 
 struct smoke *g_Smokes;
 s32 g_MaxSmokes;
@@ -680,7 +681,33 @@ Gfx *smokeRender(struct prop *prop, Gfx *gdl, bool xlupass)
 
 		for (i = 0; i < ARRAYCOUNT(smoke->parts); i++) {
 			if (smoke->parts[i].size > 0) {
+#ifndef PLATFORM_N64
+				// Midas time scale: smoke ticks in whole 60Hz fields; draw each
+				// puff g_LvFieldPhase of a field further along (display only)
+				struct smokepart drawpart = smoke->parts[i];
+				const f32 ph = g_LvFieldPhase;
+
+				if (ph > 0.f) {
+					drawpart.pos.y += g_SmokeTypes[smoke->type].unk1c * ph;
+					drawpart.size += g_SmokeTypes[smoke->type].unk18 * ph;
+					drawpart.alpha -= g_SmokeTypes[smoke->type].fgrotatespeed * ph;
+					drawpart.rot += drawpart.deltarot * ph;
+					drawpart.offset1 += 0.025f * ph;
+					drawpart.offset2 += 0.025f * ph;
+
+					if (drawpart.size < 0.001f) {
+						drawpart.size = 0.001f;
+					}
+
+					if (drawpart.alpha < 0.f) {
+						drawpart.alpha = 0.f;
+					}
+				}
+
+				gdl = smokeRenderPart(smoke, &drawpart, gdl, &sp8c, sp88);
+#else
 				gdl = smokeRenderPart(smoke, &smoke->parts[i], gdl, &sp8c, sp88);
+#endif
 			} else {
 				smoke->parts[i].size = 0;
 			}
