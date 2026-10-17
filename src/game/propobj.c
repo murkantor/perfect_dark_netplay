@@ -22452,7 +22452,8 @@ void gasTick(void)
 					sndStart(var80095200, soundnum, &g_GasAudioHandle, -1, -1, -1, -1, -1);
 				}
 
-				if (g_GasAudioHandle) {
+				// (re-panned once per 60Hz field, not every rendered frame - see psTickChannel)
+				if (g_GasAudioHandle && (soundnum != -1 || g_Vars.diffframe60 > 0)) {
 					psApplyVolPan(g_GasAudioHandle, &g_GasPos, 400, 2500, 3000, g_Vars.currentplayer->prop->rooms, soundnum, AL_VOL_FULL, 0);
 				}
 			} else if (g_GasAudioHandle && sndGetState(g_GasAudioHandle)) {

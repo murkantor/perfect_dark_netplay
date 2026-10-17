@@ -8264,8 +8264,11 @@ void bgunUpdateReaper(struct hand *hand, struct modeldef *modeldef)
 					volume = (hand->matmot3 - 0.1f) * AL_VOL_FULL / 0.5f;
 				}
 
-				audioPostEvent(hand->audiohandle, AL_SNDP_VOL_EVT, volume);
-				audioPostEvent(hand->audiohandle, AL_SNDP_PITCH_EVT, *(s32 *)&sp34);
+				// (once per 60Hz field, not per rendered frame: see psTickChannel)
+				if (g_Vars.diffframe60 > 0) {
+					audioPostEvent(hand->audiohandle, AL_SNDP_VOL_EVT, volume);
+					audioPostEvent(hand->audiohandle, AL_SNDP_PITCH_EVT, *(s32 *)&sp34);
+				}
 			}
 		}
 	}
@@ -9613,7 +9616,7 @@ void bgunTickMaulerCharge(void)
 
 				if (hand->matmot1 < 0.1f || !charging) {
 					audioStop(hand->audiohandle);
-				} else {
+				} else if (g_Vars.diffframe60 > 0) { // once per 60Hz field
 					audioPostEvent(hand->audiohandle, AL_SNDP_PITCH_EVT, *(s32 *)&speed);
 				}
 			}

@@ -454,7 +454,20 @@ void psTickChannel(s32 channelnum)
 				}
 
 				channel->flags &= ~PSFLAG_FIRSTTICK;
-			} else {
+			}
+#ifndef PLATFORM_N64
+			// Midas time scale: re-pan/re-volume a playing sound once per elapsed
+			// 60Hz field, as when the game was capped at 60. With the camera now
+			// moving every rendered frame this posted a vol+pan+pitch event per
+			// sound per frame - at hundreds of fps that flooded the sound player
+			// and each pan step lands instantly in the synth: audible crackle
+			// when turning (guard speech, HUD sounds). The first play above stays
+			// immediate.
+			else if (g_Vars.diffframe60 > 0)
+#else
+			else
+#endif
+			{
 				sndAdjust(&channel->audiohandle, channel->flags & PSFLAG_ISMP3, newvol, newpan,
 						channel->soundnum26, newpitch, channel->fxbus, newfx, channel->flags & PSFLAG_CHANGINGPAN);
 			}
