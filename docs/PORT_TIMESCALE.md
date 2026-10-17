@@ -205,7 +205,19 @@ Deliberately left alone:
    `g_LvFieldPhase` (lv.c) plus per-hand tick snapshots (`bgunrendersnap`,
    bondgun.c). The anim is drawn `rate*phase` frames on and restored after
    the matrix build. The kick tween is re-evaluated at frames+phase. The
-   firing shake is rolled once per field and held.
+   firing shake is rolled once per field and held. Two follow-ups
+   (runtime-CONFIRMED):
+   - the extrapolation stops short of the next guncmd SHOWPART/HIDEPART
+     (and WAITFORZRELEASED/REPEATUNTILFULL) keyframe. The tick flips part
+     visibility a field early, so crossing it showed the CMP150's
+     magazine outside the gun;
+   - gun models always use the C matrix path with translation tweening
+     (PAL's `var8005efb0_2`/`var8005efd8_2`). NTSC gun anims were always
+     on whole frames, and the asm fast path tweens rotations only, so
+     sliding parts stepped. **Gotcha: before drawing anything at
+     fractional frames on NTSC code paths, grep for PAL-only (`VERSION >=
+     VERSION_PAL_BETA`) fractional-frame fixes.** PAL already ran
+     fractional frames.
 2. ~~Sparks, shards, smoke~~ DONE (2c): each is drawn `g_LvFieldPhase`
    along its current motion (a copy of the smoke puff, and local coords for
    shards and sparks; the tick state is untouched). Explosions are texture
