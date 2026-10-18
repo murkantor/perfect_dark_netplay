@@ -11,6 +11,7 @@
 #include "game/playermgr.h"
 #include "game/training.h"
 #include "game/gamefile.h"
+#include "game/filemgr.h"
 #include "game/lang.h"
 #include "game/pak.h"
 #include "bss.h"
@@ -1104,6 +1105,11 @@ static MenuItemHandlerResult menuhandlerUnlockEverything(s32 operation, struct m
 {
 	if (operation == MENUOP_SET) {
 		gamefileUnlockEverything();
+		// Persist immediately: the unlocks (incl. the Combat Sim challenge
+		// completion bits that gate MP weapons/arenas) live only in RAM until
+		// the game file is next written, which otherwise needs a mission end
+		// or an options change.
+		filemgrSaveOrLoad(&g_GameFileGuid, FILEOP_SAVE_GAME_000, 0);
 	}
 	return 0;
 }
